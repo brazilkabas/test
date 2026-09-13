@@ -18,7 +18,6 @@ const pending = new Map<string, Promise<void>>();
 type DeviceChallenge = {
   userCode: string;
   verificationUri: string;
-  verificationUriComplete?: string;
   expiresIn: number;
   interval: number;
   message: string;
@@ -48,7 +47,6 @@ export async function startDeviceAuthorization(): Promise<string> {
         challengeReady({
           userCode: response.userCode,
           verificationUri: response.verificationUri,
-          verificationUriComplete: response.verificationUriComplete,
           expiresIn: response.expiresIn,
           interval: response.interval,
           message: response.message,
@@ -78,7 +76,6 @@ export async function startDeviceAuthorization(): Promise<string> {
     data: {
       userCode: issued.userCode,
       verificationUri: issued.verificationUri,
-      verificationUriComplete: issued.verificationUriComplete,
       message: issued.message,
       intervalSeconds: issued.interval,
       expiresAt: new Date(Date.now() + issued.expiresIn * 1000),
@@ -191,7 +188,7 @@ export async function graphFetch<T>(
   pathOrNextLink: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const { token, connection } = await acquireGraphToken(connectionId);
+  const { token } = await acquireGraphToken(connectionId);
   try {
     const result = await graphFetchWithToken<T>(token, pathOrNextLink, init);
     await db.microsoftConnection.update({

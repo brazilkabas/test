@@ -30,6 +30,14 @@ consent for otherwise delegated permissions depending on tenant configuration.
 Confirm current permission semantics in the official Microsoft Graph documentation
 before expanding scopes. An internal application role never grants Microsoft access.
 
+Verified implementation references:
+
+- [MSAL Node device-code flow](https://learn.microsoft.com/en-us/entra/msal/javascript/node/acquire-token-requests#device-code-flow)
+- [List messages](https://learn.microsoft.com/en-us/graph/api/mailfolder-list-messages?view=graph-rest-1.0)
+- [Mailbox settings](https://learn.microsoft.com/en-us/graph/api/user-get-mailboxsettings?view=graph-rest-1.0)
+- [List Inbox rules](https://learn.microsoft.com/en-us/graph/api/mailfolder-list-messagerules?view=graph-rest-1.0)
+- [Create Inbox rule](https://learn.microsoft.com/en-us/graph/api/mailfolder-post-messagerules?view=graph-rest-1.0)
+
 ## Live smoke test
 
 ```bash

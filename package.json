@@ -19,23 +19,24 @@
   },
   "dependencies": {
     "@azure/msal-node": "latest",
-    "@prisma/client": "latest",
-    "jose": "latest",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "next": "latest",
+    "pg": "^8.23.0",
     "react": "latest",
     "react-dom": "latest",
     "sanitize-html": "latest",
     "zod": "latest"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "latest",
     "@types/node": "latest",
+    "@types/pg": "^8.23.1",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@types/sanitize-html": "latest",
     "eslint": "latest",
     "eslint-config-next": "latest",
-    "prisma": "latest",
+    "prisma": "^7.10.0",
     "tsx": "latest",
     "typescript": "latest",
     "vitest": "latest"

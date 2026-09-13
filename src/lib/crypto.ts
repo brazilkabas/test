@@ -13,13 +13,13 @@ const VERSION = 1;
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 
-export function encrypt(plaintext: string, context: string): Buffer {
+export function encrypt(plaintext: string, context: string): Uint8Array<ArrayBuffer> {
   const key = Buffer.from(config().ENCRYPTION_KEY, "hex");
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(Buffer.from(context));
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  return Buffer.concat([Buffer.from([VERSION]), iv, cipher.getAuthTag(), ciphertext]);
+  return Uint8Array.from(Buffer.concat([Buffer.from([VERSION]), iv, cipher.getAuthTag(), ciphertext]));
 }
 
 export function decrypt(payload: Uint8Array, context: string): string {

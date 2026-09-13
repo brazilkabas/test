@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { isIP } from "node:net";
 import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
@@ -145,7 +146,10 @@ async function login(request: NextRequest) {
       take: 100,
     });
     const candidate = candidates.find(
-      (item) => item.usedCount < item.maximumUses && verifySecret(code, item.codeHash),
+      (item) =>
+        item.usedCount < item.maximumUses &&
+        verifySecret(code, item.codeHash) &&
+        ipMatchesRange(ip, item.allowedIpRange),
     );
     if (!candidate) {
       await audit({
@@ -205,7 +209,11 @@ async function createAccessCode(request: NextRequest) {
       description: z.string().max(200).optional(),
       allowedUserId: z.string().optional(),
       allowedRole: z.nativeEnum(AccessRole).optional(),
-      allowedIpRange: z.string().max(100).optional(),
+      allowedIpRange: z
+        .string()
+        .max(100)
+        .refine((value) => validIpRange(value), "Use an IP address or IPv4 CIDR range")
+        .optional(),
     })
     .parse(await request.json());
   const code = randomAccessCode();
@@ -467,6 +475,27 @@ function enforceRateLimit(key: string) {
   }
   state.count += 1;
   if (state.count > 10) throw new ApiError(429, "Too many access-code attempts");
+}
+
+function ipMatchesRange(ip: string, range: string | null): boolean {
+  if (!range) return true;
+  if (!range.includes("/")) return isIP(ip) !== 0 && ip === range;
+  const [network, prefixText] = range.split("/");
+  const prefix = Number(prefixText);
+  if (isIP(ip) !== 4 || isIP(network) !== 4 || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+    return false;
+  }
+  const toNumber = (value: string) =>
+    value.split(".").reduce((result, octet) => (result << 8) | Number(octet), 0) >>> 0;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (toNumber(ip) & mask) === (toNumber(network) & mask);
+}
+
+function validIpRange(range: string): boolean {
+  if (!range.includes("/")) return isIP(range) !== 0;
+  const [network, prefixText] = range.split("/");
+  const prefix = Number(prefixText);
+  return isIP(network) === 4 && Number.isInteger(prefix) && prefix >= 0 && prefix <= 32;
 }
 
 function handle(error: unknown) {
