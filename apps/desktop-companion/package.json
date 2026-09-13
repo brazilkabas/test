@@ -3,18 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Headless Windows protocol launcher for Outlook Web messages",
-  "bin": "dist/main.js",
   "scripts": {
-    "build": "npm run build:js && npm run package:windows",
-    "build:js": "tsc",
-    "package:windows": "pkg dist/main.js --target node20-win-x64 --output release/CompanyMailLauncher.exe",
-    "test": "vitest run src/**/*.test.ts",
-    "typecheck": "tsc --noEmit",
-    "start": "tsc && node dist/main.js"
-  },
-  "devDependencies": {
-    "@types/node": "latest",
-    "@yao-pkg/pkg": "^6.22.0",
-    "typescript": "latest"
+    "build": "node build.mjs",
+    "test": "go test ./...",
+    "typecheck": "go test ./..."
   }
 }

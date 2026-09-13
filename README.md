@@ -50,6 +50,7 @@ confirmation and a recipient argument.
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [Current implementation status](docs/IMPLEMENTATION_STATUS.md)
 
-Advanced directory, shared mailbox, Exchange administration, Cloudflare publishing,
-desktop companion, and third-party integration modules are intentionally deferred
-until the first Microsoft mail milestone has been validated against a real tenant.
+Live Microsoft, Exchange, Cloudflare, and Windows launcher acceptance still requires
+the corresponding customer tenant, provider configuration, and operating system.
+See the implementation status matrix for the distinction between implemented code
+paths and live-tested integrations.

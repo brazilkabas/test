@@ -42,7 +42,7 @@ mean the feature has been validated against a customer tenant or provider accoun
 | Visual template gallery | IMPLEMENTED | `visual-templates.ts`, `html-projects.tsx` | Renderer unit tests | No | 16 safe templates across all requested gallery categories and at least 10 distinct structures. |
 | Cloudflare deployment manager | REQUIRES CLOUDFLARE CONFIGURATION | `cloudflare.ts`, `cloudflare-configuration.tsx`, Worker | Unit/build/type checks | Cloudflare | In-app encrypted Token/Global Key setup and discovery; central KV and one wildcard Worker; no per-page Worker. |
 | Random subdomains/private deployments | PARTIALLY IMPLEMENTED | Cloudflare APIs/Worker | Crypto and Worker tests | Cloudflare | Collision-checked random/custom hostname, public/access-code/disabled/expired lifecycle. A true authenticated private-origin policy is not yet implemented. |
-| Desktop companion | PARTIALLY IMPLEMENTED | `apps/desktop-companion`, launch API | Desktop typecheck | Windows | NSIS target, protocol, one-time exchange and browser profiles; Windows installer not built on Linux. |
+| Headless Windows launcher | REQUIRES WINDOWS LIVE TEST | `apps/desktop-companion`, launch API, `mail-client.tsx` | 9 native unit tests, PE build, web build | Windows + Microsoft | 5.4 MB native GUI-subsystem executable; no normal UI. Per-user protocol install/uninstall, 60-second single-use message-bound launch IDs, Chrome/Edge detection, fresh temporary profiles, cleanup and redacted logs are implemented. |
 | Adobe/DocuSign/SharePoint modules | NOT IMPLEMENTED | Prisma `Integration` only | None | Provider config | Feature-flag architecture only. |
 | Responsive enterprise shell/design system | PARTIALLY IMPLEMENTED | `globals.css`, page components | Build only | No | Responsive basics exist; no full nav, themes, modal/drawer/toast/skeleton system. |
 | Setup/deployment/security documentation | IMPLEMENTED | Root documentation files | Manual review | Provider config | Accurate about deferred modules and Microsoft-controlled SSO. |
@@ -72,7 +72,7 @@ mean the feature has been validated against a customer tenant or provider accoun
 4. Add complete first-run secret-manager provisioning.
 5. Add provider-configured Adobe Sign, DocuSign and SharePoint connectors.
 6. Execute migrations against PostgreSQL and add route/browser integration tests.
-7. Sign and test the companion installer on Windows.
+7. Code-sign and execute the launcher acceptance flow on Windows.
 8. Deploy and validate the wildcard Worker/KV path against the customer Cloudflare account.
 
 ## Verification results
@@ -80,12 +80,13 @@ mean the feature has been validated against a customer tenant or provider accoun
 | Check | Result | Notes |
 |---|---|---|
 | ESLint | PASS | Entire repository; generated desktop artifacts excluded. |
-| TypeScript | PASS | Web/backend and desktop companion. |
-| Unit/integration tests | PASS | 10 tests across crypto, visual rendering/device-code invariants, templates and Worker routing/policies. |
+| TypeScript | PASS | Web/backend. The launcher is native Go and passes `go test`. |
+| Unit/integration tests | PASS | 19 tests across crypto, visual rendering/device-code invariants, templates, Worker routing/policies and native launcher behavior. |
 | Prisma schema | PASS | Client generation and schema validation on Prisma 6.12.0. |
 | Production web build | PASS | Next.js optimized build. |
 | Production dependency audit | PASS | `npm audit --omit=dev --audit-level=high` reports zero vulnerabilities. |
-| Windows NSIS packaging | REQUIRES WINDOWS/WINE | TypeScript and Win32 packaging reached NSIS; this Linux VM lacks Wine for the final installer stage. |
+| Windows launcher packaging | PASS | Cross-compiled `CompanyMailLauncher.exe` as a 5.4 MB PE32+ GUI x86-64 executable; SHA-256 recorded in the build output. |
+| Windows launcher runtime | REQUIRES WINDOWS LIVE TEST | Protocol permission prompt, registry behavior, Chrome/Edge startup, Windows SSO and exact post-authentication message navigation require Windows with a live Graph message. The development binary is not code-signed. |
 | PostgreSQL migration execution | REQUIRES DATABASE | Migration SQL is generated; this VM has no Docker or PostgreSQL service. |
 | Microsoft live test | NOT COMPLETED | A genuine code was issued, but the device code expired before customer sign-in. |
 | Cloudflare live test | REQUIRES CLOUDFLARE CONFIGURATION | Account, zone, token, wildcard DNS, Worker and KV binding are required. |

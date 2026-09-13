@@ -31,8 +31,9 @@ $config = @{
   backendUrl = $uri.GetLeftPart([UriPartial]::Authority)
   preferredBrowser = $PreferredBrowser
 }
-if ($BrowserPath) { $config.browserPath = $BrowserPath }
-$config | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installDirectory "config.json") -Encoding utf8
+if ($BrowserPath) { $config["browserPath"] = $BrowserPath }
+$configPath = Join-Path $installDirectory "config.json"
+[IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
 
 $process = Start-Process -FilePath $installedExecutable -ArgumentList "--install" -Wait -PassThru -WindowStyle Hidden
 if ($process.ExitCode -ne 0) {

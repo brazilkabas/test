@@ -20,6 +20,10 @@ The build creates:
 apps\desktop-companion\release\CompanyMailLauncher.exe
 ```
 
+The repository build is an unsigned development artifact. Code-sign the executable
+with the company's trusted Windows signing certificate before production distribution;
+otherwise Windows may show an unknown-publisher warning.
+
 The per-user installer copies the executable to
 `%LOCALAPPDATA%\CompanyMailLauncher`, writes a non-secret `config.json`, and registers:
 
