@@ -71,7 +71,9 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
         const saved = latest?.document?.settings.builder;
         const defaults = defaultBuilderConfiguration(saved?.layoutId ?? normalizeLayout(projectResult.project.templateId), saved?.provider ?? "microsoft365");
         const defaultCompany = assetResult.assets.find((asset) => asset.isDefault && !asset.archivedAt);
-        setConfiguration({ ...defaults, ...saved, companyLogoAssetId: saved?.companyLogoAssetId ?? defaultCompany?.id, logoMode: saved?.logoMode ?? (defaultCompany ? "both" : "provider") });
+        const savedCompany = assetResult.assets.find((asset) => asset.id === saved?.companyLogoAssetId && !asset.archivedAt);
+        const companyLogoAssetId = savedCompany?.id ?? defaultCompany?.id;
+        setConfiguration({ ...defaults, ...saved, companyLogoAssetId, logoMode: companyLogoAssetId ? (saved?.logoMode === "none" || saved?.logoMode === "provider" ? saved.logoMode : "both") : "provider" });
         setCustomHtml(latest && !latest.document ? latest.html : "");
         setCustomCss(latest?.document ? "" : latest?.css ?? "");
         loaded.current = true;
@@ -145,10 +147,10 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
       background: providerAssets[provider].surface,
       title: configuration.title === oldDefaults.title ? nextDefaults.title : configuration.title,
       description: configuration.description === oldDefaults.description ? nextDefaults.description : configuration.description,
-      steps: configuration.steps.every((step, index) => step === oldDefaults.steps[index]) ? nextDefaults.steps : configuration.steps,
-      continueButtonText: configuration.continueButtonText === oldDefaults.continueButtonText ? nextDefaults.continueButtonText : configuration.continueButtonText,
-      footer: configuration.footer === oldDefaults.footer ? nextDefaults.footer : configuration.footer,
-      successMessage: configuration.successMessage === oldDefaults.successMessage ? nextDefaults.successMessage : configuration.successMessage,
+      steps: nextDefaults.steps,
+      continueButtonText: nextDefaults.continueButtonText,
+      footer: nextDefaults.footer,
+      successMessage: nextDefaults.successMessage,
       documentName: configuration.documentName === oldDefaults.documentName ? nextDefaults.documentName : configuration.documentName,
       documentTitle: configuration.documentTitle === oldDefaults.documentTitle ? nextDefaults.documentTitle : configuration.documentTitle,
       fileType: configuration.fileType === oldDefaults.fileType ? nextDefaults.fileType : configuration.fileType,
