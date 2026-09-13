@@ -2,11 +2,9 @@ import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
 export default defineConfig({
+  earlyAccess: true,
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
-  },
-  datasource: {
-    url: process.env.DATABASE_URL ?? "postgresql://unused:unused@localhost:5432/company_control",
   },
 });
