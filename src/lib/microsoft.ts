@@ -66,8 +66,8 @@ export async function startDeviceAuthorization(pageProjectId?: string): Promise<
     })
     .catch(async (error: unknown) => {
       challengeFailed(error);
-      await db.microsoftAuthorizationSession.update({
-        where: { id: session.id },
+      await db.microsoftAuthorizationSession.updateMany({
+        where: { id: session.id, status: AuthorizationStatus.PENDING },
         data: {
           status: classifyDeviceError(error),
           errorCode: microsoftErrorCode(error),
@@ -137,12 +137,16 @@ async function completeAuthorization(
   pca: PublicClientApplication,
   result: AuthenticationResult,
 ) {
+  const pendingSession = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
+  if (!pendingSession || pendingSession.status !== AuthorizationStatus.PENDING || pendingSession.expiresAt <= new Date()) return;
   const profile = await graphFetchWithToken<{
     id: string;
     displayName?: string;
     userPrincipalName?: string;
     mail?: string;
   }>(result.accessToken, "/me?$select=id,displayName,userPrincipalName,mail");
+  const stillPending = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
+  if (!stillPending || stillPending.status !== AuthorizationStatus.PENDING || stillPending.expiresAt <= new Date()) return;
   const encryptedTokenCache = encrypt(
     pca.getTokenCache().serialize(),
     `msal:${result.tenantId}:${profile.id}`,

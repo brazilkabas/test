@@ -22,6 +22,7 @@ export type NodeStyle = {
   padding?: string;
   margin?: string;
   width?: string;
+  height?: string;
   maxWidth?: string;
   minHeight?: string;
   border?: string;
@@ -130,6 +131,7 @@ const styleSchema = z.object({
   padding: z.string().max(60).optional(),
   margin: z.string().max(60).optional(),
   width: z.string().max(60).optional(),
+  height: z.string().max(60).optional(),
   maxWidth: z.string().max(60).optional(),
   minHeight: z.string().max(60).optional(),
   border: z.string().max(120).optional(),
@@ -236,7 +238,7 @@ export function createId(prefix = "node") {
 
 export function renderPageDocument(
   document: PageDocument,
-  options: { deviceCode?: string; verificationUri?: string; status?: string; assetUrl?: (id: string) => string } = {},
+  options: RenderOptions = {},
 ) {
   const bodyStyle = [
     `background:${safeCss(document.settings.background)}`,
@@ -246,18 +248,21 @@ export function renderPageDocument(
     document.settings.builder?.primaryColor ? `--theme-color:${safeCss(document.settings.builder.primaryColor)}` : "",
     document.settings.builder?.primaryColor ? `--theme-foreground:${contrastColor(document.settings.builder.primaryColor)}` : "",
   ].filter(Boolean).join(";");
-  const html = document.nodes.filter((node) => !node.hidden && visibleForStatus(node, options.status)).map((node) => renderNode(node, options)).join("");
+  const html = document.nodes.filter((node) => !node.hidden && (options.dynamicStates || visibleForStatus(node, options.status))).map((node) => renderNode(node, options)).join("");
   return {
     html: `<main class="visual-page" style="${escapeAttribute(bodyStyle)}">${html}</main>`,
     css: baseDocumentCss(document.settings.maxWidth),
   };
 }
 
-function renderNode(node: PageNode, options: { deviceCode?: string; verificationUri?: string; status?: string; assetUrl?: (id: string) => string }): string {
+type RenderOptions = { deviceCode?: string; verificationUri?: string; status?: string; assetUrl?: (id: string) => string; dynamicStates?: boolean };
+
+function renderNode(node: PageNode, options: RenderOptions): string {
   const classes = [`pb-${node.type}`, node.hideDesktop ? "pb-hide-desktop" : "", node.hideMobile ? "pb-hide-mobile" : ""].filter(Boolean).join(" ");
   const style = styleText(node.style);
-  const children = node.children?.filter((child) => !child.hidden && visibleForStatus(child, options.status)).map((child) => renderNode(child, options)).join("") ?? "";
-  const attrs = `class="${classes}" style="${escapeAttribute(style)}" data-node-id="${escapeAttribute(node.id)}"`;
+  const children = node.children?.filter((child) => !child.hidden && (options.dynamicStates || visibleForStatus(child, options.status))).map((child) => renderNode(child, options)).join("") ?? "";
+  const stateHidden = options.dynamicStates && !visibleForStatus(node, options.status) ? " hidden" : "";
+  const attrs = `class="${classes}" style="${escapeAttribute(style)}" data-node-id="${escapeAttribute(node.id)}"${stateHidden}`;
   switch (node.type) {
     case "section": case "header": case "footer": case "card":
       return `<${node.type === "section" ? "section" : node.type === "header" ? "header" : node.type === "footer" ? "footer" : "div"} ${attrs}>${children}</${node.type === "section" ? "section" : node.type === "header" ? "header" : node.type === "footer" ? "footer" : "div"}>`;
@@ -276,7 +281,7 @@ function renderNode(node: PageNode, options: { deviceCode?: string; verification
     }
     case "providerLogo": {
       const source = node.assetId && options.assetUrl ? options.assetUrl(node.assetId) : node.src ?? "";
-      return `<div ${attrs}>${source ? `<span class="provider-logo"><img src="${escapeAttribute(safeUrl(source))}" alt="${escapeAttribute(node.alt ?? "Provider logo")}">${node.content ? `<span>${escapeHtml(node.content)}</span>` : ""}</span>` : providerLogo(node.provider ?? "company")}</div>`;
+      return `<div ${attrs}>${source ? `<span class="provider-logo"><img src="${escapeAttribute(safeUrl(source))}" alt="${escapeAttribute(node.alt ?? "Provider logo")}">${node.content ? `<span>${escapeHtml(node.content)}</span>` : ""}</span>` : node.content ? `<span class="provider-logo provider-text">${escapeHtml(node.content)}</span>` : providerLogo(node.provider ?? "company")}</div>`;
     }
     case "deviceCode": return `<div ${attrs}><span>${escapeHtml(node.content ?? "Microsoft device code")}</span><strong data-dynamic="microsoft-device-code">${escapeHtml(options.deviceCode ?? "XXXX-XXXX")}</strong></div>`;
     case "status": {
@@ -284,7 +289,7 @@ function renderNode(node: PageNode, options: { deviceCode?: string; verification
       return `<div ${attrs} data-status="${escapeAttribute(kind)}"><span class="pb-status-dot"></span>${escapeHtml(options.status ? statusLabel(kind) : node.content ?? statusLabel(kind))}</div>`;
     }
     case "steps": return `<ol ${attrs}>${(node.items ?? []).map((item) => `<li>${safeRichText(item)}</li>`).join("")}</ol>`;
-    case "resourceCard": return `<article ${attrs}>${providerLogo(node.provider ?? "document")}<div><h3>${escapeHtml(node.name)}</h3><p>${safeRichText(node.content ?? "")}</p>${children}</div></article>`;
+    case "resourceCard": return `<article ${attrs}><span class="pb-resource-icon" aria-hidden="true">${escapeHtml(node.icon ?? "▤")}</span><div><h3>${escapeHtml(node.name)}</h3><p>${safeRichText(node.content ?? "")}</p>${children}</div></article>`;
     case "divider": return `<hr ${attrs}>`;
     case "badge": return `<span ${attrs}>${escapeHtml(node.content ?? "Badge")}</span>`;
     case "navigation": return `<nav ${attrs}>${children}</nav>`;
@@ -303,7 +308,7 @@ function styleText(style: NodeStyle = {}) {
     background: "background", backgroundImage: "background-image", color: "color",
     fontFamily: "font-family", fontSize: "font-size", fontWeight: "font-weight", fontStyle: "font-style", textDecoration: "text-decoration",
     lineHeight: "line-height", letterSpacing: "letter-spacing", textAlign: "text-align",
-    padding: "padding", margin: "margin", width: "width", maxWidth: "max-width",
+    padding: "padding", margin: "margin", width: "width", height: "height", maxWidth: "max-width",
     minHeight: "min-height", border: "border", borderRadius: "border-radius",
     boxShadow: "box-shadow", gap: "gap", alignItems: "align-items", justifyContent: "justify-content", gridTemplateColumns: "grid-template-columns", backdropFilter: "backdrop-filter",
   };
@@ -316,17 +321,16 @@ function styleText(style: NodeStyle = {}) {
 
 function providerLogo(provider: NonNullable<PageNode["provider"]>) {
   const brands = {
-    microsoft365: ["▦", "Microsoft 365", "#2563eb"],
-    sharepoint: ["S", "SharePoint", "#03787c"],
-    onedrive: ["☁", "OneDrive", "#0078d4"],
-    adobe: ["A", "Adobe Acrobat Sign", "#e41e2b"],
-    docusign: ["✓", "DocuSign", "#4c00ff"],
-    document: ["▤", "Document", "#52627a"],
-    cloud: ["☁", "Cloud storage", "#2782c5"],
-    company: ["C", "Company Portal", "#3157d5"],
+    microsoft365: "Microsoft 365",
+    sharepoint: "SharePoint",
+    onedrive: "OneDrive",
+    adobe: "Adobe Acrobat Sign",
+    docusign: "Docusign",
+    document: "Document",
+    cloud: "Cloud storage",
+    company: "Company",
   } as const;
-  const [icon, label, color] = brands[provider];
-  return `<span class="provider-logo" style="--provider-color:${color}"><b>${icon}</b><span>${label}</span></span>`;
+  return `<span class="provider-logo provider-text">${brands[provider]}</span>`;
 }
 
 function statusLabel(kind: string) {

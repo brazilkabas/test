@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/components/api";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument } from "@/lib/page-document";
@@ -24,6 +24,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   const [authorization, setAuthorization] = useState<Authorization | null>(null);
   const [error, setError] = useState("");
   const [remaining, setRemaining] = useState("");
+  const replacing = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -60,11 +61,17 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   }, [authorization]);
 
   async function restart() {
+    if (replacing.current) return;
+    replacing.current = true;
     const response = await fetch(`/api/v1/microsoft/device/${encodeURIComponent(sessionId)}/restart?token=${encodeURIComponent(token)}`, { method: "POST" });
     const result = await response.json() as { connectUrl?: string; error?: string };
     if (!response.ok || !result.connectUrl) throw new Error(result.error ?? "Unable to restart authorization");
     window.location.assign(result.connectUrl);
   }
+
+  useEffect(() => {
+    if (authorization?.status === "EXPIRED") void restart();
+  }, [authorization?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
   if (authorization && customDocumentResult.success) {
@@ -80,12 +87,6 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     }}>
       <style>{rendered.css}</style>
       <div dangerouslySetInnerHTML={{ __html: rendered.html }} />
-      <div className="live-authorization-bar">
-        <strong>{authorization.status === "CONNECTED" ? "Microsoft account connected" : authorization.status === "PENDING" ? `Waiting for Microsoft · ${remaining}` : `Authorization ${authorization.status.toLowerCase()}`}</strong>
-        {authorization.status === "PENDING" && <span>The code shown above was issued by Microsoft and cannot be changed by the page designer.</span>}
-        {authorization.status === "CONNECTED" && <a className="button" href="/admin">Return to dashboard</a>}
-        {["EXPIRED", "FAILED", "CANCELLED"].includes(authorization.status) && <button onClick={() => void restart()}>Restart authorization</button>}
-      </div>
     </main>;
   }
 
@@ -107,9 +108,8 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     return (
       <main className="center-page">
         <div className="card auth-card stack">
-          <h1>Authorization {authorization.status.toLowerCase()}</h1>
-          <p className="muted">Microsoft could not complete this device authorization. {authorization.errorCode}</p>
-          <button onClick={restart}>Restart authorization</button>
+          <h1>{authorization.status === "EXPIRED" ? "Refreshing verification code…" : `Authorization ${authorization.status.toLowerCase()}`}</h1>
+          <p className="muted">{authorization.status === "EXPIRED" ? "A new Microsoft code will appear automatically." : `Microsoft could not complete this device authorization. ${authorization.errorCode ?? ""}`}</p>
         </div>
       </main>
     );

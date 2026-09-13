@@ -12,7 +12,7 @@ import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDe
 import { config } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
-import { pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
+import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, GraphError, graphFetch, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
@@ -48,7 +48,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
   try {
     const path = (await context.params).path;
     const publicDeviceRestart = path[0] === "microsoft" && path[1] === "device" && path[3] === "restart";
-    if (!publicDeviceRestart && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
+    const publicDeploymentSession = path[0] === "public" && path[1] === "deployments" && path[3] === "device" && path[4] === "start";
+    if (!publicDeviceRestart && !publicDeploymentSession && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
     return await route(request, path);
   } catch (error) {
     return handle(error);
@@ -77,6 +78,7 @@ async function route(request: NextRequest, path: string[]) {
   const key = `${request.method} /${path.join("/")}`;
 
   if (key === "POST /auth/login") return login(request);
+  if (path[0] === "public" && path[1] === "deployments" && path[3] === "device" && path[4] === "start" && request.method === "POST") return publicDeploymentDeviceSession(request, path[2]);
   if (key === "GET /auth/me") {
     const user = await currentUser();
     return Response.json({ user: user ? safeUser(user) : null });
@@ -91,8 +93,12 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "GET /dashboard") return dashboard();
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
-    const { pageProjectId, deploymentId } = z.object({ pageProjectId: z.string().optional(), deploymentId: z.string().optional() }).parse(await request.json().catch(() => ({})));
+    const { pageProjectId, deploymentId, replacementSessionId } = z.object({ pageProjectId: z.string().optional(), deploymentId: z.string().optional(), replacementSessionId: z.string().optional() }).parse(await request.json().catch(() => ({})));
+    if (replacementSessionId) {
+      await db.microsoftAuthorizationSession.updateMany({ where: { publicId: replacementSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
+    }
     const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId);
+    const presentation = await authorizationStatus(publicId, statusToken);
     await audit({
       actorId: actor.id,
       action: "microsoft.authorization.started",
@@ -112,7 +118,10 @@ async function route(request: NextRequest, path: string[]) {
         await audit({ actorId: actor.id, action: "microsoft.authorization.deployment_bound", targetType: "CloudflareDeployment", targetId: deploymentId, result: "FAILURE", metadata: { authorizationSessionId: publicId } });
       }
     }
-    return Response.json({ sessionId: publicId, connectUrl, publishedConnectUrl, bridgeError }, { status: 201 });
+    return Response.json({
+      sessionId: publicId, statusToken, connectUrl, publishedConnectUrl, bridgeError,
+      session: presentation ? { sessionId: publicId, userCode: presentation.userCode, verificationUri: presentation.verificationUri, expiresAt: presentation.expiresAt, status: presentation.status } : undefined,
+    }, { status: 201 });
   }
   if (path[0] === "microsoft" && path[1] === "device" && path[3] === "status" && request.method === "GET") {
     const status = await authorizationStatus(id.parse(path[2]), z.string().min(40).parse(request.nextUrl.searchParams.get("token")));
@@ -672,7 +681,7 @@ async function htmlProjectRoute(request: NextRequest, path: string[]) {
       db.brandAsset.findMany({ where: { id: { in: brandAssetIds(input.document) } }, select: { id: true, contentType: true, data: true } }),
     ]);
     const embeddedAssets = new Map([...projectAssets, ...brandAssets].map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
-    const rendered = renderPageDocument(input.document, { assetUrl: (assetId) => embeddedAssets.get(assetId) ?? "" });
+    const rendered = renderPageDocument(input.document, { assetUrl: (assetId) => embeddedAssets.get(assetId) ?? "", dynamicStates: true, status: "waiting" });
     const customHtml = sanitizeHtml(input.customHtml ?? "", {
       allowedTags: [...sanitizeHtml.defaults.allowedTags, "section", "article", "header", "footer", "nav", "main"],
       allowedAttributes: { "*": ["class", "id", "aria-label", "role"], a: ["href", "target", "rel"], img: ["src", "alt", "width", "height"] },
@@ -824,6 +833,30 @@ async function hydrateAuthorizationBrandAssets(status: NonNullable<Awaited<Retur
       versions: status.pageProject.versions.map((version, index) => index === 0 ? { ...version, document } : version),
     } : status.pageProject,
   };
+}
+
+async function publicDeploymentDeviceSession(request: NextRequest, deploymentIdValue: string) {
+  const deploymentId = id.parse(deploymentIdValue);
+  const deployment = await db.cloudflareDeployment.findUnique({ where: { id: deploymentId }, select: { id: true, hostname: true, projectId: true, status: true, expiresAt: true } });
+  if (!deployment || deployment.status !== "ACTIVE" || (deployment.expiresAt && deployment.expiresAt <= new Date())) throw new ApiError(404, "Active deployment not found");
+  const origin = request.headers.get("origin");
+  if (!origin || new URL(origin).hostname !== deployment.hostname) throw new ApiError(403, "Deployment origin is not allowed");
+  const ip = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  enforceRateLimit(`public-device:${deployment.id}:${ip}`);
+  const input = z.object({ previousSessionId: z.string().optional(), previousStatusToken: z.string().min(40).optional() }).parse(await request.json().catch(() => ({})));
+  if (input.previousSessionId && input.previousStatusToken) {
+    const previous = await authorizationStatus(input.previousSessionId, input.previousStatusToken);
+    if (previous?.pageProject?.id === deployment.projectId && previous.status === "PENDING") {
+      await db.microsoftAuthorizationSession.updateMany({ where: { publicId: input.previousSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
+    }
+  }
+  const { publicId, statusToken } = await startDeviceAuthorization(deployment.projectId);
+  const presentation = await authorizationStatus(publicId, statusToken);
+  if (!presentation?.userCode || !presentation.verificationUri) throw new ApiError(503, "Microsoft device authorization is unavailable");
+  await audit({ action: "microsoft.authorization.deployment_visitor_started", targetType: "CloudflareDeployment", targetId: deployment.id, result: "SUCCESS", metadata: { authorizationSessionId: publicId } });
+  return Response.json({
+    session: { sessionId: publicId, statusToken, userCode: presentation.userCode, verificationUri: presentation.verificationUri, expiresAt: presentation.expiresAt, status: presentation.status },
+  }, { status: 201, headers: { "Access-Control-Allow-Origin": origin, Vary: "Origin", "Cache-Control": "no-store" } });
 }
 
 function sanitizeSvg(value: string) {
@@ -1019,14 +1052,8 @@ async function cloudflareRoute(request: NextRequest, path: string[]) {
       if (!latest) throw new ApiError(422, "Project has no version to deploy");
       const policy = deployment.accessPolicy as { type?: "PUBLIC" | "PRIVATE" | "ACCESS_CODE"; codeHash?: string } | null;
       await publishDeployment(deployment.hostname, {
-        id: deployment.id,
-        status: "ACTIVE",
-        html: latest.html,
-        css: latest.css ?? "",
-        javascript: "",
-        policy: policy?.type ?? "PUBLIC",
+        ...deploymentPayload(deployment.id, latest, policy?.type ?? "PUBLIC", undefined, deployment.expiresAt ?? undefined),
         accessCodeHash: policy?.codeHash,
-        expiresAt: deployment.expiresAt?.toISOString(),
       });
       await db.cloudflareDeployment.update({ where: { id: deploymentId }, data: { status: "ACTIVE", deployedAt: new Date() } });
     }
@@ -1044,20 +1071,40 @@ async function cloudflareRoute(request: NextRequest, path: string[]) {
 
 function deploymentPayload(
   id: string,
-  version: { html: string; css: string | null },
+  version: { html: string; css: string | null; document?: unknown },
   policy: "PUBLIC" | "PRIVATE" | "ACCESS_CODE",
   accessCode: string | undefined,
   expiresAt: Date | undefined,
 ) {
+  const hasDeviceCode = version.html.includes('data-dynamic="microsoft-device-code"');
+  const deploymentHtml = hasDeviceCode ? version.html.replaceAll(">XXXX-XXXX<", ">Requesting verification code…<") : version.html;
+  let systemScript: string | undefined;
+  let scriptNonce: string | undefined;
+  let connectOrigin: string | undefined;
+  if (hasDeviceCode) {
+    const base = config().APP_BASE_URL.replace(/\/$/, "");
+    const appUrl = new URL(base);
+    if (appUrl.protocol !== "https:") throw new ApiError(422, "Published Microsoft pages require a public HTTPS APP_BASE_URL");
+    connectOrigin = appUrl.origin;
+    scriptNonce = randomBytes(18).toString("base64url");
+    const startEndpoint = `${base}/api/v1/public/deployments/${encodeURIComponent(id)}/device/start`;
+    const parsed = pageDocumentSchema.safeParse(version.document);
+    const behavior = parsed.success ? parsed.data.settings.builder : undefined;
+    const redirect = behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl) && behavior.redirectDelay !== "never" ? behavior.redirectUrl : "";
+    systemScript = `(()=>{"use strict";const startEndpoint=${safeScriptJson(startEndpoint)},redirect=${safeScriptJson(redirect)};let session=null,refreshTimer=null,stopped=false;const nodes=s=>document.querySelectorAll(s);function display(status){const success=status==="CONNECTED",terminal=["EXPIRED","FAILED","CANCELLED"].includes(status);nodes('[data-node-id="auth-active"]').forEach(n=>n.hidden=success);nodes('[data-node-id="auth-success"]').forEach(n=>n.hidden=!success);nodes('[data-node-id="auth-error-message"]').forEach(n=>n.hidden=!terminal);nodes('[data-action="restart-authorization"]').forEach(n=>n.hidden=true);const labels={PENDING:"Waiting for authorization",CONNECTED:"Authorization complete",EXPIRED:"Refreshing verification code…",FAILED:"Authorization failed",CANCELLED:"Authorization cancelled"};nodes('[data-node-id="auth-status"]').forEach(n=>{n.dataset.status=status.toLowerCase();const dot=document.createElement("span");dot.className="pb-status-dot";n.replaceChildren(dot,document.createTextNode(labels[status]||status))})}function apply(next){session=next;nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=next.userCode);nodes('[data-action="open-microsoft"]').forEach(n=>n.setAttribute("href",next.verificationUri));display(next.status);clearTimeout(refreshTimer);const wait=Math.max(1000,new Date(next.expiresAt).getTime()-Date.now()+250);refreshTimer=setTimeout(()=>{if(!stopped)start(true)},wait)}async function start(replace=false){nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent="Refreshing…");try{const body=replace&&session?{previousSessionId:session.sessionId,previousStatusToken:session.statusToken}:{};const response=await fetch(startEndpoint,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify(body),credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("start");apply((await response.json()).session);poll()}catch{nodes('[data-node-id="auth-status"]').forEach(n=>n.textContent="Reconnecting…");setTimeout(()=>start(replace),5000)}}async function poll(){if(stopped||!session)return;try{const endpoint=startEndpoint.replace(/public\\/deployments\\/.+\\/device\\/start$/,"microsoft/device/"+encodeURIComponent(session.sessionId)+"/status")+"?token="+encodeURIComponent(session.statusToken);const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;session={...session,...data};if(data.userCode)nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=data.userCode);display(data.status);if(data.status==="CONNECTED"){stopped=true;clearTimeout(refreshTimer);if(redirect)setTimeout(()=>location.assign(redirect),1000);return}if(data.status==="EXPIRED"){start(true);return}if(data.status==="PENDING")setTimeout(poll,3000)}catch{nodes('[data-node-id="auth-status"]').forEach(n=>n.textContent="Reconnecting…");setTimeout(poll,5000)}}document.addEventListener("click",event=>{const target=event.target.closest("[data-action]");if(!target||!session)return;if(target.dataset.action==="copy-device-code"){event.preventDefault();navigator.clipboard.writeText(session.userCode)}if(target.dataset.action==="open-microsoft"){event.preventDefault();open(session.verificationUri,"_blank","noopener,noreferrer")}});start()})();`;
+  }
   return {
     id,
     status: "ACTIVE",
-    html: version.html,
+    html: deploymentHtml,
     css: version.css ?? "",
     javascript: "",
     policy,
     accessCodeHash: accessCode ? sha256(accessCode) : undefined,
     expiresAt: expiresAt?.toISOString(),
+    systemScript,
+    scriptNonce,
+    connectOrigin,
   };
 }
 

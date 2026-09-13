@@ -27,7 +27,7 @@ describe("focused visual page designs", () => {
         const document = buildPageDesign(configuration);
         expect(document.settings.builder?.layoutId).toBe(design.id);
         expect(document.settings.builder?.provider).toBe(provider);
-        expect(renderPageDocument(document).html).toContain(providerProfiles[provider].name === "Custom Provider" ? "Company Portal" : providerProfiles[provider].name);
+        expect(renderPageDocument(document).html).toContain(["company", "custom"].includes(provider) ? "Your Company" : providerProfiles[provider].name);
       }
     }
   });
@@ -53,12 +53,32 @@ describe("focused visual page designs", () => {
     expect(isSafeRedirectUrl("file:///tmp/test")).toBe(false);
   });
 
-  it("only exposes restart in terminal authorization previews", () => {
+  it("does not expose manual code-generation controls in authorization previews", () => {
     const document = buildPageDesign(defaultBuilderConfiguration("compact-card"));
     const waiting = renderPageDocument(document, { status: "waiting" }).html;
     const expired = renderPageDocument(document, { status: "expired" }).html;
-    expect(waiting).toMatch(/data-action="restart-authorization" hidden/);
-    expect(expired).toMatch(/data-action="restart-authorization" >/);
+    expect(waiting).not.toContain('data-action="restart-authorization"');
+    expect(expired).not.toContain('data-action="restart-authorization"');
+  });
+
+  it("replaces active authorization controls in the success preview", () => {
+    const configuration = { ...defaultBuilderConfiguration("compact-card"), redirectUrl: "https://company.example/complete" };
+    const document = buildPageDesign(configuration, "success");
+    const success = renderPageDocument(document, { status: "success" }).html;
+    expect(success).toContain("Authorization Complete");
+    expect(success).toContain("company.example");
+    expect(success).not.toContain("XXXX-XXXX");
+    expect(success).not.toContain('data-action="open-microsoft"');
+  });
+
+  it("keeps the official Microsoft device action and deliberate provider identity in every design", () => {
+    for (const design of pageDesigns) {
+      const configuration = defaultBuilderConfiguration(design.id, "sharepoint");
+      expect(configuration.continueButtonText).toBe("Continue to Microsoft");
+      const nodes = flatten(buildPageDesign(configuration).nodes);
+      expect(nodes.some((node) => node.type === "providerLogo" || node.type === "logo"), design.name).toBe(true);
+      expect(renderPageDocument(buildPageDesign(configuration)).html).toContain("Continue to Microsoft");
+    }
   });
 });
 
