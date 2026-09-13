@@ -72,6 +72,19 @@ export async function currentUser() {
   return { ...session.user, sessionRoleOverride: session.roleOverride };
 }
 
+export async function revokeCurrentSession(): Promise<void> {
+  const jar = await cookies();
+  const token = jar.get(SESSION_COOKIE)?.value;
+  if (token) {
+    await db.session.updateMany({
+      where: { tokenHash: sha256(token), revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+  jar.delete(SESSION_COOKIE);
+  jar.delete(CSRF_COOKIE);
+}
+
 export async function requirePermission(permission: string) {
   const user = await currentUser();
   if (!user) throw new ApiError(401, "Authentication required");

@@ -4,10 +4,10 @@ import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
 import { AccessRole } from "@/generated/prisma/client";
-import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission } from "@/lib/auth";
+import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { config } from "@/lib/config";
-import { hashSecret, randomAccessCode, verifySecret } from "@/lib/crypto";
+import { encrypt, hashSecret, randomAccessCode, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { authorizationStatus, GraphError, graphFetch, startDeviceAuthorization } from "@/lib/microsoft";
 
@@ -22,6 +22,12 @@ const messageBody = z.object({
   contentType: z.enum(["Text", "HTML"]).default("HTML"),
   toRecipients: z.array(z.string().email()).min(1).max(50),
   ccRecipients: z.array(z.string().email()).max(50).default([]),
+  bccRecipients: z.array(z.string().email()).max(50).default([]),
+  attachments: z.array(z.object({
+    name: z.string().min(1).max(255),
+    contentType: z.string().min(1).max(150),
+    contentBytes: z.string().max(5_000_000),
+  })).max(10).default([]),
 });
 
 export async function GET(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
@@ -68,6 +74,13 @@ async function route(request: NextRequest, path: string[]) {
     const user = await currentUser();
     return Response.json({ user: user ? safeUser(user) : null });
   }
+  if (key === "POST /auth/logout") {
+    const actor = await currentUser();
+    await revokeCurrentSession();
+    if (actor) await audit({ actorId: actor.id, action: "auth.logout", targetType: "Session", result: "SUCCESS" });
+    return new Response(null, { status: 204 });
+  }
+  if (key === "GET /dashboard") return dashboard();
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
     const publicId = await startDeviceAuthorization();
@@ -104,10 +117,24 @@ async function route(request: NextRequest, path: string[]) {
     });
     return Response.json({ accounts });
   }
+  if (path[0] === "microsoft" && path[1] === "accounts" && path[2]) {
+    return microsoftAccountRoute(request, path[2]);
+  }
   if (key === "GET /audit") {
     await requirePermission("audit:read");
-    const events = await db.auditEvent.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
-    return Response.json({ events });
+    const query = request.nextUrl.searchParams;
+    const page = Math.max(1, Number(query.get("page")) || 1);
+    const where = {
+      ...(query.get("action") ? { action: { contains: query.get("action")!, mode: "insensitive" as const } } : {}),
+      ...(query.get("result") ? { result: query.get("result")! } : {}),
+      ...(query.get("connectionId") ? { connectionId: query.get("connectionId")! } : {}),
+      ...(query.get("actorId") ? { actorId: query.get("actorId")! } : {}),
+    };
+    const [events, total] = await Promise.all([
+      db.auditEvent.findMany({ where, orderBy: { createdAt: "desc" }, skip: (page - 1) * 50, take: 50, include: { actor: { select: { email: true, displayName: true } } } }),
+      db.auditEvent.count({ where }),
+    ]);
+    return Response.json({ events, page, total, pages: Math.ceil(total / 50) });
   }
   if (key === "GET /system/status") {
     await requirePermission("system:read");
@@ -122,7 +149,15 @@ async function route(request: NextRequest, path: string[]) {
       version: process.env.npm_package_version ?? "0.1.0",
     });
   }
+  if (key === "GET /internal/users") {
+    await requirePermission("*");
+    const users = await db.user.findMany({ orderBy: { email: "asc" }, select: { id: true, email: true, displayName: true, status: true } });
+    return Response.json({ users });
+  }
   if (key === "POST /access-codes") return createAccessCode(request);
+  if (key === "GET /access-codes") return listAccessCodes();
+  if (path[0] === "access-codes" && path[1] && request.method === "DELETE") return revokeAccessCode(path[1]);
+  if (path[0] === "diagnostics" && path[1]) return microsoftDiagnostics(request, path[1]);
 
   if (path[0] === "mail" && path[1]) return mailRoute(request, path);
   throw new ApiError(404, "API route not found");
@@ -183,6 +218,217 @@ async function login(request: NextRequest) {
   return Response.json({ user: safeUser(user), csrfToken: session.csrfToken });
 }
 
+async function dashboard() {
+  await requirePermission("microsoft:read");
+  const now = new Date();
+  const [connections, activeAccessCodes, htmlProjects, activeDeployments, recentEvents] = await Promise.all([
+    db.microsoftConnection.findMany({
+      select: { id: true, authorizationStatus: true, displayName: true, userPrincipalName: true, lastSuccessfulGraphAt: true },
+      orderBy: { connectedAt: "desc" },
+    }),
+    db.accessCode.count({ where: { revokedAt: null, expiresAt: { gt: now } } }),
+    db.htmlProject.count({ where: { status: { not: "ARCHIVED" } } }),
+    db.cloudflareDeployment.count({ where: { status: "ACTIVE", OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] } }),
+    db.auditEvent.findMany({ orderBy: { createdAt: "desc" }, take: 8, include: { actor: { select: { displayName: true, email: true } } } }),
+  ]);
+  const mailboxStats = await Promise.all(
+    connections
+      .filter((connection) => connection.authorizationStatus === "CONNECTED")
+      .map(async (connection) => {
+        try {
+          const inbox = await graphFetch<{ unreadItemCount: number }>(connection.id, "/me/mailFolders/inbox?$select=unreadItemCount");
+          return { unread: inbox.unreadItemCount, healthy: true };
+        } catch {
+          return { unread: 0, healthy: false };
+        }
+      }),
+  );
+  const recentSends = await db.auditEvent.count({
+    where: { action: "mail.message.sent", createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+  });
+  return Response.json({
+    metrics: {
+      connectedAccounts: connections.length,
+      healthyConnections: mailboxStats.filter((item) => item.healthy).length,
+      reauthenticationRequired: connections.filter((item) => item.authorizationStatus === "REAUTHENTICATION_REQUIRED").length,
+      unreadMail: mailboxStats.reduce((sum, item) => sum + item.unread, 0),
+      sharedMailboxes: 0,
+      recentSends,
+      activeDeployments,
+      htmlProjects,
+      activeAccessCodes,
+    },
+    health: {
+      database: "HEALTHY",
+      microsoftGraph: mailboxStats.length === 0 ? "NOT_TESTED" : mailboxStats.some((item) => item.healthy) ? "HEALTHY" : "DEGRADED",
+      encryption: process.env.ENCRYPTION_KEY ? "CONFIGURED" : "MISSING",
+      cloudflare: process.env.CLOUDFLARE_API_TOKEN ? "CONFIGURED" : "NOT_CONFIGURED",
+    },
+    connections: connections.slice(0, 5),
+    recentEvents,
+  });
+}
+
+async function microsoftAccountRoute(request: NextRequest, rawConnectionId: string) {
+  const connectionId = id.parse(rawConnectionId);
+  if (request.method === "GET") {
+    await requirePermission("microsoft:read");
+    const account = await db.microsoftConnection.findUnique({
+      where: { id: connectionId },
+      select: {
+        id: true,
+        tenantId: true,
+        microsoftUserId: true,
+        displayName: true,
+        userPrincipalName: true,
+        email: true,
+        connectedAt: true,
+        lastSuccessfulGraphAt: true,
+        authorizationStatus: true,
+        grantedScopes: true,
+        tenantDisplayName: true,
+        adminRoleSummary: true,
+        owner: { select: { id: true, email: true, displayName: true } },
+        mailboxes: { select: { id: true, address: true, displayName: true, isShared: true } },
+        auditEvents: { orderBy: { createdAt: "desc" }, take: 30 },
+      },
+    });
+    if (!account) throw new ApiError(404, "Microsoft account not found");
+    return Response.json({
+      account: {
+        ...account,
+        tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
+        mailboxAvailability: account.authorizationStatus === "CONNECTED" ? "AVAILABLE" : "UNAVAILABLE",
+        capabilities: capabilitiesFromScopes(account.grantedScopes),
+      },
+    });
+  }
+  if (request.method === "DELETE") {
+    const actor = await requirePermission("microsoft:manage");
+    const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId } });
+    if (!connection) throw new ApiError(404, "Microsoft account not found");
+    await db.microsoftConnection.update({
+      where: { id: connectionId },
+      data: {
+        authorizationStatus: "REVOKED",
+        encryptedTokenCache: encrypt("{}", `msal:${connection.tenantId}:${connection.microsoftUserId}`),
+      },
+    });
+    await audit({ actorId: actor.id, connectionId, action: "microsoft.connection.disconnected", targetType: "MicrosoftConnection", targetId: connectionId, result: "SUCCESS" });
+    return new Response(null, { status: 204 });
+  }
+  throw new ApiError(405, "Method not allowed");
+}
+
+async function listAccessCodes() {
+  await requirePermission("*");
+  const codes = await db.accessCode.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 100,
+    select: {
+      id: true,
+      createdAt: true,
+      expiresAt: true,
+      maximumUses: true,
+      usedCount: true,
+      allowedUserId: true,
+      allowedRole: true,
+      allowedIpRange: true,
+      revokedAt: true,
+      lastUsedAt: true,
+      description: true,
+      createdBy: { select: { displayName: true, email: true } },
+    },
+  });
+  return Response.json({ codes });
+}
+
+async function revokeAccessCode(rawId: string) {
+  const actor = await requirePermission("*");
+  const accessCodeId = id.parse(rawId);
+  await db.accessCode.update({ where: { id: accessCodeId }, data: { revokedAt: new Date() } });
+  await audit({ actorId: actor.id, action: "access_code.revoked", targetType: "AccessCode", targetId: accessCodeId, result: "SUCCESS" });
+  return new Response(null, { status: 204 });
+}
+
+function capabilitiesFromScopes(scopes: string[]) {
+  const normalized = new Set(scopes.map((scope) => scope.toLowerCase()));
+  return {
+    readMail: normalized.has("mail.read") || normalized.has("mail.readwrite"),
+    writeMail: normalized.has("mail.readwrite"),
+    sendMail: normalized.has("mail.send"),
+    mailboxSettings: normalized.has("mailboxsettings.read") || normalized.has("mailboxsettings.readwrite"),
+    directory: normalized.has("user.readbasic.all") || normalized.has("user.read.all"),
+    sharedMail: normalized.has("mail.readwrite.shared") || normalized.has("mail.send.shared"),
+  };
+}
+
+async function microsoftDiagnostics(request: NextRequest, rawConnectionId: string) {
+  const connectionId = id.parse(rawConnectionId);
+  await requirePermission("microsoft:read");
+  if (request.method === "POST") {
+    await requirePermission("mail:send");
+    const { recipient } = z.object({ recipient: z.string().email() }).parse(await request.json());
+    await graphFetch(connectionId, "/me/sendMail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: {
+          subject: "Company Control live diagnostics",
+          body: { contentType: "Text", content: "This message confirms the approved Microsoft Graph Mail.Send integration." },
+          toRecipients: [{ emailAddress: { address: recipient } }],
+        },
+        saveToSentItems: true,
+      }),
+    });
+    return Response.json({ test: "send", status: "PASS" });
+  }
+  const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
+  const checks: Array<{ id: string; label: string; path: string; requiredScope: string }> = [
+    { id: "profile", label: "Microsoft /me profile", path: "/me?$select=id,displayName,userPrincipalName", requiredScope: "User.Read" },
+    { id: "inbox", label: "Inbox listing", path: "/me/mailFolders/inbox/messages?$top=1&$select=id,subject", requiredScope: "Mail.ReadWrite" },
+    { id: "settings", label: "Mailbox settings", path: "/me/mailboxSettings?$select=timeZone,language", requiredScope: "MailboxSettings.ReadWrite" },
+    { id: "rules", label: "Inbox rules", path: "/me/mailFolders/inbox/messageRules", requiredScope: "MailboxSettings.ReadWrite" },
+  ];
+  const granted = new Set(connection.grantedScopes.map((scope) => scope.toLowerCase()));
+  const results = [];
+  for (const check of checks) {
+    if (!granted.has(check.requiredScope.toLowerCase())) {
+      results.push({ id: check.id, label: check.label, status: "REQUIRES_PERMISSION", requiredScope: check.requiredScope });
+      continue;
+    }
+    try {
+      await graphFetch(connectionId, check.path);
+      results.push({ id: check.id, label: check.label, status: "PASS", requiredScope: check.requiredScope });
+    } catch (error) {
+      results.push({
+        id: check.id,
+        label: check.label,
+        status: error instanceof GraphError && error.status === 403 ? "REQUIRES_PERMISSION" : "FAIL",
+        requiredScope: check.requiredScope,
+        error: error instanceof Error ? error.message : "Microsoft request failed",
+        microsoftCode: error instanceof GraphError ? error.code : undefined,
+      });
+    }
+  }
+  for (const optional of [
+    { id: "directory", label: "Organization directory", requiredScope: "User.ReadBasic.All", path: "/users?$top=1&$select=id,displayName,userPrincipalName" },
+    { id: "shared", label: "Shared mailbox permissions", requiredScope: "Mail.ReadWrite.Shared", path: "/me?$select=id" },
+  ]) {
+    if (!granted.has(optional.requiredScope.toLowerCase())) {
+      results.push({ ...optional, status: "REQUIRES_PERMISSION" });
+    } else {
+      try {
+        await graphFetch(connectionId, optional.path);
+        results.push({ ...optional, status: "PASS" });
+      } catch (error) {
+        results.push({ ...optional, status: "FAIL", error: error instanceof Error ? error.message : "Microsoft request failed" });
+      }
+    }
+  }
+  return Response.json({ connection: { id: connection.id, displayName: connection.displayName, userPrincipalName: connection.userPrincipalName, authorizationStatus: connection.authorizationStatus }, results });
+}
+
 async function bootstrapAdmin() {
   const role = await db.internalRole.upsert({
     where: { role: AccessRole.SUPER_ADMIN },
@@ -236,12 +482,17 @@ async function mailRoute(request: NextRequest, path: string[]) {
   const tail = path.slice(2);
   const query = request.nextUrl.searchParams;
 
+  if (request.method === "GET" && tail[0] === "folders") {
+    const data = await graphFetch<GraphCollection<Record<string, unknown>>>(
+      connectionId,
+      "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden&includeHiddenFolders=true",
+    );
+    return Response.json({ folders: data.value });
+  }
   if (request.method === "GET" && tail[0] === "messages" && !tail[1]) {
     const nextLink = query.get("nextLink");
     const folder = encodeURIComponent(query.get("folder") ?? "inbox");
-    const graphPath =
-      nextLink ??
-      `/me/mailFolders/${folder}/messages?$top=30&$select=id,subject,from,toRecipients,receivedDateTime,isRead,hasAttachments,importance,bodyPreview,webLink&$orderby=receivedDateTime desc`;
+    const graphPath = nextLink ?? messageListPath(folder, query);
     const data = await graphFetch<GraphCollection<Record<string, unknown>>>(connectionId, graphPath);
     return Response.json({ messages: data.value, nextLink: data["@odata.nextLink"] ?? null });
   }
@@ -329,6 +580,67 @@ async function mailRoute(request: NextRequest, path: string[]) {
     });
     return new Response(null, { status: 204 });
   }
+  if (request.method === "POST" && tail[0] === "messages" && tail[1] && tail[2] === "reply-all") {
+    await requirePermission("mail:send");
+    const input = z.object({ comment: z.string().min(1).max(500_000) }).parse(await request.json());
+    await graphFetch(connectionId, `/me/messages/${encodeURIComponent(id.parse(tail[1]))}/replyAll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    await audit({ actorId: actor.id, connectionId, action: "mail.message.reply_all", targetType: "Message", targetId: tail[1], result: "SUCCESS" });
+    return new Response(null, { status: 204 });
+  }
+  if (request.method === "POST" && tail[0] === "messages" && tail[1] && tail[2] === "forward") {
+    await requirePermission("mail:send");
+    const input = z.object({ comment: z.string().max(500_000), toRecipients: z.array(z.string().email()).min(1).max(50) }).parse(await request.json());
+    await graphFetch(connectionId, `/me/messages/${encodeURIComponent(id.parse(tail[1]))}/forward`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comment: input.comment, toRecipients: input.toRecipients.map((address) => ({ emailAddress: { address } })) }),
+    });
+    await audit({ actorId: actor.id, connectionId, action: "mail.message.forwarded", targetType: "Message", targetId: tail[1], result: "SUCCESS", metadata: { recipientCount: input.toRecipients.length } });
+    return new Response(null, { status: 204 });
+  }
+  if (request.method === "PATCH" && tail[0] === "messages" && tail[1] && tail.length === 2) {
+    const input = z.object({
+      isRead: z.boolean().optional(),
+      flag: z.object({ flagStatus: z.enum(["notFlagged", "complete", "flagged"]) }).optional(),
+      importance: z.enum(["low", "normal", "high"]).optional(),
+    }).strict().parse(await request.json());
+    const message = await graphFetch(connectionId, `/me/messages/${encodeURIComponent(id.parse(tail[1]))}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    await audit({ actorId: actor.id, connectionId, action: "mail.message.updated", targetType: "Message", targetId: tail[1], result: "SUCCESS", metadata: { fields: Object.keys(input).join(",") } });
+    return Response.json({ message });
+  }
+  if (request.method === "DELETE" && tail[0] === "messages" && tail[1] && tail.length === 2) {
+    await graphFetch(connectionId, `/me/messages/${encodeURIComponent(id.parse(tail[1]))}`, { method: "DELETE" });
+    await audit({ actorId: actor.id, connectionId, action: "mail.message.deleted", targetType: "Message", targetId: tail[1], result: "SUCCESS" });
+    return new Response(null, { status: 204 });
+  }
+  if (request.method === "POST" && tail[0] === "messages" && tail[1] && tail[2] === "move") {
+    const input = z.object({ destinationId: z.string().min(1).max(256) }).parse(await request.json());
+    const message = await graphFetch(connectionId, `/me/messages/${encodeURIComponent(id.parse(tail[1]))}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    await audit({ actorId: actor.id, connectionId, action: "mail.message.moved", targetType: "Message", targetId: tail[1], result: "SUCCESS", metadata: { destinationId: input.destinationId } });
+    return Response.json({ message });
+  }
+  if (request.method === "POST" && tail[0] === "drafts") {
+    const input = messageBody.partial({ toRecipients: true }).extend({ toRecipients: z.array(z.string().email()).max(50).default([]) }).parse(await request.json());
+    const draft = await graphFetch(connectionId, "/me/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(graphMessage(input)),
+    });
+    await audit({ actorId: actor.id, connectionId, action: "mail.draft.created", targetType: "Message", result: "SUCCESS" });
+    return Response.json({ draft }, { status: 201 });
+  }
   if (request.method === "GET" && tail[0] === "settings") {
     const settings = await graphFetch(connectionId, "/me/mailboxSettings");
     return Response.json({ settings });
@@ -339,6 +651,9 @@ async function mailRoute(request: NextRequest, path: string[]) {
         timeZone: z.string().max(100).optional(),
         language: z.object({ locale: z.string(), displayName: z.string() }).optional(),
         automaticRepliesSetting: z.record(z.string(), z.unknown()).optional(),
+        dateFormat: z.string().max(50).optional(),
+        timeFormat: z.string().max(50).optional(),
+        workingHours: z.record(z.string(), z.unknown()).optional(),
       })
       .strict()
       .parse(await request.json());
@@ -417,6 +732,35 @@ const ruleSchema = z.object({
 
 type GraphCollection<T> = { value: T[]; "@odata.nextLink"?: string };
 
+function messageListPath(folder: string, query: URLSearchParams) {
+  const params = new URLSearchParams({
+    "$top": "30",
+    "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,importance,bodyPreview,webLink,flag",
+  });
+  const searchTerms: string[] = [];
+  const safeSearch = (value: string) => value.replaceAll('"', "").replace(/[^\p{L}\p{N}@._+\-\s]/gu, "").slice(0, 150);
+  if (query.get("keyword")) searchTerms.push(safeSearch(query.get("keyword")!));
+  if (query.get("sender")) searchTerms.push(`from:${safeSearch(query.get("sender")!)}`);
+  if (query.get("recipient")) searchTerms.push(`recipients:${safeSearch(query.get("recipient")!)}`);
+  if (query.get("subject")) searchTerms.push(`subject:${safeSearch(query.get("subject")!)}`);
+  if (searchTerms.length) {
+    params.set("$search", `"${searchTerms.join(" AND ")}"`);
+  } else {
+    params.set("$orderby", "receivedDateTime desc");
+  }
+  const filters: string[] = [];
+  if (query.get("read") === "true" || query.get("read") === "false") filters.push(`isRead eq ${query.get("read")}`);
+  if (query.get("hasAttachments") === "true") filters.push("hasAttachments eq true");
+  if (["low", "normal", "high"].includes(query.get("importance") ?? "")) filters.push(`importance eq '${query.get("importance")}'`);
+  if (query.get("flagged") === "true") filters.push("flag/flagStatus eq 'flagged'");
+  for (const [parameter, operator] of [["fromDate", "ge"], ["toDate", "le"]] as const) {
+    const value = query.get(parameter);
+    if (value && !Number.isNaN(Date.parse(value))) filters.push(`receivedDateTime ${operator} ${new Date(value).toISOString()}`);
+  }
+  if (filters.length) params.set("$filter", filters.join(" and "));
+  return `/me/mailFolders/${folder}/messages?${params.toString()}`;
+}
+
 function graphMessage(input: z.infer<typeof messageBody>) {
   const recipients = (values: string[]) => values.map((address) => ({ emailAddress: { address } }));
   return {
@@ -424,6 +768,11 @@ function graphMessage(input: z.infer<typeof messageBody>) {
     body: { contentType: input.contentType, content: input.contentType === "HTML" ? sanitizeEmail(input.body) : input.body },
     toRecipients: recipients(input.toRecipients),
     ccRecipients: recipients(input.ccRecipients),
+    bccRecipients: recipients(input.bccRecipients),
+    attachments: input.attachments.map((attachment) => ({
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      ...attachment,
+    })),
   };
 }
 
