@@ -49,6 +49,11 @@ enum DeploymentStatus {
   FAILED
 }
 
+enum AccessCodePurpose {
+  APPLICATION
+  DEPLOYMENT
+}
+
 model User {
   id                   String                @id @default(cuid())
   email                String                @unique
@@ -109,10 +114,14 @@ model AccessCode {
   revokedAt      DateTime?
   lastUsedAt     DateTime?
   description    String?
+  purpose        AccessCodePurpose @default(APPLICATION)
+  deploymentId   String?
   createdAt      DateTime   @default(now())
   createdBy      User       @relation("AccessCodeCreator", fields: [createdById], references: [id])
+  deployment     CloudflareDeployment? @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt, revokedAt])
+  @@index([deploymentId])
 }
 
 model MicrosoftConnection {
@@ -253,6 +262,7 @@ model CloudflareDeployment {
   updatedAt   DateTime         @updatedAt
   project     HtmlProject      @relation(fields: [projectId], references: [id])
   domain      Domain?          @relation(fields: [domainId], references: [id])
+  accessCodes AccessCode[]
 }
 
 model AuditEvent {

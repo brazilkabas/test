@@ -16,6 +16,7 @@ type CodeRecord = {
   revokedAt: string | null;
   lastUsedAt: string | null;
   description: string | null;
+  purpose: string;
   createdBy: { displayName: string | null; email: string };
 };
 
@@ -79,9 +80,9 @@ export function AccessCodeAdmin() {
     <>
       <div className="page-header"><div><h1>Access codes</h1><p className="muted">Temporary internal application access. These codes are never Microsoft credentials.</p></div><button onClick={() => setCreateOpen(true)}>+ Generate code</button></div>
       <section className="panel">
-        {loading ? <div className="panel-body"><Skeleton lines={6} /></div> : codes.length === 0 ? <EmptyState icon="⌁" title="No access codes" description="Generate a one-time or temporary reusable access code." action={<button onClick={() => setCreateOpen(true)}>Generate code</button>} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Description</th><th>Status</th><th>Role</th><th>Usage</th><th>Expires</th><th>IP restriction</th><th>Last used</th><th /></tr></thead><tbody>{codes.map((code) => {
+        {loading ? <div className="panel-body"><Skeleton lines={6} /></div> : codes.length === 0 ? <EmptyState icon="⌁" title="No access codes" description="Generate a one-time or temporary reusable access code." action={<button onClick={() => setCreateOpen(true)}>Generate code</button>} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Description</th><th>Purpose</th><th>Status</th><th>Role</th><th>Usage</th><th>Expires</th><th>IP restriction</th><th>Last used</th><th /></tr></thead><tbody>{codes.map((code) => {
           const state = code.revokedAt ? "Revoked" : new Date(code.expiresAt) <= new Date() ? "Expired" : code.usedCount >= code.maximumUses ? "Exhausted" : "Active";
-          return <tr key={code.id}><td><strong>{code.description ?? "Temporary access"}</strong><br /><small className="muted">Created by {code.createdBy.displayName ?? code.createdBy.email}</small></td><td><StatusBadge status={state} /></td><td>{code.allowedRole?.replaceAll("_", " ") ?? "Creator role"}</td><td>{code.usedCount} / {code.maximumUses}</td><td>{new Date(code.expiresAt).toLocaleString()}</td><td>{code.allowedIpRange ?? "Any"}</td><td>{code.lastUsedAt ? new Date(code.lastUsedAt).toLocaleString() : "Never"}</td><td>{state === "Active" && <button className="secondary button-sm" onClick={() => setRevoke(code)}>Revoke</button>}</td></tr>;
+          return <tr key={code.id}><td><strong>{code.description ?? "Temporary access"}</strong><br /><small className="muted">Created by {code.createdBy.displayName ?? code.createdBy.email}</small></td><td>{code.purpose}</td><td><StatusBadge status={state} /></td><td>{code.purpose === "APPLICATION" ? code.allowedRole?.replaceAll("_", " ") ?? "Creator role" : "Deployment only"}</td><td>{code.usedCount} / {code.maximumUses}</td><td>{new Date(code.expiresAt).toLocaleString()}</td><td>{code.allowedIpRange ?? "Any"}</td><td>{code.lastUsedAt ? new Date(code.lastUsedAt).toLocaleString() : "Never"}</td><td>{state === "Active" && <button className="secondary button-sm" onClick={() => setRevoke(code)}>Revoke</button>}</td></tr>;
         })}</tbody></table></div>}
       </section>
       <Modal open={createOpen} title="Generate access code" onClose={() => setCreateOpen(false)}>

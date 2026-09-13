@@ -188,7 +188,7 @@ async function login(request: NextRequest) {
     user = await bootstrapAdmin();
   } else {
     const candidates = await db.accessCode.findMany({
-      where: { revokedAt: null, expiresAt: { gt: new Date() } },
+      where: { purpose: "APPLICATION", revokedAt: null, expiresAt: { gt: new Date() } },
       include: { createdBy: true },
       take: 100,
     });
@@ -375,6 +375,8 @@ async function listAccessCodes() {
       revokedAt: true,
       lastUsedAt: true,
       description: true,
+      purpose: true,
+      deploymentId: true,
       createdBy: { select: { displayName: true, email: true } },
     },
   });
@@ -384,7 +386,11 @@ async function listAccessCodes() {
 async function revokeAccessCode(rawId: string) {
   const actor = await requirePermission("*");
   const accessCodeId = id.parse(rawId);
-  await db.accessCode.update({ where: { id: accessCodeId }, data: { revokedAt: new Date() } });
+  const code = await db.accessCode.update({ where: { id: accessCodeId }, data: { revokedAt: new Date() }, include: { deployment: true } });
+  if (code.deployment) {
+    await publishDeployment(code.deployment.hostname, { status: "DISABLED" });
+    await db.cloudflareDeployment.update({ where: { id: code.deployment.id }, data: { status: "DISABLED", accessPolicy: { type: "ACCESS_CODE", codeHash: "REVOKED" } } });
+  }
   await audit({ actorId: actor.id, action: "access_code.revoked", targetType: "AccessCode", targetId: accessCodeId, result: "SUCCESS" });
   return new Response(null, { status: 204 });
 }
@@ -634,6 +640,19 @@ async function cloudflareRoute(request: NextRequest, path: string[]) {
         accessPolicy: { type: input.policy, ...(plaintextCode ? { codeHash: sha256(plaintextCode) } : {}) },
       },
     });
+    if (plaintextCode) {
+      await db.accessCode.create({
+        data: {
+          codeHash: hashSecret(plaintextCode),
+          createdById: actor.id,
+          deploymentId: deployment.id,
+          purpose: "DEPLOYMENT",
+          expiresAt: input.expiresAt ?? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          maximumUses: 100,
+          description: `Deployment access: ${hostname}`,
+        },
+      });
+    }
     try {
       await publishDeployment(hostname, deploymentPayload(deployment.id, project.versions[0], input.policy, plaintextCode, input.expiresAt));
       await db.cloudflareDeployment.update({ where: { id: deployment.id }, data: { status: "ACTIVE", deployedAt: new Date() } });
