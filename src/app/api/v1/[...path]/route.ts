@@ -582,6 +582,7 @@ async function htmlProjectRoute(request: NextRequest, path: string[]) {
       let data = Buffer.from(input.contentBytes, "base64");
       if (data.length > 7 * 1024 * 1024) throw new ApiError(413, "Asset exceeds the 7 MB limit");
       if (input.contentType === "image/svg+xml") data = Buffer.from(sanitizeSvg(data.toString("utf8")), "utf8");
+      validateAssetBytes(input.contentType, data);
       const digest = sha256(data.toString("base64"));
       const asset = await db.projectAsset.upsert({
         where: { projectId_sha256: { projectId, sha256: digest } },
@@ -656,6 +657,18 @@ function sanitizeSvg(value: string) {
     .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "")
     .replace(/\son[a-z]+\s*=\s*(['"]).*?\1/gi, "")
     .replace(/\s(?:href|xlink:href)\s*=\s*(['"])(?!#|data:image\/)[\s\S]*?\1/gi, "");
+}
+
+function validateAssetBytes(contentType: string, data: Buffer) {
+  const signatures: Record<string, boolean> = {
+    "image/png": data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+    "image/jpeg": data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff,
+    "image/webp": data.subarray(0, 4).toString() === "RIFF" && data.subarray(8, 12).toString() === "WEBP",
+    "application/pdf": data.subarray(0, 5).toString() === "%PDF-",
+    "image/svg+xml": data.toString("utf8").trimStart().startsWith("<svg"),
+    "text/css": !data.includes(0),
+  };
+  if (!signatures[contentType]) throw new ApiError(400, `Uploaded data does not match ${contentType}`);
 }
 
 async function cloudflareRoute(request: NextRequest, path: string[]) {

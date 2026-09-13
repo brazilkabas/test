@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const nodeTypes = [
   "section", "header", "footer", "columns", "card", "heading", "text", "button",
-  "image", "providerLogo", "deviceCode", "status", "steps", "resourceCard",
+  "image", "logo", "providerLogo", "deviceCode", "status", "steps", "resourceCard",
   "divider", "badge", "callout", "navigation",
 ] as const;
 export type PageNodeType = (typeof nodeTypes)[number];
@@ -14,6 +14,8 @@ export type NodeStyle = {
   fontFamily?: string;
   fontSize?: string;
   fontWeight?: string;
+  fontStyle?: string;
+  textDecoration?: string;
   lineHeight?: string;
   letterSpacing?: string;
   textAlign?: "left" | "center" | "right";
@@ -28,6 +30,7 @@ export type NodeStyle = {
   gap?: string;
   alignItems?: string;
   justifyContent?: string;
+  gridTemplateColumns?: string;
 };
 
 export type PageNode = {
@@ -42,6 +45,7 @@ export type PageNode = {
   src?: string;
   alt?: string;
   icon?: string;
+  targetBlank?: boolean;
   statusKind?: "waiting" | "connected" | "expired" | "failed" | "success" | "processing";
   items?: string[];
   style?: NodeStyle;
@@ -78,6 +82,8 @@ const styleSchema = z.object({
   fontFamily: z.string().max(200).optional(),
   fontSize: z.string().max(50).optional(),
   fontWeight: z.string().max(30).optional(),
+  fontStyle: z.string().max(30).optional(),
+  textDecoration: z.string().max(60).optional(),
   lineHeight: z.string().max(30).optional(),
   letterSpacing: z.string().max(30).optional(),
   textAlign: z.enum(["left", "center", "right"]).optional(),
@@ -92,6 +98,7 @@ const styleSchema = z.object({
   gap: z.string().max(60).optional(),
   alignItems: z.string().max(30).optional(),
   justifyContent: z.string().max(30).optional(),
+  gridTemplateColumns: z.string().max(120).optional(),
 }).strict();
 
 export const pageNodeSchema: z.ZodType<PageNode> = z.lazy(() => z.object({
@@ -106,6 +113,7 @@ export const pageNodeSchema: z.ZodType<PageNode> = z.lazy(() => z.object({
   src: z.string().max(2_000_000).optional(),
   alt: z.string().max(500).optional(),
   icon: z.string().max(30).optional(),
+  targetBlank: z.boolean().optional(),
   statusKind: z.enum(["waiting", "connected", "expired", "failed", "success", "processing"]).optional(),
   items: z.array(z.string().max(2000)).max(30).optional(),
   style: styleSchema.optional(),
@@ -169,13 +177,16 @@ function renderNode(node: PageNode, options: { deviceCode?: string; verification
     case "text": return `<div ${attrs}>${safeRichText(node.content ?? "Text")}</div>`;
     case "button": {
       const href = node.action === "open-microsoft" ? options.verificationUri ?? "#" : node.href ?? "#";
-      return `<a ${attrs} href="${escapeAttribute(safeUrl(href))}" ${node.action === "open-url" ? 'target="_blank" rel="noopener noreferrer"' : ""} data-action="${node.action ?? "open-url"}">${node.icon ? `${escapeHtml(node.icon)} ` : ""}${escapeHtml(node.content ?? "Button")}</a>`;
+      return `<a ${attrs} href="${escapeAttribute(safeUrl(href))}" ${node.targetBlank ? 'target="_blank" rel="noopener noreferrer"' : ""} data-action="${node.action ?? "open-url"}">${node.icon ? `${escapeHtml(node.icon)} ` : ""}${escapeHtml(node.content ?? "Button")}</a>`;
     }
-    case "image": {
+    case "image": case "logo": {
       const src = node.assetId && options.assetUrl ? options.assetUrl(node.assetId) : node.src ?? "";
       return `<img ${attrs} src="${escapeAttribute(safeUrl(src))}" alt="${escapeAttribute(node.alt ?? "")}">`;
     }
-    case "providerLogo": return `<div ${attrs}>${providerLogo(node.provider ?? "company")}</div>`;
+    case "providerLogo": {
+      const source = node.assetId && options.assetUrl ? options.assetUrl(node.assetId) : "";
+      return `<div ${attrs}>${source ? `<img src="${escapeAttribute(safeUrl(source))}" alt="${escapeAttribute(node.alt ?? "Company logo")}">` : providerLogo(node.provider ?? "company")}</div>`;
+    }
     case "deviceCode": return `<div ${attrs}><span>${escapeHtml(node.content ?? "Microsoft device code")}</span><strong data-dynamic="microsoft-device-code">${escapeHtml(options.deviceCode ?? "XXXX-XXXX")}</strong></div>`;
     case "status": {
       const kind = options.status?.toLowerCase() ?? node.statusKind ?? "waiting";
@@ -192,11 +203,11 @@ function renderNode(node: PageNode, options: { deviceCode?: string; verification
 function styleText(style: NodeStyle = {}) {
   const map: Record<keyof NodeStyle, string> = {
     background: "background", backgroundImage: "background-image", color: "color",
-    fontFamily: "font-family", fontSize: "font-size", fontWeight: "font-weight",
+    fontFamily: "font-family", fontSize: "font-size", fontWeight: "font-weight", fontStyle: "font-style", textDecoration: "text-decoration",
     lineHeight: "line-height", letterSpacing: "letter-spacing", textAlign: "text-align",
     padding: "padding", margin: "margin", width: "width", maxWidth: "max-width",
     minHeight: "min-height", border: "border", borderRadius: "border-radius",
-    boxShadow: "box-shadow", gap: "gap", alignItems: "align-items", justifyContent: "justify-content",
+    boxShadow: "box-shadow", gap: "gap", alignItems: "align-items", justifyContent: "justify-content", gridTemplateColumns: "grid-template-columns",
   };
   return Object.entries(style).map(([key, value]) => {
     if (!value) return "";
@@ -236,5 +247,5 @@ function escapeHtml(value: string) { return value.replace(/[&<>"']/g, (character
 function escapeAttribute(value: string) { return escapeHtml(value); }
 
 function baseDocumentCss(maxWidth: string) {
-  return `.visual-page{min-height:100vh;width:100%;background-size:cover;background-position:center}.visual-page>*{box-sizing:border-box}.pb-section{padding:64px 24px}.pb-section>*{max-width:${safeCss(maxWidth)};margin-left:auto;margin-right:auto}.pb-header,.pb-footer,.pb-navigation{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px 32px}.pb-columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:32px}.pb-card,.pb-callout{padding:28px;border:1px solid #dce3ef;border-radius:18px;background:#fff;box-shadow:0 16px 48px #17203312}.pb-heading{font-size:clamp(2rem,5vw,4rem);line-height:1.08;letter-spacing:-.045em;margin:0 0 18px}.pb-text{font-size:1.05rem;line-height:1.7;margin:0 0 20px}.pb-button{display:inline-flex;align-items:center;justify-content:center;padding:13px 20px;border-radius:10px;background:#3157d5;color:#fff;text-decoration:none;font-weight:700;margin:4px}.pb-image{display:block;max-width:100%;object-fit:cover}.pb-deviceCode{display:grid;gap:8px;padding:20px;border-radius:14px;background:#f1f5ff;text-align:center}.pb-deviceCode span{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em}.pb-deviceCode strong{font:800 clamp(2rem,6vw,3.4rem)/1 ui-monospace,monospace;letter-spacing:.12em}.pb-status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:99px;background:#eef2f8;font-weight:650}.pb-status-dot{width:8px;height:8px;border-radius:50%;background:#e69a18}.pb-steps{display:grid;gap:16px;counter-reset:steps;list-style:none;padding:0}.pb-steps li{display:flex;gap:12px;line-height:1.6}.pb-steps li:before{counter-increment:steps;content:counter(steps);width:28px;height:28px;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;background:#3157d5;color:#fff;font-weight:700}.pb-resourceCard{display:flex;gap:18px;padding:22px;border:1px solid #dce3ef;border-radius:14px;background:#fff}.provider-logo{display:inline-flex;align-items:center;gap:10px;font-weight:700}.provider-logo b{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:var(--provider-color);color:#fff}.pb-badge{display:inline-block;padding:6px 10px;border-radius:99px;background:#eaf0ff;color:#3157d5;font-weight:700;font-size:.75rem}.pb-divider{border:0;border-top:1px solid #dce3ef;margin:24px 0}@media(max-width:700px){.pb-hide-mobile{display:none!important}.pb-section{padding:40px 18px}.pb-header,.pb-footer{padding:16px 18px}.pb-columns{grid-template-columns:1fr}.pb-heading{font-size:2.2rem}}@media(min-width:701px){.pb-hide-desktop{display:none!important}}`;
+  return `.visual-page{min-height:100vh;width:100%;background-size:cover;background-position:center}.visual-page>*{box-sizing:border-box}.pb-section{padding:64px 24px}.pb-section>*{max-width:${safeCss(maxWidth)};margin-left:auto;margin-right:auto}.pb-header,.pb-footer,.pb-navigation{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px 32px}.pb-columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:32px}.pb-card,.pb-callout{padding:28px;border:1px solid #dce3ef;border-radius:18px;background:#fff;box-shadow:0 16px 48px #17203312}.pb-heading{font-size:clamp(2rem,5vw,4rem);line-height:1.08;letter-spacing:-.045em;margin:0 0 18px}.pb-text{font-size:1.05rem;line-height:1.7;margin:0 0 20px}.pb-button{display:inline-flex;align-items:center;justify-content:center;padding:13px 20px;border-radius:10px;background:#3157d5;color:#fff;text-decoration:none;font-weight:700;margin:4px}.pb-image{display:block;max-width:100%;object-fit:cover}.pb-logo,.pb-providerLogo img{display:block;max-width:100%;max-height:100px;object-fit:contain}.pb-deviceCode{display:grid;gap:8px;padding:20px;border-radius:14px;background:#f1f5ff;text-align:center}.pb-deviceCode span{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em}.pb-deviceCode strong{font:800 clamp(2rem,6vw,3.4rem)/1 ui-monospace,monospace;letter-spacing:.12em}.pb-status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:99px;background:#eef2f8;font-weight:650}.pb-status-dot{width:8px;height:8px;border-radius:50%;background:#e69a18}.pb-steps{display:grid;gap:16px;counter-reset:steps;list-style:none;padding:0}.pb-steps li{display:flex;gap:12px;line-height:1.6}.pb-steps li:before{counter-increment:steps;content:counter(steps);width:28px;height:28px;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;background:#3157d5;color:#fff;font-weight:700}.pb-resourceCard{display:flex;gap:18px;padding:22px;border:1px solid #dce3ef;border-radius:14px;background:#fff}.provider-logo{display:inline-flex;align-items:center;gap:10px;font-weight:700}.provider-logo b{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:var(--provider-color);color:#fff}.pb-badge{display:inline-block;padding:6px 10px;border-radius:99px;background:#eaf0ff;color:#3157d5;font-weight:700;font-size:.75rem}.pb-divider{border:0;border-top:1px solid #dce3ef;margin:24px 0}@media(max-width:700px){.pb-hide-mobile{display:none!important}.pb-section{padding:40px 18px}.pb-header,.pb-footer{padding:16px 18px}.pb-columns{grid-template-columns:1fr}.pb-heading{font-size:2.2rem}}@media(min-width:701px){.pb-hide-desktop{display:none!important}}`;
 }

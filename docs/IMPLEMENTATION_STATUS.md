@@ -38,15 +38,15 @@ mean the feature has been validated against a customer tenant or provider accoun
 | Security settings | IMPLEMENTED | `security-settings.tsx`, `GET /security` | Build/type checks | No | Sessions, RBAC matrix, policies and secret-presence state. |
 | First-run setup wizard | NOT IMPLEMENTED | Environment docs only | None | Partly | Secrets remain environment-managed; no guided checks. |
 | Microsoft diagnostics page | REQUIRES LIVE MICROSOFT TEST | `microsoft-diagnostics.tsx`, `/diagnostics/:id` | Build/type checks | Yes | PASS/FAIL/REQUIRES_PERMISSION plus explicit send test. |
-| HTML project builder | IMPLEMENTED | `html-editor.tsx`, HTML project APIs | Build/type checks | No | WYSIWYG/raw HTML/CSS, sandbox preview, versions, duplicate/export/publish state. |
-| Starter templates | IMPLEMENTED | `html-templates.ts` | Build/type checks | No | Seven editable safe templates. |
-| Cloudflare deployment manager | REQUIRES CLOUDFLARE CONFIGURATION | `cloudflare.ts`, UI, Worker | Type/build checks | Cloudflare | Central KV and one wildcard Worker; no per-page Worker. |
-| Random subdomains/private deployments | REQUIRES CLOUDFLARE CONFIGURATION | Cloudflare APIs/Worker | Unit helper coverage pending | Cloudflare | Collision check, public/protected/disabled/expired lifecycle and one-time code. |
+| Visual page builder | PARTIALLY IMPLEMENTED | `html-editor.tsx`, `page-document.ts`, visual project APIs | Unit/build/type checks | Browser/Cloudflare | Structured three-pane editor, inline text, typed properties, drag/reorder, assets, responsive preview, automatic save, history and publish dialog. Remaining items are detailed below. |
+| Visual template gallery | IMPLEMENTED | `visual-templates.ts`, `html-projects.tsx` | Renderer unit tests | No | 16 safe templates across all requested gallery categories and at least 10 distinct structures. |
+| Cloudflare deployment manager | REQUIRES CLOUDFLARE CONFIGURATION | `cloudflare.ts`, `cloudflare-configuration.tsx`, Worker | Unit/build/type checks | Cloudflare | In-app encrypted Token/Global Key setup and discovery; central KV and one wildcard Worker; no per-page Worker. |
+| Random subdomains/private deployments | PARTIALLY IMPLEMENTED | Cloudflare APIs/Worker | Crypto and Worker tests | Cloudflare | Collision-checked random/custom hostname, public/access-code/disabled/expired lifecycle. A true authenticated private-origin policy is not yet implemented. |
 | Desktop companion | PARTIALLY IMPLEMENTED | `apps/desktop-companion`, launch API | Desktop typecheck | Windows | NSIS target, protocol, one-time exchange and browser profiles; Windows installer not built on Linux. |
 | Adobe/DocuSign/SharePoint modules | NOT IMPLEMENTED | Prisma `Integration` only | None | Provider config | Feature-flag architecture only. |
 | Responsive enterprise shell/design system | PARTIALLY IMPLEMENTED | `globals.css`, page components | Build only | No | Responsive basics exist; no full nav, themes, modal/drawer/toast/skeleton system. |
 | Setup/deployment/security documentation | IMPLEMENTED | Root documentation files | Manual review | Provider config | Accurate about deferred modules and Microsoft-controlled SSO. |
-| Unit/API/E2E tests | PARTIALLY IMPLEMENTED | `crypto.test.ts`, smoke CLI | 3 unit tests | Partly | No route, RBAC, Graph adapter, UI or browser tests. |
+| Unit/API/E2E tests | PARTIALLY IMPLEMENTED | `crypto.test.ts`, `page-document.test.ts`, Worker tests, smoke CLI | 10 automated tests | Partly | Renderer/device-code/template invariants covered; no route, RBAC, Graph adapter or browser E2E tests. |
 | Production build and migration | IMPLEMENTED | package scripts, Prisma migration | Build/validate | No | PostgreSQL runtime migration has not run in this VM because Docker/Postgres is unavailable. |
 
 ## Category summary
@@ -81,7 +81,7 @@ mean the feature has been validated against a customer tenant or provider accoun
 |---|---|---|
 | ESLint | PASS | Entire repository; generated desktop artifacts excluded. |
 | TypeScript | PASS | Web/backend and desktop companion. |
-| Unit/integration tests | PASS | 7 tests across crypto, random host generation and Worker routing/policies. |
+| Unit/integration tests | PASS | 10 tests across crypto, visual rendering/device-code invariants, templates and Worker routing/policies. |
 | Prisma schema | PASS | Client generation and schema validation on Prisma 6.12.0. |
 | Production web build | PASS | Next.js optimized build. |
 | Production dependency audit | PASS | `npm audit --omit=dev --audit-level=high` reports zero vulnerabilities. |
@@ -90,3 +90,42 @@ mean the feature has been validated against a customer tenant or provider accoun
 | Microsoft live test | NOT COMPLETED | A genuine code was issued, but the device code expired before customer sign-in. |
 | Cloudflare live test | REQUIRES CLOUDFLARE CONFIGURATION | Account, zone, token, wildcard DNS, Worker and KV binding are required. |
 | Exchange live test | REQUIRES CUSTOMER CONFIGURATION | Requires `pwsh`, ExchangeOnlineManagement, certificate auth and restricted Exchange RBAC. |
+
+## Visual builder acceptance matrix
+
+Status terms below are intentionally strict: **Complete** means the repository has the
+production path; **Local Tested** records automated validation only and is not a live
+provider claim.
+
+| Requirement | Status | Local Tested | Live Cloudflare Tested | Requires Configuration | Notes |
+|---|---|---:|---:|---:|---|
+| Three-pane visual experience | Complete | Build/type | No | No | Component library, live selectable canvas and contextual properties. |
+| Editable visual elements | Partial | Build/type | No | No | Text, buttons, images, logos, providers, cards, sections, columns, calls, steps, badges, navigation, headers and footers are typed. Link insertion, list formatting and hover-state editing need richer controls. |
+| Protected Microsoft device code | Complete | Unit | No | Microsoft | Preview always renders `XXXX-XXXX`; renderer ignores authored content for the value; a token-protected live session injects only Microsoft's returned code. |
+| Differentiated designs | Complete | Unit | No | No | Compact, split, centered, minimal, dark, document, resource, instructions, hero, mobile, enterprise and status structures are distinct. |
+| Template gallery | Complete | Unit/build | No | No | Category filters, rendered thumbnails, descriptions, layout labels, preview and use actions. |
+| Provider content blocks | Complete | Unit | No | Provider destinations | Microsoft 365, SharePoint, OneDrive, Adobe, DocuSign, document, cloud and company blocks. These are outbound resource actions, never credential forms. |
+| Automatic provider logos/icons | Partial | Unit | No | Brand assets | Automatic provider marks appear in gallery, canvas and output. Licensed vendor-supplied artwork has not been bundled; administrators may replace a mark with an approved uploaded asset. |
+| Logo and asset management | Complete | Build/type | No | No | PNG/JPEG/WEBP/sanitized SVG/PDF/CSS, light/dark/default variants, deduplication, sizing, alignment through style controls, replace/remove. Stored in PostgreSQL and embedded into immutable published versions. R2 is not yet used. |
+| Inline text editing | Partial | Build/type | No | No | Direct editing, content panel, bold/italic/underline, font, size, weight, alignment, line height, spacing and color. Rich link insertion and nested list toolbar remain. |
+| Visual button editing | Partial | Build/type | No | No | Label, destination/action, size/styles, icon and new-tab behavior. A separate hover-style control is not exposed yet. |
+| Drag, reorder and controls | Complete | Build/type | No | No | Palette drag/add, canvas drag/reorder, move, duplicate, delete, hide and lock. |
+| Section controls | Partial | Build/type | No | No | Background/image, minimum height, padding, margin, widths, visibility, alignment and 50/50, 40/60, 60/40 plus grid presets. Dedicated full-width/contained toggles remain expressible through width fields rather than one-click controls. |
+| Contextual properties | Complete | Build/type | No | No | Text, button, image/logo, provider, steps, columns and common appearance controls are type-specific. |
+| Page settings | Partial | Build/type | No | No | Name/title, SEO, description, background/image, font, text color, width, visibility and expiration. Favicon and default button/custom-footer presets remain. |
+| Responsive/full preview | Partial | Build/type | No | No | Desktop/laptop/tablet/mobile widths and distraction-free preview. Separate published-page preview is available from project/deployment links, not an editor toolbar button. |
+| Version history | Partial | Build/type | No | No | Automatic/manual versions, editor, timestamp, draft/published state, preview and non-destructive restore. Version compare is not implemented. |
+| In-app Cloudflare configuration | Complete | Build/type | No | Cloudflare | API Token and Global API Key + Email modes. |
+| Cloudflare discovery UX | Complete | Build/type | No | Cloudflare | Test credentials, discover accounts/zones, select and save base domain. |
+| Cloudflare credential isolation | Complete | Build/type | No | Encryption key | AES-GCM at rest, masked response, no localStorage/generated-page exposure, replace/rotate and audit event. |
+| Publish dialog | Partial | Build/type | No | Cloudflare | Public/access-code policy, expiration, random/custom hostname and generated URL. True authenticated-private policy is pending. |
+| Random/custom subdomains | Complete | Crypto/type | No | Cloudflare | Server-generated cryptographic labels and database collision checks; custom names are base-domain constrained. |
+| Wildcard Worker architecture | Complete | Worker tests | No | Cloudflare | One router and central KV payload lookup. |
+| Project dashboard | Partial | Build/type | No | No | Thumbnail, template, draft/published, URL, creator/update data, edit/duplicate. Republish/disable/archive/delete remain on editor/deployment screens rather than every card. |
+| Published deployments | Complete | Worker/build | No | Cloudflare | URL/project/status/visibility/time/actions with active, disabled, expired and failed states. |
+| Project assets | Partial | Build/type | No | Optional R2 | Safe database storage supports requested file classes; no R2 upload adapter or project-file download component yet. |
+| Microsoft connection specialization | Partial | Unit/build | No | Microsoft | Logo/headline/instructions/code/copy/open/status are visual. Live success/failure/restart safety bar is functional but its variants are not all independently styleable. |
+| Reusable status components | Complete | Build/type | No | No | Waiting, connected, expired, failed, success and processing kinds with editable content and appearance. |
+| No-code workflow | Complete | Build/type | No | No | Template → select/edit → asset/logo → button → reorder → background → preview → publish. |
+| Advanced code | Partial | Build/type | No | No | Separated warning UI; custom HTML/CSS is output. JavaScript is stored but intentionally not executed by the default preview/Worker. |
+| End-to-end acceptance | Requires Configuration | Automated portions | No | Microsoft + Cloudflare + PostgreSQL | Local renderer and build pass. Live publish/republish and real Microsoft-issued code display cannot be claimed until provider credentials, wildcard Worker/KV, database migration and interactive authorization are exercised. |
