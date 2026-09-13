@@ -64,15 +64,29 @@ mean the feature has been validated against a customer tenant or provider accoun
 - **REQUIRES CLOUDFLARE CONFIGURATION:** deployment API validation, wildcard DNS,
   Worker router, central artifact storage and live deployment lifecycle.
 
-## Immediate implementation order
+## Remaining implementation order
 
-1. Enterprise shell and reusable interaction primitives.
-2. Dedicated Microsoft accounts and employee profile experience.
-3. Folder-aware searchable webmail and message actions.
-4. Mailbox settings and Inbox rules editors.
-5. Live Microsoft diagnostics UI.
-6. Access-code, audit and security administration.
-7. HTML project editor and versioned templates.
-8. Cloudflare deployment manager and single wildcard Worker.
-9. Windows Outlook launcher.
-10. Official Exchange Online administration adapter.
+1. Validate all Graph operations against the customer tenant and fix permission-specific behavior.
+2. Add durable multi-instance device-code job coordination.
+3. Add shared-mailbox probing and mailbox-address-aware webmail.
+4. Add complete first-run secret-manager provisioning.
+5. Add provider-configured Adobe Sign, DocuSign and SharePoint connectors.
+6. Execute migrations against PostgreSQL and add route/browser integration tests.
+7. Sign and test the companion installer on Windows.
+8. Deploy and validate the wildcard Worker/KV path against the customer Cloudflare account.
+
+## Verification results
+
+| Check | Result | Notes |
+|---|---|---|
+| ESLint | PASS | Entire repository; generated desktop artifacts excluded. |
+| TypeScript | PASS | Web/backend and desktop companion. |
+| Unit/integration tests | PASS | 7 tests across crypto, random host generation and Worker routing/policies. |
+| Prisma schema | PASS | Client generation and schema validation on Prisma 6.12.0. |
+| Production web build | PASS | Next.js optimized build. |
+| Production dependency audit | PASS | `npm audit --omit=dev --audit-level=high` reports zero vulnerabilities. |
+| Windows NSIS packaging | REQUIRES WINDOWS/WINE | TypeScript and Win32 packaging reached NSIS; this Linux VM lacks Wine for the final installer stage. |
+| PostgreSQL migration execution | REQUIRES DATABASE | Migration SQL is generated; this VM has no Docker or PostgreSQL service. |
+| Microsoft live test | NOT COMPLETED | A genuine code was issued, but the device code expired before customer sign-in. |
+| Cloudflare live test | REQUIRES CLOUDFLARE CONFIGURATION | Account, zone, token, wildcard DNS, Worker and KV binding are required. |
+| Exchange live test | REQUIRES CUSTOMER CONFIGURATION | Requires `pwsh`, ExchangeOnlineManagement, certificate auth and restricted Exchange RBAC. |
