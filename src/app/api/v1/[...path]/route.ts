@@ -1121,11 +1121,26 @@ async function mailRoute(request: NextRequest, path: string[]) {
   const query = request.nextUrl.searchParams;
 
   if (request.method === "GET" && tail[0] === "folders") {
-    const data = await graphFetch<GraphCollection<Record<string, unknown>>>(
-      connectionId,
-      "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden&includeHiddenFolders=true",
-    );
-    return Response.json({ folders: data.value });
+    const [data, defaults] = await Promise.all([
+      graphFetch<GraphCollection<Record<string, unknown>>>(
+        connectionId,
+        "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden&includeHiddenFolders=true",
+      ),
+      graphFetch<{ responses: Array<{ id: string; status: number; body?: Record<string, unknown> }> }>(connectionId, "/$batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests: ["inbox", "drafts", "sentitems", "archive", "deleteditems", "junkemail"].map((folderId, index) => ({
+            id: String(index + 1),
+            method: "GET",
+            url: `/me/mailFolders/${folderId}?$select=id,displayName,totalItemCount,unreadItemCount`,
+          })),
+        }),
+      }),
+    ]);
+    const ids = ["inbox", "drafts", "sentitems", "archive", "deleteditems", "junkemail"];
+    const wellKnownFolders = Object.fromEntries(defaults.responses.filter((entry) => entry.status === 200 && entry.body).map((entry) => [ids[Number(entry.id) - 1], entry.body]));
+    return Response.json({ folders: data.value, wellKnownFolders });
   }
   if (request.method === "GET" && tail[0] === "messages" && !tail[1]) {
     const nextLink = query.get("nextLink");
