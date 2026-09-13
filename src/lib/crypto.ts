@@ -59,3 +59,8 @@ export function randomAccessCode(): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   return Array.from(randomBytes(15), (byte) => alphabet[byte % alphabet.length]).join("");
 }
+
+export function randomHostnameLabel(length = 8): string {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  return Array.from(randomBytes(length), (byte) => alphabet[byte % alphabet.length]).join("");
+}

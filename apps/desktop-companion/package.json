@@ -1,0 +1,38 @@
+{
+  "name": "@company-control/desktop-companion",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc && electron-builder --win nsis --publish never",
+    "typecheck": "tsc --noEmit",
+    "start": "tsc && electron ."
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "electron": "latest",
+    "electron-builder": "latest",
+    "typescript": "latest"
+  },
+  "build": {
+    "appId": "com.company.control.mail",
+    "productName": "Company Mail Companion",
+    "files": [
+      "dist/**/*",
+      "renderer.html"
+    ],
+    "protocols": [
+      {
+        "name": "Company Mail Launch",
+        "schemes": ["companymail"]
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

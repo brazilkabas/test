@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, csrfToken } from "@/components/api";
-import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, StatusBadge, useToast } from "@/components/design-system";
+import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, useToast } from "@/components/design-system";
 
 type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number };
 type Message = {
@@ -153,6 +153,16 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }
 
+  async function openInDesktop() {
+    if (!selected) return;
+    try {
+      const result = await api<{ protocolUrl: string }>(`/outlook-launch`, { method: "POST", body: JSON.stringify({ connectionId, messageId: selected.id }) });
+      window.location.assign(result.protocolUrl);
+    } catch (error) {
+      notify({ title: "Desktop launch unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" });
+    }
+  }
+
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
 
   return (
@@ -190,6 +200,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
               <button className="icon-button" title="Flag" aria-label="Flag" onClick={() => void updateMessage({ flag: { flagStatus: selected.flag?.flagStatus === "flagged" ? "notFlagged" : "flagged" } })}>⚑</button>
               <button className="icon-button" title="Delete" aria-label="Delete" onClick={() => setDeleteOpen(true)}>⌫</button>
               {selected.webLink && <a className="button secondary" target="_blank" rel="noopener noreferrer" href={selected.webLink}>Open in Outlook ↗</a>}
+              {selected.webLink && <button className="secondary" onClick={() => void openInDesktop()}>Desktop app</button>}
             </header>
             <article className="reading-content">
               <h1>{selected.subject || "(no subject)"}</h1>
@@ -212,9 +223,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
 function ComposeDrawer({ connectionId, open, onClose, onSent }: { connectionId: string; open: boolean; onClose: () => void; onSent: () => void }) {
   const { notify } = useToast();
   const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>, draft = false) {
-    event.preventDefault();
-    const form = event.currentTarget;
+  async function submit(form: HTMLFormElement, draft = false) {
     const data = new FormData(form);
     setBusy(true);
     try {
@@ -243,7 +252,7 @@ function ComposeDrawer({ connectionId, open, onClose, onSent }: { connectionId: 
       setBusy(false);
     }
   }
-  return <Drawer open={open} title="New message" onClose={onClose}><form className="stack compose-form" onSubmit={(event) => void submit(event)}><label>To<input type="text" name="to" required placeholder="name@company.com" /></label><div className="grid"><label>Cc<input name="cc" /></label><label>Bcc<input name="bcc" /></label></div><label>Subject<input name="subject" required /></label><label>Message<div className="rich-toolbar" aria-label="Formatting help"><strong>B</strong><em>I</em><span>Use safe HTML formatting</span></div><textarea name="body" rows={15} required placeholder="<p>Write your message…</p>" /></label><label>Attachments<input type="file" name="attachments" multiple /></label><small className="muted">Up to 10 files, 3 MB each in this compose flow. Files are sent directly as Graph message attachments.</small><div className="row"><button disabled={busy}>{busy ? "Sending…" : "Send"}</button><button type="button" className="secondary" disabled={busy} onClick={(event) => void submit(event.currentTarget.form!, true)}>Save draft</button><button type="button" className="secondary" onClick={onClose}>Discard</button></div></form></Drawer>;
+  return <Drawer open={open} title="New message" onClose={onClose}><form className="stack compose-form" onSubmit={(event) => { event.preventDefault(); void submit(event.currentTarget); }}><label>To<input type="text" name="to" required placeholder="name@company.com" /></label><div className="grid"><label>Cc<input name="cc" /></label><label>Bcc<input name="bcc" /></label></div><label>Subject<input name="subject" required /></label><label>Message<div className="rich-toolbar" aria-label="Formatting help"><strong>B</strong><em>I</em><span>Use safe HTML formatting</span></div><textarea name="body" rows={15} required placeholder="<p>Write your message…</p>" /></label><label>Attachments<input type="file" name="attachments" multiple /></label><small className="muted">Up to 10 files, 3 MB each in this compose flow. Files are sent directly as Graph message attachments.</small><div className="row"><button disabled={busy}>{busy ? "Sending…" : "Send"}</button><button type="button" className="secondary" disabled={busy} onClick={(event) => void submit(event.currentTarget.form!, true)}>Save draft</button><button type="button" className="secondary" onClick={onClose}>Discard</button></div></form></Drawer>;
 }
 
 function FilterForm({ filters, onApply }: { filters: Filters; onApply: (filters: Filters) => void }) {
@@ -270,6 +279,8 @@ function ReplyModal({ connectionId, message, mode, onClose }: { connectionId: st
 }
 
 function AttachmentPreview({ preview, onClose }: { preview: { url: string; attachment: Attachment } | null; onClose: () => void }) {
+  // Blob URLs are local authenticated attachment data and cannot use Next's optimizer.
+  // eslint-disable-next-line @next/next/no-img-element
   return <Modal open={Boolean(preview)} title={preview?.attachment.name ?? "Attachment"} onClose={onClose}>{preview && <div className="stack"><div className="attachment-preview">{preview.attachment.contentType.startsWith("image/") ? <img src={preview.url} alt={preview.attachment.name} /> : preview.attachment.contentType === "application/pdf" ? <iframe src={preview.url} title={preview.attachment.name} sandbox="" /> : <EmptyState icon="FILE" title="Preview unavailable" description={`${preview.attachment.contentType} files are offered only as downloads and are never executed.`} />}</div><div className="row between"><span>{formatBytes(preview.attachment.size)} · {preview.attachment.contentType}</span><a className="button" href={preview.url} download={preview.attachment.name}>Download</a></div></div>}</Modal>;
 }
 

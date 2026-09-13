@@ -28,6 +28,7 @@ export function AccessCodeAdmin() {
   const [createOpen, setCreateOpen] = useState(false);
   const [plaintext, setPlaintext] = useState("");
   const [revoke, setRevoke] = useState<CodeRecord | null>(null);
+  const [defaultExpiry] = useState(() => new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16));
 
   async function load() {
     try {
@@ -86,7 +87,7 @@ export function AccessCodeAdmin() {
       <Modal open={createOpen} title="Generate access code" onClose={() => setCreateOpen(false)}>
         <form className="stack" onSubmit={create}>
           <label>Description<input name="description" maxLength={200} placeholder="Contractor audit access" /></label>
-          <label>Expires<input name="expiresAt" type="datetime-local" required defaultValue={new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16)} /></label>
+          <label>Expires<input name="expiresAt" type="datetime-local" required defaultValue={defaultExpiry} /></label>
           <label>Maximum uses<input name="maximumUses" type="number" min={1} max={100} defaultValue={1} required /></label>
           <label>Role<select name="allowedRole" defaultValue="MAIL_VIEWER">{roles.map((role) => <option value={role} key={role}>{role.replaceAll("_", " ")}</option>)}</select></label>
           <label>Allowed IP or IPv4 CIDR (optional)<input name="allowedIpRange" placeholder="203.0.113.0/24" /></label>

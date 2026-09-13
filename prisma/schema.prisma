@@ -283,6 +283,20 @@ model DesktopCompanion {
   createdAt    DateTime @default(now())
 }
 
+model OutlookLaunchRequest {
+  id           String   @id @default(cuid())
+  tokenHash    String   @unique
+  connectionId String
+  messageId    String
+  webLink      String
+  expiresAt    DateTime
+  usedAt       DateTime?
+  requestedById String
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt, usedAt])
+}
+
 model Integration {
   id                 String   @id @default(cuid())
   provider           String   @unique

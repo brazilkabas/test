@@ -48,6 +48,11 @@ export function EnterpriseShell({
     router.push(`/admin/accounts?q=${encodeURIComponent(query.trim())}`);
   }
 
+  async function logout() {
+    await api("/auth/logout", { method: "POST", body: "{}" });
+    window.location.assign("/login");
+  }
+
   return (
     <ToastProvider>
       <div className="app-shell">
@@ -59,7 +64,7 @@ export function EnterpriseShell({
               return <Link className={active ? "active" : ""} href={item.href} key={item.href} onClick={() => setMobileOpen(false)}><span aria-hidden>{item.icon}</span>{item.label}</Link>;
             })}
           </nav>
-          <div className="sidebar-footer"><span className="avatar">{(user.displayName ?? user.email).slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName ?? "Administrator"}</strong><small>{user.email}</small></div></div>
+          <div className="sidebar-footer"><span className="avatar">{(user.displayName ?? user.email).slice(0, 1).toUpperCase()}</span><div><strong>{user.displayName ?? "Administrator"}</strong><small>{user.email}</small></div><button className="icon-button" title="Sign out" aria-label="Sign out" onClick={() => void logout()}>↪</button></div>
         </aside>
         {mobileOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
         <div className="app-main">

@@ -2,6 +2,9 @@
   "name": "company-control",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
   "engines": {
     "node": ">=22"
   },
@@ -15,7 +18,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
-    "microsoft:smoke": "tsx scripts/microsoft-smoke.ts"
+    "microsoft:smoke": "tsx scripts/microsoft-smoke.ts",
+    "desktop:build": "npm run build --workspace @company-control/desktop-companion"
   },
   "dependencies": {
     "@azure/msal-node": "latest",

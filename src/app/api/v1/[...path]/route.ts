@@ -1,14 +1,17 @@
 import { NextRequest } from "next/server";
 import { isIP } from "node:net";
+import { randomBytes } from "node:crypto";
 import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
 import { AccessRole } from "@/generated/prisma/client";
-import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession } from "@/lib/auth";
+import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession, rolePermissions } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { CloudflareError, cloudflareStatus, deleteDeployment, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
 import { config } from "@/lib/config";
-import { encrypt, hashSecret, randomAccessCode, verifySecret } from "@/lib/crypto";
+import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
+import { defaultProjectCss, htmlTemplates } from "@/lib/html-templates";
 import { authorizationStatus, GraphError, graphFetch, startDeviceAuthorization } from "@/lib/microsoft";
 
 export const runtime = "nodejs";
@@ -41,7 +44,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ pat
 export async function POST(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   try {
     const path = (await context.params).path;
-    if (path.join("/") !== "auth/login") await requireCsrf(request);
+    if (!["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
     return await route(request, path);
   } catch (error) {
     return handle(error);
@@ -117,6 +120,7 @@ async function route(request: NextRequest, path: string[]) {
     });
     return Response.json({ accounts });
   }
+  if (key === "GET /microsoft/users") return organizationUsers(request);
   if (path[0] === "microsoft" && path[1] === "accounts" && path[2]) {
     return microsoftAccountRoute(request, path[2]);
   }
@@ -154,10 +158,16 @@ async function route(request: NextRequest, path: string[]) {
     const users = await db.user.findMany({ orderBy: { email: "asc" }, select: { id: true, email: true, displayName: true, status: true } });
     return Response.json({ users });
   }
+  if (key === "GET /security") return securityOverview();
+  if (path[0] === "sessions" && path[1] && request.method === "DELETE") return revokeSession(path[1]);
+  if (path[0] === "internal" && path[1] === "users" && path[2] && path[3] === "roles" && request.method === "PATCH") return updateUserRoles(request, path[2]);
   if (key === "POST /access-codes") return createAccessCode(request);
   if (key === "GET /access-codes") return listAccessCodes();
   if (path[0] === "access-codes" && path[1] && request.method === "DELETE") return revokeAccessCode(path[1]);
   if (path[0] === "diagnostics" && path[1]) return microsoftDiagnostics(request, path[1]);
+  if (path[0] === "html-projects") return htmlProjectRoute(request, path);
+  if (path[0] === "cloudflare") return cloudflareRoute(request, path);
+  if (path[0] === "outlook-launch") return outlookLaunchRoute(request, path);
 
   if (path[0] === "mail" && path[1]) return mailRoute(request, path);
   throw new ApiError(404, "API route not found");
@@ -320,6 +330,32 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
   throw new ApiError(405, "Method not allowed");
 }
 
+async function organizationUsers(request: NextRequest) {
+  await requirePermission("microsoft:read");
+  const requestedId = request.nextUrl.searchParams.get("connectionId");
+  const connections = await db.microsoftConnection.findMany({ where: { authorizationStatus: "CONNECTED" } });
+  const connection = requestedId ? connections.find((item) => item.id === requestedId) : connections.find((item) => item.grantedScopes.some((scope) => ["user.readbasic.all", "user.read.all"].includes(scope.toLowerCase())));
+  if (!connection) throw new ApiError(403, "Directory listing requires a connected account with User.ReadBasic.All or User.Read.All");
+  const broad = connection.grantedScopes.some((scope) => scope.toLowerCase() === "user.read.all");
+  const nextLink = request.nextUrl.searchParams.get("nextLink");
+  const search = request.nextUrl.searchParams.get("search")?.replaceAll('"', "").slice(0, 100);
+  const params = new URLSearchParams({
+    "$top": "50",
+    "$select": `id,displayName,userPrincipalName,mail${broad ? ",accountEnabled" : ""}`,
+    ...(search ? { "$filter": `startsWith(displayName,'${search.replaceAll("'", "''")}') or startsWith(userPrincipalName,'${search.replaceAll("'", "''")}')`, "$count": "true" } : {}),
+  });
+  const result = await graphFetch<GraphCollection<{ id: string; displayName?: string; userPrincipalName?: string; mail?: string; accountEnabled?: boolean }>>(connection.id, nextLink ?? `/users?${params}`);
+  const local = await db.microsoftConnection.findMany({ where: { tenantId: connection.tenantId }, select: { id: true, microsoftUserId: true, authorizationStatus: true } });
+  return Response.json({
+    users: result.value.map((user) => {
+      const connected = local.find((item) => item.microsoftUserId === user.id);
+      return { ...user, connectionId: connected?.id ?? null, connectionStatus: connected?.authorizationStatus ?? "NOT_CONNECTED", mailboxStatus: "NOT_PROBED", capabilities: broad ? ["Directory profile", "Account state"] : ["Basic directory profile"] };
+    }),
+    nextLink: result["@odata.nextLink"] ?? null,
+    sourceConnectionId: connection.id,
+  });
+}
+
 async function listAccessCodes() {
   await requirePermission("*");
   const codes = await db.accessCode.findMany({
@@ -349,6 +385,52 @@ async function revokeAccessCode(rawId: string) {
   await db.accessCode.update({ where: { id: accessCodeId }, data: { revokedAt: new Date() } });
   await audit({ actorId: actor.id, action: "access_code.revoked", targetType: "AccessCode", targetId: accessCodeId, result: "SUCCESS" });
   return new Response(null, { status: 204 });
+}
+
+async function securityOverview() {
+  await requirePermission("*");
+  const [sessions, roles, connections] = await Promise.all([
+    db.session.findMany({ where: { revokedAt: null, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" }, include: { user: { select: { email: true, displayName: true } } } }),
+    db.internalRole.findMany({ include: { _count: { select: { users: true } } }, orderBy: { role: "asc" } }),
+    db.microsoftConnection.groupBy({ by: ["authorizationStatus"], _count: true }),
+  ]);
+  return Response.json({
+    sessions: sessions.map(({ tokenHash: _tokenHash, ...session }) => session),
+    roles: Object.entries(rolePermissions).map(([role, permissions]) => ({ role, permissions, assignedUsers: roles.find((item) => item.role === role)?._count.users ?? 0 })),
+    policies: { sessionDurationHours: 8, accessCodeLength: 15, maxLoginAttempts: 10, rateLimitWindowMinutes: 15 },
+    encryption: { configured: Boolean(process.env.ENCRYPTION_KEY), algorithm: "AES-256-GCM", keyVersion: 1 },
+    microsoftConnections: connections.map((item) => ({ status: item.authorizationStatus, count: item._count })),
+    cloudflare: cloudflareStatus(),
+    rateLimit: { trackedClients: attempts.size, storage: "IN_MEMORY_SINGLE_INSTANCE" },
+  });
+}
+
+async function revokeSession(rawSessionId: string) {
+  const actor = await requirePermission("*");
+  const sessionId = id.parse(rawSessionId);
+  await db.session.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
+  await audit({ actorId: actor.id, action: "security.session.revoked", targetType: "Session", targetId: sessionId, result: "SUCCESS" });
+  return new Response(null, { status: 204 });
+}
+
+async function updateUserRoles(request: NextRequest, rawUserId: string) {
+  const actor = await requirePermission("*");
+  const userId = id.parse(rawUserId);
+  if (actor.id === userId) throw new ApiError(422, "Administrators cannot replace their own roles through this endpoint");
+  const { roles } = z.object({ roles: z.array(z.nativeEnum(AccessRole)).min(1) }).parse(await request.json());
+  await db.$transaction(async (transaction) => {
+    await transaction.userRole.deleteMany({ where: { userId } });
+    for (const role of roles) {
+      const record = await transaction.internalRole.upsert({
+        where: { role },
+        create: { role, description: role.replaceAll("_", " ").toLowerCase(), permissions: rolePermissions[role] },
+        update: { permissions: rolePermissions[role] },
+      });
+      await transaction.userRole.create({ data: { userId, roleId: record.id } });
+    }
+  });
+  await audit({ actorId: actor.id, action: "security.user.roles.updated", targetType: "User", targetId: userId, result: "SUCCESS", metadata: { roles: roles.join(",") } });
+  return Response.json({ roles });
 }
 
 function capabilitiesFromScopes(scopes: string[]) {
@@ -427,6 +509,216 @@ async function microsoftDiagnostics(request: NextRequest, rawConnectionId: strin
     }
   }
   return Response.json({ connection: { id: connection.id, displayName: connection.displayName, userPrincipalName: connection.userPrincipalName, authorizationStatus: connection.authorizationStatus }, results });
+}
+
+async function htmlProjectRoute(request: NextRequest, path: string[]) {
+  const actor = await requirePermission(request.method === "GET" ? "html:*" : "html:*");
+  if (path.length === 1 && request.method === "GET") {
+    const projects = await db.htmlProject.findMany({
+      orderBy: { updatedAt: "desc" },
+      include: {
+        createdBy: { select: { displayName: true, email: true } },
+        versions: { orderBy: { version: "desc" }, take: 1, select: { version: true, createdAt: true } },
+        deployments: { orderBy: { updatedAt: "desc" }, take: 1, select: { hostname: true, status: true, deployedAt: true } },
+      },
+    });
+    return Response.json({ projects, templates: Object.entries(htmlTemplates).map(([id, template]) => ({ id, name: template.name })) });
+  }
+  if (path.length === 1 && request.method === "POST") {
+    const input = z.object({ name: z.string().min(1).max(120), template: z.enum(Object.keys(htmlTemplates) as [keyof typeof htmlTemplates, ...(keyof typeof htmlTemplates)[]]).default("blank") }).parse(await request.json());
+    const template = htmlTemplates[input.template];
+    const project = await db.htmlProject.create({
+      data: {
+        name: input.name,
+        slug: `${slugify(input.name)}-${crypto.randomUUID().slice(0, 8)}`,
+        createdById: actor.id,
+        versions: { create: { version: 1, html: template.html, css: defaultProjectCss } },
+      },
+      include: { versions: true },
+    });
+    await audit({ actorId: actor.id, action: "html.project.created", targetType: "HtmlProject", targetId: project.id, result: "SUCCESS" });
+    return Response.json({ project }, { status: 201 });
+  }
+  const projectId = id.parse(path[1]);
+  const project = await db.htmlProject.findUnique({
+    where: { id: projectId },
+    include: { versions: { orderBy: { version: "desc" } }, deployments: { orderBy: { updatedAt: "desc" } }, createdBy: { select: { displayName: true, email: true } } },
+  });
+  if (!project) throw new ApiError(404, "HTML project not found");
+  if (request.method === "GET") return Response.json({ project });
+  if (path[2] === "versions" && request.method === "POST") {
+    const input = z.object({ html: z.string().max(1_000_000), css: z.string().max(500_000).default(""), javascript: z.string().max(250_000).optional() }).parse(await request.json());
+    const nextVersion = (project.versions[0]?.version ?? 0) + 1;
+    const version = await db.htmlProjectVersion.create({ data: { projectId, version: nextVersion, ...input } });
+    await db.htmlProject.update({ where: { id: projectId }, data: { updatedAt: new Date() } });
+    await audit({ actorId: actor.id, action: "html.project.version.created", targetType: "HtmlProject", targetId: projectId, result: "SUCCESS", metadata: { version: nextVersion } });
+    return Response.json({ version }, { status: 201 });
+  }
+  if (path[2] === "duplicate" && request.method === "POST") {
+    const copy = await db.htmlProject.create({
+      data: {
+        name: `${project.name} Copy`,
+        slug: `${project.slug.split("-").slice(0, -1).join("-") || "project"}-${crypto.randomUUID().slice(0, 8)}`,
+        createdById: actor.id,
+        versions: { create: { version: 1, html: project.versions[0]?.html ?? "", css: project.versions[0]?.css, javascript: project.versions[0]?.javascript } },
+      },
+    });
+    await audit({ actorId: actor.id, action: "html.project.duplicated", targetType: "HtmlProject", targetId: copy.id, result: "SUCCESS", metadata: { sourceProjectId: projectId } });
+    return Response.json({ project: copy }, { status: 201 });
+  }
+  if (request.method === "PATCH") {
+    const input = z.object({ name: z.string().min(1).max(120).optional(), status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).optional() }).strict().parse(await request.json());
+    const updated = await db.htmlProject.update({ where: { id: projectId }, data: input });
+    await audit({ actorId: actor.id, action: "html.project.updated", targetType: "HtmlProject", targetId: projectId, result: "SUCCESS", metadata: { fields: Object.keys(input).join(",") } });
+    return Response.json({ project: updated });
+  }
+  if (request.method === "DELETE") {
+    await db.htmlProject.update({ where: { id: projectId }, data: { status: "ARCHIVED" } });
+    await audit({ actorId: actor.id, action: "html.project.archived", targetType: "HtmlProject", targetId: projectId, result: "SUCCESS" });
+    return new Response(null, { status: 204 });
+  }
+  throw new ApiError(405, "Method not allowed");
+}
+
+function slugify(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "project";
+}
+
+async function cloudflareRoute(request: NextRequest, path: string[]) {
+  const actor = await requirePermission("deployment:*");
+  if (path[1] === "status" && request.method === "GET") {
+    const status = cloudflareStatus();
+    if (!status.configured) return Response.json({ ...status, connectivity: "NOT_CONFIGURED" });
+    try {
+      const account = await verifyCloudflare();
+      return Response.json({ ...status, connectivity: "HEALTHY", accountName: account.name });
+    } catch (error) {
+      return Response.json({ ...status, connectivity: "FAILED", error: error instanceof Error ? error.message : "Cloudflare check failed" });
+    }
+  }
+  if (path.length === 1 && request.method === "GET") {
+    const deployments = await db.cloudflareDeployment.findMany({ orderBy: { createdAt: "desc" }, include: { project: { select: { name: true, status: true } } } });
+    return Response.json({ deployments });
+  }
+  if (path.length === 1 && request.method === "POST") {
+    if (!cloudflareStatus().configured) throw new CloudflareError(503, "Configure Cloudflare before creating a deployment");
+    const input = z.object({
+      projectId: z.string().min(1),
+      policy: z.enum(["PUBLIC", "ACCESS_CODE"]).default("PUBLIC"),
+      expiresAt: z.coerce.date().optional(),
+    }).parse(await request.json());
+    const project = await db.htmlProject.findUnique({ where: { id: input.projectId }, include: { versions: { orderBy: { version: "desc" }, take: 1 } } });
+    if (!project?.versions[0]) throw new ApiError(404, "Project or project version not found");
+    let label = randomHostnameLabel();
+    while (await db.cloudflareDeployment.findUnique({ where: { hostname: `${label}.${cloudflareStatus().baseDomain}` } })) label = randomHostnameLabel();
+    const hostname = `${label}.${cloudflareStatus().baseDomain}`;
+    const plaintextCode = input.policy === "ACCESS_CODE" ? randomAccessCode() : undefined;
+    const deployment = await db.cloudflareDeployment.create({
+      data: {
+        projectId: project.id,
+        deploymentId: crypto.randomUUID(),
+        hostname,
+        expiresAt: input.expiresAt,
+        accessPolicy: { type: input.policy, ...(plaintextCode ? { codeHash: sha256(plaintextCode) } : {}) },
+      },
+    });
+    try {
+      await publishDeployment(hostname, deploymentPayload(deployment.id, project.versions[0], input.policy, plaintextCode, input.expiresAt));
+      await db.cloudflareDeployment.update({ where: { id: deployment.id }, data: { status: "ACTIVE", deployedAt: new Date() } });
+      await audit({ actorId: actor.id, action: "cloudflare.deployment.created", targetType: "CloudflareDeployment", targetId: deployment.id, result: "SUCCESS", metadata: { hostname, policy: input.policy } });
+      return Response.json({ deployment: { ...deployment, status: "ACTIVE" }, accessCode: plaintextCode }, { status: 201 });
+    } catch (error) {
+      await db.cloudflareDeployment.update({ where: { id: deployment.id }, data: { status: "FAILED" } });
+      throw error;
+    }
+  }
+  const deploymentId = id.parse(path[1]);
+  const deployment = await db.cloudflareDeployment.findUnique({ where: { id: deploymentId }, include: { project: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } } } });
+  if (!deployment) throw new ApiError(404, "Deployment not found");
+  if (request.method === "PATCH") {
+    const { action } = z.object({ action: z.enum(["ENABLE", "DISABLE", "REDEPLOY"]) }).parse(await request.json());
+    if (action === "DISABLE") {
+      await publishDeployment(deployment.hostname, { status: "DISABLED" });
+      await db.cloudflareDeployment.update({ where: { id: deploymentId }, data: { status: "DISABLED" } });
+    } else {
+      const latest = deployment.project.versions[0];
+      if (!latest) throw new ApiError(422, "Project has no version to deploy");
+      const policy = deployment.accessPolicy as { type?: "PUBLIC" | "ACCESS_CODE"; codeHash?: string } | null;
+      await publishDeployment(deployment.hostname, {
+        id: deployment.id,
+        status: "ACTIVE",
+        html: latest.html,
+        css: latest.css ?? "",
+        javascript: "",
+        policy: policy?.type ?? "PUBLIC",
+        accessCodeHash: policy?.codeHash,
+        expiresAt: deployment.expiresAt?.toISOString(),
+      });
+      await db.cloudflareDeployment.update({ where: { id: deploymentId }, data: { status: "ACTIVE", deployedAt: new Date() } });
+    }
+    await audit({ actorId: actor.id, action: `cloudflare.deployment.${action.toLowerCase()}`, targetType: "CloudflareDeployment", targetId: deploymentId, result: "SUCCESS" });
+    return Response.json({ status: action === "DISABLE" ? "DISABLED" : "ACTIVE" });
+  }
+  if (request.method === "DELETE") {
+    await deleteDeployment(deployment.hostname);
+    await db.cloudflareDeployment.delete({ where: { id: deploymentId } });
+    await audit({ actorId: actor.id, action: "cloudflare.deployment.deleted", targetType: "CloudflareDeployment", targetId: deploymentId, result: "SUCCESS", metadata: { hostname: deployment.hostname } });
+    return new Response(null, { status: 204 });
+  }
+  throw new ApiError(405, "Method not allowed");
+}
+
+function deploymentPayload(
+  id: string,
+  version: { html: string; css: string | null },
+  policy: "PUBLIC" | "ACCESS_CODE",
+  accessCode: string | undefined,
+  expiresAt: Date | undefined,
+) {
+  return {
+    id,
+    status: "ACTIVE",
+    html: version.html,
+    css: version.css ?? "",
+    javascript: "",
+    policy,
+    accessCodeHash: accessCode ? sha256(accessCode) : undefined,
+    expiresAt: expiresAt?.toISOString(),
+  };
+}
+
+async function outlookLaunchRoute(request: NextRequest, path: string[]) {
+  if (path[1] === "exchange" && request.method === "POST") {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+    enforceRateLimit(`launch:${ip}`);
+    const { token } = z.object({ token: z.string().min(40).max(100) }).parse(await request.json());
+    const launch = await db.outlookLaunchRequest.findUnique({ where: { tokenHash: sha256(token) } });
+    if (!launch || launch.usedAt || launch.expiresAt <= new Date()) throw new ApiError(401, "Launch request is invalid, expired, or already used");
+    const consumed = await db.outlookLaunchRequest.updateMany({ where: { id: launch.id, usedAt: null, expiresAt: { gt: new Date() } }, data: { usedAt: new Date() } });
+    if (consumed.count !== 1) throw new ApiError(409, "Launch request was already consumed");
+    await audit({ connectionId: launch.connectionId, action: "desktop.outlook.launched", targetType: "Message", targetId: launch.messageId, result: "SUCCESS", metadata: { launchRequestId: launch.id } });
+    return Response.json({ webLink: launch.webLink });
+  }
+  if (request.method === "POST") {
+    const actor = await requirePermission("mail:read");
+    const input = z.object({ connectionId: z.string().min(1), messageId: z.string().min(1) }).parse(await request.json());
+    const message = await graphFetch<{ webLink?: string }>(input.connectionId, `/me/messages/${encodeURIComponent(input.messageId)}?$select=webLink`);
+    if (!message.webLink || new URL(message.webLink).protocol !== "https:") throw new ApiError(422, "Microsoft did not return a safe Outlook web link");
+    const token = randomBytes(32).toString("base64url");
+    const launch = await db.outlookLaunchRequest.create({
+      data: {
+        tokenHash: sha256(token),
+        connectionId: input.connectionId,
+        messageId: input.messageId,
+        webLink: message.webLink,
+        expiresAt: new Date(Date.now() + 60_000),
+        requestedById: actor.id,
+      },
+    });
+    await audit({ actorId: actor.id, connectionId: input.connectionId, action: "desktop.launch.requested", targetType: "Message", targetId: input.messageId, result: "SUCCESS", metadata: { launchRequestId: launch.id } });
+    return Response.json({ protocolUrl: `companymail://open?token=${encodeURIComponent(token)}`, expiresAt: launch.expiresAt }, { status: 201 });
+  }
+  throw new ApiError(405, "Method not allowed");
 }
 
 async function bootstrapAdmin() {
@@ -851,6 +1143,9 @@ function handle(error: unknown) {
   if (error instanceof z.ZodError) return Response.json({ error: "Invalid request", details: error.issues }, { status: 400 });
   if (error instanceof GraphError) {
     return Response.json({ error: error.message, microsoftCode: error.code }, { status: error.status });
+  }
+  if (error instanceof CloudflareError) {
+    return Response.json({ error: error.message }, { status: error.status });
   }
   return apiError(error);
 }
