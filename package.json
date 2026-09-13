@@ -1,0 +1,43 @@
+{
+  "name": "company-control",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "microsoft:smoke": "tsx scripts/microsoft-smoke.ts"
+  },
+  "dependencies": {
+    "@azure/msal-node": "latest",
+    "@prisma/client": "latest",
+    "jose": "latest",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "sanitize-html": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@types/sanitize-html": "latest",
+    "eslint": "latest",
+    "eslint-config-next": "latest",
+    "prisma": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}

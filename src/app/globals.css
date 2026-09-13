@@ -1,0 +1,87 @@
+:root {
+  color-scheme: light;
+  --bg: #f3f6fb;
+  --panel: #ffffff;
+  --ink: #172033;
+  --muted: #68738a;
+  --line: #dce3ef;
+  --brand: #3157d5;
+  --brand-strong: #2446b7;
+  --success: #147d64;
+  --danger: #b4233f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #101521;
+    --panel: #171e2d;
+    --ink: #edf1fa;
+    --muted: #a7b0c3;
+    --line: #2b3548;
+    --brand: #7896ff;
+    --brand-strong: #91a9ff;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); }
+button, input, textarea, select { font: inherit; }
+button, .button {
+  border: 0;
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  background: var(--brand);
+  color: white;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+button:hover, .button:hover { background: var(--brand-strong); }
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.secondary:hover { background: var(--bg); }
+input, textarea, select {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--ink);
+}
+label { display: grid; gap: 0.4rem; font-weight: 600; }
+.shell { display: grid; grid-template-columns: 230px 1fr; min-height: 100vh; }
+.sidebar { background: #18213a; color: white; padding: 1.5rem; }
+.sidebar a { color: #c9d2eb; text-decoration: none; display: block; padding: 0.7rem 0; }
+.sidebar a:hover { color: white; }
+.content { padding: 2rem; max-width: 1400px; width: 100%; margin: auto; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.25rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+.stack { display: grid; gap: 1rem; }
+.row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.between { justify-content: space-between; }
+.muted { color: var(--muted); }
+.error { color: var(--danger); }
+.success { color: var(--success); }
+.badge { border-radius: 999px; padding: 0.25rem 0.6rem; background: var(--bg); font-size: 0.82rem; }
+.center-page { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
+.auth-card { width: min(520px, 100%); text-align: center; }
+.device-code { font: 700 clamp(1.8rem, 8vw, 3rem)/1 ui-monospace, monospace; letter-spacing: 0.15em; padding: 1.5rem; background: var(--bg); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.mail-layout { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; min-height: 70vh; }
+.message-item { padding: 0.9rem; border-bottom: 1px solid var(--line); cursor: pointer; }
+.message-item:hover { background: var(--bg); }
+.email-body { max-width: 850px; overflow: auto; background: white; color: #111; padding: 1rem; border-radius: 8px; }
+
+@media (max-width: 760px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { padding: 1rem; }
+  .sidebar nav { display: flex; gap: 1rem; overflow-x: auto; }
+  .content { padding: 1rem; }
+  .mail-layout { grid-template-columns: 1fr; }
+}

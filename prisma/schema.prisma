@@ -1,0 +1,309 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum AuthorizationStatus {
+  PENDING
+  CONNECTED
+  REAUTHENTICATION_REQUIRED
+  REVOKED
+  EXPIRED
+  FAILED
+  CANCELLED
+}
+
+enum AccessRole {
+  SUPER_ADMIN
+  MICROSOFT_ADMIN
+  MAIL_OPERATOR
+  MAIL_VIEWER
+  DEPLOYMENT_ADMIN
+  HTML_DESIGNER
+  AUDITOR
+  SUPPORT_OPERATOR
+}
+
+enum ProjectStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum DeploymentStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+  EXPIRED
+  FAILED
+}
+
+model User {
+  id                   String                @id @default(cuid())
+  email                String                @unique
+  displayName          String?
+  status               UserStatus            @default(ACTIVE)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  roles                UserRole[]
+  sessions             Session[]
+  ownedConnections     MicrosoftConnection[] @relation("ConnectionOwner")
+  createdAccessCodes   AccessCode[]           @relation("AccessCodeCreator")
+  projects             HtmlProject[]
+  auditEvents          AuditEvent[]           @relation("AuditActor")
+}
+
+model InternalRole {
+  id          String     @id @default(cuid())
+  role        AccessRole @unique
+  description String
+  permissions String[]
+  users       UserRole[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   InternalRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  roleOverride AccessRole?
+  expiresAt DateTime
+  revokedAt DateTime?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model AccessCode {
+  id             String     @id @default(cuid())
+  codeHash       String     @unique
+  createdById    String
+  expiresAt      DateTime
+  maximumUses    Int        @default(1)
+  usedCount      Int        @default(0)
+  allowedUserId  String?
+  allowedRole    AccessRole?
+  allowedIpRange String?
+  revokedAt      DateTime?
+  lastUsedAt     DateTime?
+  description    String?
+  createdAt      DateTime   @default(now())
+  createdBy      User       @relation("AccessCodeCreator", fields: [createdById], references: [id])
+
+  @@index([expiresAt, revokedAt])
+}
+
+model MicrosoftConnection {
+  id                       String                @id @default(cuid())
+  tenantId                 String
+  microsoftUserId          String
+  displayName              String?
+  userPrincipalName        String?
+  email                    String?
+  connectedAt              DateTime              @default(now())
+  lastSuccessfulGraphAt    DateTime?
+  authorizationStatus      AuthorizationStatus   @default(CONNECTED)
+  encryptedTokenCache      Bytes
+  tokenCacheKeyVersion     Int                   @default(1)
+  grantedScopes            String[]
+  tenantDisplayName        String?
+  adminRoleSummary         Json?
+  ownerId                  String?
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+  owner                    User?                 @relation("ConnectionOwner", fields: [ownerId], references: [id])
+  authorizationSessions    MicrosoftAuthorizationSession[]
+  mailboxes                Mailbox[]
+  sharedMailboxPermissions MailboxPermission[]
+  auditEvents              AuditEvent[]
+
+  @@unique([tenantId, microsoftUserId])
+  @@index([ownerId, authorizationStatus])
+}
+
+model MicrosoftAuthorizationSession {
+  id                    String              @id @default(cuid())
+  publicId              String              @unique
+  requestedScopes       String[]
+  status                AuthorizationStatus @default(PENDING)
+  userCode              String?
+  verificationUri       String?
+  verificationUriComplete String?
+  message               String?
+  intervalSeconds       Int?
+  expiresAt             DateTime
+  errorCode             String?
+  connectionId          String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  connection            MicrosoftConnection? @relation(fields: [connectionId], references: [id])
+
+  @@index([status, expiresAt])
+}
+
+model Mailbox {
+  id             String              @id @default(cuid())
+  connectionId   String
+  microsoftId    String
+  address        String
+  displayName    String?
+  isShared       Boolean             @default(false)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  connection     MicrosoftConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  permissions    MailboxPermission[]
+
+  @@unique([connectionId, microsoftId])
+}
+
+model SharedMailbox {
+  id                String   @id @default(cuid())
+  tenantId          String
+  microsoftObjectId String
+  address           String
+  displayName       String?
+  lastVerifiedAt    DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([tenantId, microsoftObjectId])
+}
+
+model MailboxPermission {
+  id           String              @id @default(cuid())
+  mailboxId    String
+  connectionId String
+  permission   String
+  verifiedAt   DateTime
+  mailbox      Mailbox             @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  connection   MicrosoftConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, connectionId, permission])
+}
+
+model HtmlProject {
+  id          String               @id @default(cuid())
+  name        String
+  slug        String               @unique
+  status      ProjectStatus        @default(DRAFT)
+  createdById String
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  createdBy   User                 @relation(fields: [createdById], references: [id])
+  versions    HtmlProjectVersion[]
+  deployments CloudflareDeployment[]
+}
+
+model HtmlProjectVersion {
+  id         String      @id @default(cuid())
+  projectId  String
+  version    Int
+  html       String
+  css        String?
+  javascript String?
+  createdAt  DateTime    @default(now())
+  project    HtmlProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, version])
+}
+
+model Domain {
+  id          String                 @id @default(cuid())
+  hostname    String                 @unique
+  zoneId      String?
+  verifiedAt  DateTime?
+  createdAt   DateTime               @default(now())
+  deployments CloudflareDeployment[]
+}
+
+model CloudflareDeployment {
+  id          String           @id @default(cuid())
+  projectId   String
+  domainId    String?
+  deploymentId String          @unique
+  hostname    String           @unique
+  status      DeploymentStatus @default(PENDING)
+  accessPolicy Json?
+  expiresAt   DateTime?
+  deployedAt  DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  project     HtmlProject      @relation(fields: [projectId], references: [id])
+  domain      Domain?          @relation(fields: [domainId], references: [id])
+}
+
+model AuditEvent {
+  id           String               @id @default(cuid())
+  actorId      String?
+  connectionId String?
+  action       String
+  targetType   String
+  targetId     String?
+  result       String
+  ipAddress    String?
+  userAgent    String?
+  requestId    String
+  metadata     Json?
+  createdAt    DateTime             @default(now())
+  actor        User?                @relation("AuditActor", fields: [actorId], references: [id])
+  connection   MicrosoftConnection? @relation(fields: [connectionId], references: [id])
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+model DesktopCompanion {
+  id           String   @id @default(cuid())
+  name         String
+  publicKey    String
+  lastSeenAt   DateTime?
+  revokedAt    DateTime?
+  configuration Json?
+  createdAt    DateTime @default(now())
+}
+
+model Integration {
+  id                 String   @id @default(cuid())
+  provider           String   @unique
+  enabled            Boolean  @default(false)
+  configuration      Json?
+  secretReferenceId  String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model EncryptedSecretReference {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  ciphertext Bytes
+  keyVersion Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
