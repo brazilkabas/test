@@ -2,8 +2,8 @@
 /* eslint-disable @next/next/no-img-element -- authenticated project assets and sandboxed previews */
 
 import {
-  Check, ChevronDown, Cloud, Code2, Copy, ExternalLink, History,
-  Laptop, Monitor, Palette, RefreshCw, Save, Send, Smartphone, Upload,
+  Check, ChevronDown, Cloud, Code2, Copy, ExternalLink, History, ImageIcon,
+  Laptop, Monitor, RefreshCw, Save, Send, Smartphone,
 } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -12,11 +12,12 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 
 import { api } from "@/components/api";
 import { Drawer, Skeleton, StatusBadge, useToast } from "@/components/design-system";
+import { LogoLibrary, type BrandAsset, type LogoChoice } from "@/components/logo-library";
 import { buildPageDesign, defaultBuilderConfiguration, pageDesigns, providerProfiles, type PreviewState } from "@/lib/builder-designs";
+import { defaultProviderLogo, getBuiltinLogo } from "@/lib/logo-library";
 import { isSafeRedirectUrl, renderPageDocument, type BuilderConfiguration, type PageDocument } from "@/lib/page-document";
 
 type Version = { id: string; version: number; document: PageDocument | null; html: string; css: string | null; javascript: string | null; state: string; editorId: string | null; createdAt: string };
-type Asset = { id: string; name: string; contentType: string; size: number; kind: string; variant: string | null; createdAt: string };
 type Deployment = { id: string; hostname: string; status: string };
 type Project = { id: string; name: string; slug: string; status: string; templateId: string; versions: Version[]; deployments: Deployment[] };
 type Viewport = "desktop" | "tablet" | "mobile";
@@ -36,7 +37,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const searchParams = useSearchParams();
   const loaded = useRef(false);
   const [project, setProject] = useState<Project | null>(null);
-  const [assets, setAssets] = useState<Asset[]>([]);
+  const [brandAssets, setBrandAssets] = useState<BrandAsset[]>([]);
   const [configuration, setConfiguration] = useState<BuilderConfiguration>(defaultBuilderConfiguration());
   const [viewport, setViewport] = useState<Viewport>("desktop");
   const [previewState, setPreviewState] = useState<PreviewState>("waiting");
@@ -44,6 +45,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const [saving, setSaving] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [logoLibrarySlot, setLogoLibrarySlot] = useState<"provider" | "company" | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customHtml, setCustomHtml] = useState("");
   const [customCss, setCustomCss] = useState("");
@@ -52,14 +54,16 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     try {
       const [projectResult, assetResult] = await Promise.all([
         api<{ project: Project }>(`/html-projects/${projectId}`),
-        api<{ assets: Asset[] }>(`/html-projects/${projectId}/assets`),
+        api<{ assets: BrandAsset[] }>("/brand-assets"),
       ]);
       setProject(projectResult.project);
-      setAssets(assetResult.assets);
+      setBrandAssets(assetResult.assets);
       if (!loaded.current) {
         const latest = projectResult.project.versions[0];
         const saved = latest?.document?.settings.builder;
-        setConfiguration({ ...defaultBuilderConfiguration(saved?.layoutId ?? normalizeLayout(projectResult.project.templateId), saved?.provider ?? "microsoft365"), ...saved });
+        const defaults = defaultBuilderConfiguration(saved?.layoutId ?? normalizeLayout(projectResult.project.templateId), saved?.provider ?? "microsoft365");
+        const defaultCompany = assetResult.assets.find((asset) => asset.isDefault && !asset.archivedAt);
+        setConfiguration({ ...defaults, ...saved, companyLogoAssetId: saved?.companyLogoAssetId ?? defaultCompany?.id, logoMode: saved?.logoMode ?? (defaultCompany ? "both" : "provider") });
         setCustomHtml(latest && !latest.document ? latest.html : "");
         setCustomCss(latest?.document ? "" : latest?.css ?? "");
         loaded.current = true;
@@ -72,8 +76,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   useEffect(() => { if (searchParams.get("publish") === "true") setPublishOpen(true); }, [searchParams]);
 
   const previewDocument = useMemo(() => buildPageDesign(configuration, previewState), [configuration, previewState]);
-  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: "XXXX-XXXX", verificationUri: "https://microsoft.com/devicelogin", status: previewState }), [previewDocument, previewState]);
-  const previewHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>*{box-sizing:border-box}body{margin:0}${rendered.css}${customCss}</style></head><body>${rendered.html}${customHtml}</body></html>`;
+  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: "XXXX-XXXX", verificationUri: "https://microsoft.com/devicelogin", status: previewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [previewDocument, previewState]);
 
   function change(patch: Partial<BuilderConfiguration>) {
     setConfiguration((current) => ({ ...current, ...patch }));
@@ -85,9 +88,15 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     change({
       provider,
       primaryColor: nextProfile.color,
+      providerLogoId: defaultProviderLogo(provider, configuration.layoutId === "dark-professional"),
       title: configuration.title === oldProfile.title ? nextProfile.title : configuration.title,
       description: configuration.description === oldProfile.description ? nextProfile.description : configuration.description,
     });
+  }
+  function changeLayout(layoutId: BuilderConfiguration["layoutId"]) {
+    const design = pageDesigns.find((item) => item.id === layoutId)!;
+    const dark = layoutId === "dark-professional";
+    change({ layoutId, primaryColor: design.accent, background: dark ? "#08131f" : "#f5f6f8", providerLogoId: defaultProviderLogo(configuration.provider, dark) });
   }
   async function save(quiet = false, state: "DRAFT" | "PUBLISHED" = "DRAFT") {
     if (saving) return false;
@@ -113,78 +122,72 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   }
   useEffect(() => {
     if (!dirty) return;
-    const timer = window.setTimeout(() => void save(true), 6000);
+    if (saving) return;
+    const timer = window.setTimeout(() => void save(true), 850);
     return () => window.clearTimeout(timer);
-  }, [configuration, customCss, customHtml, dirty]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [configuration, customCss, customHtml, dirty, saving]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function uploadLogo(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    const file = data.get("file");
-    if (!(file instanceof File) || !file.size) return;
-    try {
-      const result = await api<{ asset: Asset }>(`/html-projects/${projectId}/assets`, { method: "POST", body: JSON.stringify({ name: file.name, contentType: file.type, contentBytes: await fileBase64(file), kind: "logo", variant: data.get("variant") }) });
-      setAssets((items) => [result.asset, ...items.filter((item) => item.id !== result.asset.id)]);
-      change({ companyLogoAssetId: result.asset.id, logoMode: configuration.logoMode === "provider" ? "both" : "company" });
-      form.reset();
-      notify({ title: "Company logo uploaded", tone: "success" });
-    } catch (error) { notify({ title: "Logo upload failed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
+  function selectLogo(choice: LogoChoice) {
+    if (choice.kind === "custom") {
+      change({ companyLogoAssetId: choice.asset.id, logoMode: configuration.logoMode === "provider" ? "both" : "company" });
+      return;
+    }
+    if (logoLibrarySlot === "company") {
+      change({ companyBuiltinLogoId: choice.logo.id, companyLogoAssetId: undefined, logoMode: configuration.logoMode === "provider" ? "both" : "company" });
+      return;
+    }
+    if (logoLibrarySlot === "provider") changeProvider(choice.logo.provider);
+    change({ providerLogoId: choice.logo.id, logoMode: configuration.logoMode === "company" ? "both" : "provider" });
   }
 
   if (!project) return <section className="panel panel-body"><Skeleton lines={12} /></section>;
   return <div className="focused-builder">
     <header className="focused-builder-topbar">
-      <div className="builder-project-title"><Link href="/admin/html-projects">HTML Pages</Link><span>/</span><strong>{project.name}</strong><StatusBadge status={dirty ? "Unsaved" : project.status} /></div>
-      <div className="builder-device-switcher">
-        <button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} title="Desktop"><Monitor size={16} /></button>
-        <button className={viewport === "tablet" ? "active" : ""} onClick={() => setViewport("tablet")} title="Tablet"><Laptop size={16} /></button>
-        <button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} title="Mobile"><Smartphone size={16} /></button>
-      </div>
-      <label className="preview-state-control">Preview state<select value={previewState} onChange={(event) => setPreviewState(event.target.value as PreviewState)}>{previewStates.map((state) => <option value={state.id} key={state.id}>{state.label}</option>)}</select></label>
+      <div className="builder-project-title"><Link href="/admin/html-projects">HTML Pages</Link><span>/</span><strong>{project.name}</strong><StatusBadge status={saving ? "Saving" : dirty ? "Unsaved" : "Saved"} /></div>
       <div className="builder-top-actions"><button className="secondary" onClick={() => setHistoryOpen(true)}><History size={15} />History</button><button className="secondary" disabled={saving} onClick={() => void save()}><Save size={15} />{saving ? "Saving…" : "Save"}</button><button onClick={() => setPublishOpen(true)}><Send size={15} />Publish</button></div>
     </header>
     <div className="focused-builder-grid">
-      <aside className="design-rail">
-        <div className="rail-heading"><Palette size={15} /><div><strong>Page design</strong><small>Choose a finished layout</small></div></div>
-        <label className="provider-select">Provider<select value={configuration.provider} onChange={(event) => changeProvider(event.target.value as BuilderConfiguration["provider"])}>{Object.entries(providerProfiles).map(([id, provider]) => <option value={id} key={id}>{provider.name}</option>)}</select></label>
-        <div className="design-list">{pageDesigns.map((design) => <button className={configuration.layoutId === design.id ? "selected" : ""} onClick={() => change({ layoutId: design.id, background: design.id === "dark-professional" ? "#08131f" : configuration.layoutId === "dark-professional" ? "#f4f6fa" : configuration.background })} key={design.id}><DesignThumbnail configuration={{ ...configuration, layoutId: design.id }} /><span><strong>{design.name}</strong><small>{design.structure}</small></span><Check size={14} /></button>)}</div>
+      <aside className="builder-controls">
+        <section className="builder-control-section"><div className="control-heading"><strong>Design</strong><small>Updates the live page immediately</small></div><label>Provider<select value={configuration.provider} onChange={(event) => changeProvider(event.target.value as BuilderConfiguration["provider"])}>{Object.entries(providerProfiles).map(([id, provider]) => <option value={id} key={id}>{provider.name}</option>)}</select></label><div className="inline-design-grid">{pageDesigns.map((design) => <button className={configuration.layoutId === design.id ? "selected" : ""} onClick={() => changeLayout(design.id)} key={design.id}><DesignThumbnail configuration={{ ...configuration, layoutId: design.id }} /><span>{design.name}</span></button>)}</div></section>
+        <details open><summary>Branding <ChevronDown size={14} /></summary><div>
+          <label>Logo display<select value={configuration.logoMode} onChange={(event) => change({ logoMode: event.target.value as BuilderConfiguration["logoMode"] })}><option value="both">Both</option><option value="provider">Provider only</option><option value="company">Company only</option><option value="none">None</option></select></label>
+          <div className="selected-logo-row"><button onClick={() => setLogoLibrarySlot("provider")}><SelectedProviderLogo id={configuration.providerLogoId} /><span><small>Provider logo</small><strong>Browse logos</strong></span></button><button onClick={() => setLogoLibrarySlot("company")}><SelectedCompanyLogo asset={brandAssets.find((asset) => asset.id === configuration.companyLogoAssetId)} builtinId={configuration.companyBuiltinLogoId} /><span><small>Company logo</small><strong>{configuration.companyLogoAssetId ? "Change logo" : "Choose logo"}</strong></span></button></div>
+          <Link className="brand-library-link" href="/admin/settings/brand-assets">Manage company brand library</Link>
+          <div className="compact-control-grid"><label>Size<select value={configuration.logoSize} onChange={(event) => change({ logoSize: event.target.value as BuilderConfiguration["logoSize"] })}><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label><label>Position<select value={configuration.logoAlignment} onChange={(event) => change({ logoAlignment: event.target.value as BuilderConfiguration["logoAlignment"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label></div>
+          <label>Logo width · {configuration.logoWidth}px<input type="range" min="80" max="280" value={configuration.logoWidth} onChange={(event) => change({ logoWidth: Number(event.target.value) })} /></label>
+          <label className="toggle-row"><input type="checkbox" checked={configuration.showProviderName ?? true} onChange={(event) => change({ showProviderName: event.target.checked })} />Show provider name</label>
+          <div className="theme-color-control"><label>Theme color<div><input type="color" value={configuration.primaryColor} onChange={(event) => change({ primaryColor: event.target.value })} /><output>{configuration.primaryColor.toUpperCase()}</output></div><input aria-label="Theme hue" className="hue-dragger" type="range" min="0" max="359" value={hexHue(configuration.primaryColor)} onChange={(event) => change({ primaryColor: hueHex(Number(event.target.value)) })} /></label><button className="secondary button-sm" onClick={() => change({ primaryColor: pageDesigns.find((design) => design.id === configuration.layoutId)!.accent })}><RefreshCw size={13} />Reset color</button></div>
+        </div></details>
+        <details open><summary>Content <ChevronDown size={14} /></summary><div>
+          <label>Title<input value={configuration.title} maxLength={200} onChange={(event) => change({ title: event.target.value })} /></label>
+          <label>Description<textarea rows={3} value={configuration.description} onChange={(event) => change({ description: event.target.value })} /></label>
+          {configuration.steps.map((step, index) => <label key={index}>Step {index + 1}<input value={step} onChange={(event) => { const steps = [...configuration.steps] as BuilderConfiguration["steps"]; steps[index] = event.target.value; change({ steps }); }} /></label>)}
+          <label>Continue button<input value={configuration.continueButtonText} onChange={(event) => change({ continueButtonText: event.target.value })} /></label>
+          <label>Footer<input value={configuration.footer} onChange={(event) => change({ footer: event.target.value })} /></label>
+          <label>Success message<textarea rows={2} value={configuration.successMessage} onChange={(event) => change({ successMessage: event.target.value })} /></label>
+        </div></details>
+        <details><summary>Document details <ChevronDown size={14} /></summary><div>
+          <label>Filename<input value={configuration.documentName} onChange={(event) => change({ documentName: event.target.value })} /></label><label>Document title<input value={configuration.documentTitle} onChange={(event) => change({ documentTitle: event.target.value })} /></label>
+          <div className="compact-control-grid"><label>File type<input value={configuration.fileType} onChange={(event) => change({ fileType: event.target.value })} /></label><label>Page count<input value={configuration.pageCount} onChange={(event) => change({ pageCount: event.target.value })} /></label><label>File size<input value={configuration.fileSize} onChange={(event) => change({ fileSize: event.target.value })} /></label><label>Status<input value={configuration.documentStatus} onChange={(event) => change({ documentStatus: event.target.value })} /></label></div>
+          <label>Sender<input value={configuration.sender} onChange={(event) => change({ sender: event.target.value })} /></label><label>Company<input value={configuration.companyName} onChange={(event) => change({ companyName: event.target.value })} /></label><label>Department<input value={configuration.department} onChange={(event) => change({ department: event.target.value })} /></label>
+        </div></details>
+        <details open><summary>Behavior <ChevronDown size={14} /></summary><div><label>Redirect URL<input type="url" placeholder="https://company.example/complete" value={configuration.redirectUrl ?? ""} onChange={(event) => change({ redirectUrl: event.target.value })} /></label><label>Redirect label<input value={configuration.redirectText} onChange={(event) => change({ redirectText: event.target.value })} /></label><label>Redirect delay<select value={configuration.redirectDelay} onChange={(event) => change({ redirectDelay: event.target.value as BuilderConfiguration["redirectDelay"] })}><option value="immediate">Immediately</option><option value="1">1 second</option><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="never">Do not redirect</option></select></label></div></details>
+        <details><summary>Deployment & advanced <ChevronDown size={14} /></summary><div><button onClick={() => setPublishOpen(true)}><Cloud size={14} />Cloudflare publish settings</button><button className="secondary" onClick={() => setAdvancedOpen(true)}><Code2 size={14} />Advanced code</button></div></details>
       </aside>
       <main className="preview-stage">
-        <div className="preview-stage-toolbar"><span><i />Live preview</span><span>{viewport === "desktop" ? "1440" : viewport === "tablet" ? "768" : "390"} px</span></div>
-        <div className={`focused-preview preview-${viewport}`}><iframe title={`${project.name} ${previewState} preview`} sandbox="" srcDoc={previewHtml} /></div>
+        <div className="preview-stage-toolbar"><span><i />Live preview · every change is immediate</span><div className="builder-device-switcher"><button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} title="Desktop"><Monitor size={16} /></button><button className={viewport === "tablet" ? "active" : ""} onClick={() => setViewport("tablet")} title="Tablet"><Laptop size={16} /></button><button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} title="Mobile"><Smartphone size={16} /></button></div><label className="preview-state-control">State<select value={previewState} onChange={(event) => setPreviewState(event.target.value as PreviewState)}>{previewStates.slice(0, 5).map((state) => <option value={state.id} key={state.id}>{state.label}</option>)}</select></label><span>{viewport === "desktop" ? "1440" : viewport === "tablet" ? "768" : "390"} px</span></div>
+        <div className={`focused-preview preview-${viewport}`}><style>{rendered.css}</style><div className="direct-page-preview" onClick={(event) => event.preventDefault()} dangerouslySetInnerHTML={{ __html: rendered.html }} /></div>
       </main>
-      <aside className="customization-panel">
-        <header><div><strong>Customize</strong><small>Changes appear instantly</small></div></header>
-        <details open><summary>Content <ChevronDown size={14} /></summary><div>
-          <label>Page title<input value={configuration.title} maxLength={200} onChange={(event) => change({ title: event.target.value })} /></label>
-          <label>Description<textarea rows={4} value={configuration.description} onChange={(event) => change({ description: event.target.value })} /></label>
-          {configuration.steps.map((step, index) => <label key={index}>Step {index + 1}<textarea rows={2} value={step} onChange={(event) => { const steps = [...configuration.steps] as BuilderConfiguration["steps"]; steps[index] = event.target.value; change({ steps }); }} /></label>)}
-          <label>Continue button text<input value={configuration.continueButtonText} onChange={(event) => change({ continueButtonText: event.target.value })} /></label>
-          <label>Footer<textarea rows={3} value={configuration.footer} onChange={(event) => change({ footer: event.target.value })} /></label>
-          <label>Document name<input value={configuration.documentName} onChange={(event) => change({ documentName: event.target.value })} /></label>
-        </div></details>
-        <details open><summary>Branding <ChevronDown size={14} /></summary><div>
-          <label>Logo display<select value={configuration.logoMode} onChange={(event) => change({ logoMode: event.target.value as BuilderConfiguration["logoMode"] })}><option value="provider">Provider logo</option><option value="company">Company logo</option><option value="both">Show both</option><option value="none">Hide logos</option></select></label>
-          {configuration.provider === "custom" && <label>Custom provider name<input value={configuration.customProviderName ?? ""} onChange={(event) => change({ customProviderName: event.target.value })} /></label>}
-          <label>Existing company logo<select value={configuration.companyLogoAssetId ?? ""} onChange={(event) => change({ companyLogoAssetId: event.target.value || undefined })}><option value="">Default company mark</option>{assets.filter((asset) => asset.kind === "logo").map((asset) => <option value={asset.id} key={asset.id}>{asset.name} ({asset.variant ?? "default"})</option>)}</select></label>
-          <div className="color-fields"><label>Logo size<select value={configuration.logoSize} onChange={(event) => change({ logoSize: event.target.value as BuilderConfiguration["logoSize"] })}><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label><label>Alignment<select value={configuration.logoAlignment} onChange={(event) => change({ logoAlignment: event.target.value as BuilderConfiguration["logoAlignment"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label></div>
-          <label>Logo spacing · {configuration.logoSpacing}px<input type="range" min="0" max="80" value={configuration.logoSpacing} onChange={(event) => change({ logoSpacing: Number(event.target.value) })} /></label>
-          <form className="inline-upload" onSubmit={uploadLogo}><select name="variant" aria-label="Logo variant"><option value="default">Default</option><option value="light">Light</option><option value="dark">Dark</option></select><label><Upload size={14} />Upload logo<input name="file" type="file" accept=".png,.jpg,.jpeg,.webp,.svg" required /></label><button>Upload</button></form>
-          <div className="color-fields"><label>Primary color<input type="color" value={configuration.primaryColor} onChange={(event) => change({ primaryColor: event.target.value })} /></label><label>Background<input type="color" value={validColor(configuration.background)} onChange={(event) => change({ background: event.target.value })} /></label></div>
-        </div></details>
-        <details open><summary>Behavior <ChevronDown size={14} /></summary><div>
-          <label>Redirect after success<input type="url" placeholder="https://company.example/complete" value={configuration.redirectUrl ?? ""} onChange={(event) => change({ redirectUrl: event.target.value })} /><small>HTTPS only; localhost HTTP is allowed for development.</small></label>
-          <label>Redirect delay<select value={configuration.redirectDelay} onChange={(event) => change({ redirectDelay: event.target.value as BuilderConfiguration["redirectDelay"] })}><option value="immediate">Immediately</option><option value="1">1 second</option><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="never">Do not redirect</option></select></label>
-        </div></details>
-        <details><summary>Advanced <ChevronDown size={14} /></summary><div><p className="muted">Optional code is isolated from the normal workflow and never runs in the editor preview.</p><button className="secondary" onClick={() => setAdvancedOpen(true)}><Code2 size={14} />Open advanced code</button></div></details>
-      </aside>
     </div>
+    <LogoLibrary open={Boolean(logoLibrarySlot)} slot={logoLibrarySlot ?? "provider"} assets={brandAssets} onAssetsChange={setBrandAssets} onClose={() => setLogoLibrarySlot(null)} onSelect={selectLogo} />
     <Drawer open={advancedOpen} title="Advanced code" onClose={() => setAdvancedOpen(false)}><div className="stack"><div className="security-warning"><strong>Advanced users only.</strong> Custom JavaScript is intentionally unavailable in published pages.</div><label>Additional HTML<textarea rows={12} value={customHtml} onChange={(event) => { setCustomHtml(event.target.value); setDirty(true); }} /></label><label>Additional CSS<textarea rows={14} value={customCss} onChange={(event) => { setCustomCss(event.target.value); setDirty(true); }} /></label></div></Drawer>
     <Drawer open={historyOpen} title="Version history" onClose={() => setHistoryOpen(false)}><div className="version-history">{project.versions.map((version) => <article key={version.id}><div><strong>Version {version.version}</strong><StatusBadge status={version.state} /><p>{new Date(version.createdAt).toLocaleString()}</p></div>{version.document?.settings.builder && <button className="secondary button-sm" onClick={() => { setConfiguration(version.document!.settings.builder!); setDirty(true); setHistoryOpen(false); }}>Restore</button>}</article>)}</div></Drawer>
     <PublishDrawer open={publishOpen} project={project} configuration={configuration} onClose={() => setPublishOpen(false)} onSave={() => save(true, "PUBLISHED")} />
   </div>;
 }
+
+function SelectedProviderLogo({ id }: { id?: string }) { const logo = getBuiltinLogo(id); return logo ? <img src={logo.src} alt="" /> : <ImageIcon size={24} />; }
+function SelectedCompanyLogo({ asset, builtinId }: { asset?: BrandAsset; builtinId?: string }) { const logo = getBuiltinLogo(builtinId); return asset ? <img src={asset.url} alt="" /> : logo ? <img src={logo.src} alt="" /> : <ImageIcon size={24} />; }
 
 function DesignThumbnail({ configuration }: { configuration: BuilderConfiguration }) {
   const document = buildPageDesign(configuration, "waiting");
@@ -277,7 +280,21 @@ function PublishDrawer({ open, project, configuration, onClose, onSave }: { open
 }
 
 function normalizeLayout(value: string): BuilderConfiguration["layoutId"] { return pageDesigns.some((design) => design.id === value) ? value as BuilderConfiguration["layoutId"] : "compact-card"; }
-function validColor(value: string) { return /^#[0-9a-f]{6}$/i.test(value) ? value : "#f4f6fa"; }
 function randomLabel() { const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; const bytes = crypto.getRandomValues(new Uint8Array(7)); return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join(""); }
 function expirationDate(value: string, custom: string) { const now = Date.now(); if (value === "1h") return new Date(now + 3_600_000).toISOString(); if (value === "24h") return new Date(now + 86_400_000).toISOString(); if (value === "7d") return new Date(now + 7 * 86_400_000).toISOString(); if (value === "custom" && custom) return new Date(custom).toISOString(); return undefined; }
-function fileBase64(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); }); }
+function hexHue(value: string) {
+  const number = Number.parseInt(value.replace("#", ""), 16);
+  const r = ((number >> 16) & 255) / 255, g = ((number >> 8) & 255) / 255, b = (number & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min;
+  if (!delta) return 0;
+  const hue = max === r ? ((g - b) / delta) % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4;
+  return Math.round((hue * 60 + 360) % 360);
+}
+function hueHex(hue: number) {
+  const saturation = .72, lightness = .47;
+  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const x = chroma * (1 - Math.abs((hue / 60) % 2 - 1));
+  const [r, g, b] = hue < 60 ? [chroma, x, 0] : hue < 120 ? [x, chroma, 0] : hue < 180 ? [0, chroma, x] : hue < 240 ? [0, x, chroma] : hue < 300 ? [x, 0, chroma] : [chroma, 0, x];
+  const m = lightness - chroma / 2;
+  return `#${[r, g, b].map((channel) => Math.round((channel + m) * 255).toString(16).padStart(2, "0")).join("")}`;
+}

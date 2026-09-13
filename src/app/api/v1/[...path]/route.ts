@@ -12,7 +12,7 @@ import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDe
 import { config } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
-import { pageDocumentSchema, renderPageDocument } from "@/lib/page-document";
+import { pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, GraphError, graphFetch, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
@@ -87,6 +87,7 @@ async function route(request: NextRequest, path: string[]) {
     if (actor) await audit({ actorId: actor.id, action: "auth.logout", targetType: "Session", result: "SUCCESS" });
     return new Response(null, { status: 204 });
   }
+  if (path[0] === "brand-assets") return brandAssetRoute(request, path);
   if (key === "GET /dashboard") return dashboard();
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
@@ -128,7 +129,7 @@ async function route(request: NextRequest, path: string[]) {
         }
       } catch { /* Invalid origins receive no CORS grant. */ }
     }
-    return Response.json({ authorization: status }, { headers });
+    return Response.json({ authorization: await hydrateAuthorizationBrandAssets(status) }, { headers });
   }
   if (path[0] === "microsoft" && path[1] === "device" && path[3] === "restart" && request.method === "POST") {
     enforceRateLimit(`device-restart:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}`);
@@ -666,8 +667,11 @@ async function htmlProjectRoute(request: NextRequest, path: string[]) {
   if (request.method === "GET") return Response.json({ project });
   if (path[2] === "versions" && request.method === "POST") {
     const input = z.object({ document: pageDocumentSchema, customHtml: z.string().max(1_000_000).optional(), customCss: z.string().max(500_000).refine((value) => !/[<>]/.test(value), "CSS cannot contain HTML delimiters").default(""), javascript: z.string().max(250_000).optional(), state: z.enum(["DRAFT", "PUBLISHED"]).default("DRAFT") }).parse(await request.json());
-    const projectAssets = await db.projectAsset.findMany({ where: { projectId }, select: { id: true, contentType: true, data: true } });
-    const embeddedAssets = new Map(projectAssets.map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
+    const [projectAssets, brandAssets] = await Promise.all([
+      db.projectAsset.findMany({ where: { projectId }, select: { id: true, contentType: true, data: true } }),
+      db.brandAsset.findMany({ where: { id: { in: brandAssetIds(input.document) } }, select: { id: true, contentType: true, data: true } }),
+    ]);
+    const embeddedAssets = new Map([...projectAssets, ...brandAssets].map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
     const rendered = renderPageDocument(input.document, { assetUrl: (assetId) => embeddedAssets.get(assetId) ?? "" });
     const customHtml = sanitizeHtml(input.customHtml ?? "", {
       allowedTags: [...sanitizeHtml.defaults.allowedTags, "section", "article", "header", "footer", "nav", "main"],
@@ -710,8 +714,116 @@ async function htmlProjectRoute(request: NextRequest, path: string[]) {
   throw new ApiError(405, "Method not allowed");
 }
 
+async function brandAssetRoute(request: NextRequest, path: string[]) {
+  const actor = await requirePermission("html:*");
+  if (path.length === 1 && request.method === "GET") {
+    const includeArchived = request.nextUrl.searchParams.get("archived") === "true";
+    const assets = await db.brandAsset.findMany({
+      where: includeArchived ? {} : { archivedAt: null },
+      orderBy: [{ isDefault: "desc" }, { favorite: "desc" }, { lastUsedAt: "desc" }, { createdAt: "desc" }],
+      select: { id: true, name: true, contentType: true, size: true, category: true, variant: true, tags: true, favorite: true, isDefault: true, archivedAt: true, lastUsedAt: true, createdAt: true, updatedAt: true },
+    });
+    return Response.json({ assets: assets.map((asset) => ({ ...asset, url: `/api/v1/brand-assets/${asset.id}/content` })) });
+  }
+  if (path.length === 1 && request.method === "POST") {
+    const input = z.object({
+      name: z.string().min(1).max(255),
+      contentType: z.enum(["image/png", "image/jpeg", "image/webp", "image/svg+xml"]),
+      contentBytes: z.string().max(10_000_000),
+      category: z.string().min(1).max(80).default("Company Logos"),
+      variant: z.enum(["Light", "Dark", "Full Color", "Monochrome", "Icon", "Wordmark"]).default("Full Color"),
+      tags: z.array(z.string().min(1).max(40)).max(20).default([]),
+      favorite: z.boolean().default(false),
+      isDefault: z.boolean().default(false),
+    }).parse(await request.json());
+    let data = Buffer.from(input.contentBytes, "base64");
+    if (data.length > 7 * 1024 * 1024) throw new ApiError(413, "Logo exceeds the 7 MB limit");
+    if (input.contentType === "image/svg+xml") data = Buffer.from(sanitizeSvg(data.toString("utf8")), "utf8");
+    validateAssetBytes(input.contentType, data);
+    const digest = sha256(data.toString("base64"));
+    if (input.isDefault) await db.brandAsset.updateMany({ where: { isDefault: true }, data: { isDefault: false } });
+    const asset = await db.brandAsset.upsert({
+      where: { sha256: digest },
+      create: { name: input.name, contentType: input.contentType, size: data.length, sha256: digest, data, category: input.category, variant: input.variant, tags: input.tags, favorite: input.favorite, isDefault: input.isDefault, createdById: actor.id },
+      update: { name: input.name, category: input.category, variant: input.variant, tags: input.tags, favorite: input.favorite, isDefault: input.isDefault, archivedAt: null },
+      select: { id: true, name: true, contentType: true, size: true, category: true, variant: true, tags: true, favorite: true, isDefault: true, archivedAt: true, lastUsedAt: true, createdAt: true, updatedAt: true },
+    });
+    await audit({ actorId: actor.id, action: "brand_asset.uploaded", targetType: "BrandAsset", targetId: asset.id, result: "SUCCESS", metadata: { contentType: input.contentType, size: data.length, variant: input.variant } });
+    return Response.json({ asset: { ...asset, url: `/api/v1/brand-assets/${asset.id}/content` } }, { status: 201 });
+  }
+  const assetId = id.parse(path[1]);
+  const asset = await db.brandAsset.findUnique({ where: { id: assetId } });
+  if (!asset) throw new ApiError(404, "Brand asset not found");
+  if (path[2] === "content" && request.method === "GET") {
+    const bytes = Uint8Array.from(asset.data);
+    return new Response(bytes.buffer, { headers: { "Content-Type": asset.contentType, "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(asset.name)}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300" } });
+  }
+  if (path.length === 2 && request.method === "PATCH") {
+    const input = z.object({
+      name: z.string().min(1).max(255).optional(),
+      category: z.string().min(1).max(80).optional(),
+      variant: z.enum(["Light", "Dark", "Full Color", "Monochrome", "Icon", "Wordmark"]).optional(),
+      tags: z.array(z.string().min(1).max(40)).max(20).optional(),
+      favorite: z.boolean().optional(),
+      isDefault: z.boolean().optional(),
+      archived: z.boolean().optional(),
+      markUsed: z.boolean().optional(),
+    }).strict().parse(await request.json());
+    if (input.isDefault) await db.brandAsset.updateMany({ where: { isDefault: true, id: { not: assetId } }, data: { isDefault: false } });
+    const updated = await db.brandAsset.update({
+      where: { id: assetId },
+      data: {
+        name: input.name, category: input.category, variant: input.variant, tags: input.tags,
+        favorite: input.favorite, isDefault: input.isDefault,
+        archivedAt: input.archived === undefined ? undefined : input.archived ? new Date() : null,
+        lastUsedAt: input.markUsed ? new Date() : undefined,
+      },
+      select: { id: true, name: true, contentType: true, size: true, category: true, variant: true, tags: true, favorite: true, isDefault: true, archivedAt: true, lastUsedAt: true, createdAt: true, updatedAt: true },
+    });
+    await audit({ actorId: actor.id, action: input.archived ? "brand_asset.archived" : "brand_asset.updated", targetType: "BrandAsset", targetId: assetId, result: "SUCCESS", metadata: { fields: Object.keys(input).join(",") } });
+    return Response.json({ asset: { ...updated, url: `/api/v1/brand-assets/${assetId}/content` } });
+  }
+  if (path.length === 2 && request.method === "DELETE") {
+    await db.brandAsset.delete({ where: { id: assetId } });
+    await audit({ actorId: actor.id, action: "brand_asset.deleted", targetType: "BrandAsset", targetId: assetId, result: "SUCCESS" });
+    return new Response(null, { status: 204 });
+  }
+  throw new ApiError(405, "Method not allowed");
+}
+
 function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "project";
+}
+
+function brandAssetIds(document: PageDocument) {
+  const ids = new Set<string>();
+  const visit = (nodes: PageNode[]) => nodes.forEach((node) => {
+    if (node.assetId) ids.add(node.assetId);
+    if (node.children) visit(node.children);
+  });
+  visit(document.nodes);
+  if (document.settings.builder?.companyLogoAssetId) ids.add(document.settings.builder.companyLogoAssetId);
+  return [...ids];
+}
+
+async function hydrateAuthorizationBrandAssets(status: NonNullable<Awaited<ReturnType<typeof authorizationStatus>>>) {
+  const parsed = pageDocumentSchema.safeParse(status.pageProject?.versions[0]?.document);
+  if (!parsed.success) return status;
+  const assets = await db.brandAsset.findMany({ where: { id: { in: brandAssetIds(parsed.data) } }, select: { id: true, contentType: true, data: true } });
+  if (!assets.length) return status;
+  const sources = new Map(assets.map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
+  const hydrate = (node: PageNode): PageNode => {
+    const source = node.assetId ? sources.get(node.assetId) : undefined;
+    return { ...node, assetId: source ? undefined : node.assetId, src: source ?? node.src, children: node.children?.map(hydrate) };
+  };
+  const document: PageDocument = { ...parsed.data, nodes: parsed.data.nodes.map(hydrate) };
+  return {
+    ...status,
+    pageProject: status.pageProject ? {
+      ...status.pageProject,
+      versions: status.pageProject.versions.map((version, index) => index === 0 ? { ...version, document } : version),
+    } : status.pageProject,
+  };
 }
 
 function sanitizeSvg(value: string) {
@@ -959,8 +1071,11 @@ async function publishMicrosoftSessionPage(input: { pageProjectId: string; deplo
   if (!session?.userCode || !session.verificationUri) throw new ApiError(409, "Microsoft device challenge is not ready");
   const parsed = pageDocumentSchema.safeParse(deployment.project.versions[0].document);
   if (!parsed.success) throw new ApiError(422, "The deployed project is not a visual Microsoft connection page");
-  const assets = await db.projectAsset.findMany({ where: { projectId: input.pageProjectId }, select: { id: true, contentType: true, data: true } });
-  const embedded = new Map(assets.map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
+  const [assets, brandAssets] = await Promise.all([
+    db.projectAsset.findMany({ where: { projectId: input.pageProjectId }, select: { id: true, contentType: true, data: true } }),
+    db.brandAsset.findMany({ where: { id: { in: brandAssetIds(parsed.data) } }, select: { id: true, contentType: true, data: true } }),
+  ]);
+  const embedded = new Map([...assets, ...brandAssets].map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
   const rendered = renderPageDocument(parsed.data, { deviceCode: session.userCode, verificationUri: session.verificationUri, status: session.status, assetUrl: (assetId) => embedded.get(assetId) ?? "" });
   const base = config().APP_BASE_URL.replace(/\/$/, "");
   const appUrl = new URL(base);

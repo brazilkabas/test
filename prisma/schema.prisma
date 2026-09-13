@@ -71,6 +71,7 @@ model User {
   ownedConnections     MicrosoftConnection[] @relation("ConnectionOwner")
   createdAccessCodes   AccessCode[]           @relation("AccessCodeCreator")
   projects             HtmlProject[]
+  brandAssets          BrandAsset[]
   auditEvents          AuditEvent[]           @relation("AuditActor")
 }
 
@@ -268,6 +269,29 @@ model ProjectAsset {
 
   @@index([projectId, kind])
   @@unique([projectId, sha256])
+}
+
+model BrandAsset {
+  id          String    @id @default(cuid())
+  name        String
+  contentType String
+  size        Int
+  sha256      String    @unique
+  data        Bytes
+  category    String    @default("Company Logos")
+  variant     String    @default("Full Color")
+  tags        String[]
+  favorite    Boolean   @default(false)
+  isDefault   Boolean   @default(false)
+  archivedAt  DateTime?
+  lastUsedAt  DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   User      @relation(fields: [createdById], references: [id])
+
+  @@index([archivedAt, category])
+  @@index([favorite, lastUsedAt])
 }
 
 model Domain {
