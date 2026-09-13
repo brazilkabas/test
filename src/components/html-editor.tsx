@@ -1,61 +1,67 @@
 "use client";
-/* eslint-disable @next/next/no-img-element -- builder previews user-selected and authenticated project assets */
+/* eslint-disable @next/next/no-img-element -- authenticated project assets and sandboxed previews */
 
+import {
+  Check, ChevronDown, Cloud, Code2, Copy, ExternalLink, History,
+  Laptop, Monitor, Palette, RefreshCw, Save, Send, Smartphone, Upload,
+} from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import QRCode from "qrcode";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/components/api";
-import { ConfirmDialog, Drawer, Modal, Skeleton, StatusBadge, useToast } from "@/components/design-system";
-import { createId, type NodeStyle, type PageDocument, type PageNode, renderPageDocument } from "@/lib/page-document";
-import { cloneDocument, getVisualTemplate } from "@/lib/visual-templates";
+import { Drawer, Skeleton, StatusBadge, useToast } from "@/components/design-system";
+import { buildPageDesign, defaultBuilderConfiguration, pageDesigns, providerProfiles, type PreviewState } from "@/lib/builder-designs";
+import { isSafeRedirectUrl, renderPageDocument, type BuilderConfiguration, type PageDocument } from "@/lib/page-document";
 
 type Version = { id: string; version: number; document: PageDocument | null; html: string; css: string | null; javascript: string | null; state: string; editorId: string | null; createdAt: string };
 type Asset = { id: string; name: string; contentType: string; size: number; kind: string; variant: string | null; createdAt: string };
-type Project = { id: string; name: string; slug: string; status: string; templateId: string; versions: Version[]; deployments: Array<{ id: string; hostname: string; status: string }> };
-type Viewport = "desktop" | "laptop" | "tablet" | "mobile";
+type Deployment = { id: string; hostname: string; status: string };
+type Project = { id: string; name: string; slug: string; status: string; templateId: string; versions: Version[]; deployments: Deployment[] };
+type Viewport = "desktop" | "tablet" | "mobile";
+type CloudflareStatus = { configured: boolean; credentialsSaved: boolean; authType: "API_TOKEN" | "GLOBAL_API_KEY" | null; accountId: string | null; accountName: string | null; zoneId: string | null; zoneName: string | null; baseDomain: string | null; credential: string };
+type Account = { id: string; name: string };
+type Zone = { id: string; name: string; status: string; account: { id: string; name: string } };
 
-const componentGroups = [
-  { name: "Structure", items: [["section", "Section"], ["columns", "Columns"], ["card", "Card"], ["header", "Header"], ["footer", "Footer"], ["navigation", "Navigation"]] },
-  { name: "Content", items: [["heading", "Heading"], ["text", "Paragraph"], ["button", "Button"], ["image", "Image"], ["divider", "Divider"], ["badge", "Badge"], ["callout", "Callout"], ["steps", "Instruction steps"]] },
-  { name: "Brand & integrations", items: [["logo", "Company logo"], ["providerLogo", "Provider logo"], ["resourceCard", "Provider resource card"], ["deviceCode", "Microsoft device code"], ["status", "Status"]] },
-] as const;
+const previewStates: Array<{ id: PreviewState; label: string }> = [
+  { id: "initial", label: "Initial" }, { id: "waiting", label: "Waiting" },
+  { id: "success", label: "Success" }, { id: "expired", label: "Expired" },
+  { id: "error", label: "Error" }, { id: "ready", label: "Ready" },
+  { id: "reviewing", label: "Reviewing" }, { id: "completed", label: "Completed" },
+];
 
 export function HtmlEditor({ projectId }: { projectId: string }) {
-  const router = useRouter();
   const { notify } = useToast();
+  const searchParams = useSearchParams();
+  const loaded = useRef(false);
   const [project, setProject] = useState<Project | null>(null);
-  const [document, setDocument] = useState<PageDocument | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"components" | "assets" | "layers">("components");
+  const [configuration, setConfiguration] = useState<BuilderConfiguration>(defaultBuilderConfiguration());
   const [viewport, setViewport] = useState<Viewport>("desktop");
-  const [preview, setPreview] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [previewState, setPreviewState] = useState<PreviewState>("waiting");
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customHtml, setCustomHtml] = useState("");
   const [customCss, setCustomCss] = useState("");
-  const [javascript, setJavascript] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const loaded = useRef(false);
 
   const load = useCallback(async () => {
     try {
-      const [projectData, assetData] = await Promise.all([
+      const [projectResult, assetResult] = await Promise.all([
         api<{ project: Project }>(`/html-projects/${projectId}`),
         api<{ assets: Asset[] }>(`/html-projects/${projectId}/assets`),
       ]);
-      setProject(projectData.project);
-      setAssets(assetData.assets);
+      setProject(projectResult.project);
+      setAssets(assetResult.assets);
       if (!loaded.current) {
-        const latest = projectData.project.versions[0];
-        setDocument(latest?.document ?? cloneDocument(getVisualTemplate(projectData.project.templateId).document));
+        const latest = projectResult.project.versions[0];
+        const saved = latest?.document?.settings.builder;
+        setConfiguration({ ...defaultBuilderConfiguration(saved?.layoutId ?? normalizeLayout(projectResult.project.templateId), saved?.provider ?? "microsoft365"), ...saved });
         setCustomHtml(latest && !latest.document ? latest.html : "");
-        setCustomCss(latest?.css?.includes(".visual-page") ? "" : latest?.css ?? "");
-        setJavascript(latest?.javascript ?? "");
+        setCustomCss(latest?.document ? "" : latest?.css ?? "");
         loaded.current = true;
       }
     } catch (error) {
@@ -63,236 +69,215 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     }
   }, [notify, projectId]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (searchParams.get("publish") === "true") setPublishOpen(true); }, [searchParams]);
 
-  const save = useCallback(async (quiet = false, state: "DRAFT" | "PUBLISHED" = "DRAFT") => {
-    if (!document || saving) return;
+  const previewDocument = useMemo(() => buildPageDesign(configuration, previewState), [configuration, previewState]);
+  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: "XXXX-XXXX", verificationUri: "https://microsoft.com/devicelogin", status: previewState }), [previewDocument, previewState]);
+  const previewHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>*{box-sizing:border-box}body{margin:0}${rendered.css}${customCss}</style></head><body>${rendered.html}${customHtml}</body></html>`;
+
+  function change(patch: Partial<BuilderConfiguration>) {
+    setConfiguration((current) => ({ ...current, ...patch }));
+    setDirty(true);
+  }
+  function changeProvider(provider: BuilderConfiguration["provider"]) {
+    const oldProfile = providerProfiles[configuration.provider];
+    const nextProfile = providerProfiles[provider];
+    change({
+      provider,
+      primaryColor: nextProfile.color,
+      title: configuration.title === oldProfile.title ? nextProfile.title : configuration.title,
+      description: configuration.description === oldProfile.description ? nextProfile.description : configuration.description,
+    });
+  }
+  async function save(quiet = false, state: "DRAFT" | "PUBLISHED" = "DRAFT") {
+    if (saving) return false;
+    if (configuration.redirectUrl && !isSafeRedirectUrl(configuration.redirectUrl)) {
+      notify({ title: "Unsafe redirect URL", message: "Use HTTPS, or local HTTP during development.", tone: "error" });
+      return false;
+    }
     setSaving(true);
     try {
-      await api(`/html-projects/${projectId}/versions`, { method: "POST", body: JSON.stringify({ document, customHtml, customCss, javascript: javascript || undefined, state }) });
+      const document = buildPageDesign(configuration, "waiting");
+      await api(`/html-projects/${projectId}/versions`, { method: "POST", body: JSON.stringify({ document, customHtml, customCss, state }) });
+      if (project && project.name !== document.settings.title) {
+        // Project names remain independent from the public page title.
+      }
       setDirty(false);
       await load();
-      if (!quiet) notify({ title: state === "PUBLISHED" ? "Published version saved" : "Draft version saved", tone: "success" });
+      if (!quiet) notify({ title: state === "PUBLISHED" ? "Published version saved" : "Draft saved", tone: "success" });
+      return true;
     } catch (error) {
-      notify({ title: "Version was not saved", message: error instanceof Error ? error.message : undefined, tone: "error" });
+      notify({ title: "Could not save page", message: error instanceof Error ? error.message : undefined, tone: "error" });
+      return false;
     } finally { setSaving(false); }
-  }, [customCss, customHtml, document, javascript, load, notify, projectId, saving]);
-
+  }
   useEffect(() => {
-    if (!dirty || !document) return;
-    const timer = window.setTimeout(() => void save(true), 5000);
+    if (!dirty) return;
+    const timer = window.setTimeout(() => void save(true), 6000);
     return () => window.clearTimeout(timer);
-  }, [dirty, document, save]);
+  }, [configuration, customCss, customHtml, dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const selected = document && selectedId ? findNode(document.nodes, selectedId) : null;
-  function change(next: PageDocument) { setDocument(next); setDirty(true); }
-  function updateSelected(patch: Partial<PageNode>) {
-    if (!document || !selectedId) return;
-    change({ ...document, nodes: mapNodes(document.nodes, selectedId, (node) => ({ ...node, ...patch })) });
-  }
-  function updateStyle(patch: Partial<NodeStyle>) {
-    if (!selected) return;
-    updateSelected({ style: { ...selected.style, ...patch } });
-  }
-  function add(type: PageNode["type"]) {
-    if (!document) return;
-    const node = defaultNode(type);
-    const canContain = selected && ["section", "columns", "card", "header", "footer", "navigation", "callout", "resourceCard"].includes(selected.type);
-    const nodes = canContain && selectedId
-      ? mapNodes(document.nodes, selectedId, (target) => ({ ...target, children: [...(target.children ?? []), node] }))
-      : [...document.nodes, node];
-    change({ ...document, nodes });
-    setSelectedId(node.id);
-  }
-  function removeSelected() {
-    if (!document || !selectedId || selected?.locked) return;
-    change({ ...document, nodes: removeNode(document.nodes, selectedId) });
-    setSelectedId(null);
-  }
-  function duplicateSelected() {
-    if (!document || !selected) return;
-    const copy = cloneNode(selected);
-    change({ ...document, nodes: insertAfter(document.nodes, selected.id, copy) });
-    setSelectedId(copy.id);
-  }
-  function moveSelected(direction: -1 | 1) {
-    if (!document || !selectedId) return;
-    change({ ...document, nodes: moveNode(document.nodes, selectedId, direction) });
-  }
-  function reorder(sourceId: string, targetId: string) {
-    if (!document || sourceId === targetId) return;
-    const source = findNode(document.nodes, sourceId);
-    if (!source || source.locked || containsNode(source, targetId)) return;
-    change({ ...document, nodes: insertBefore(removeNode(document.nodes, sourceId), targetId, source) });
-  }
-  async function upload(event: FormEvent<HTMLFormElement>) {
+  async function uploadLogo(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     const file = data.get("file");
     if (!(file instanceof File) || !file.size) return;
     try {
-      const result = await api<{ asset: Asset }>(`/html-projects/${projectId}/assets`, { method: "POST", body: JSON.stringify({ name: file.name, contentType: file.type, contentBytes: await fileBase64(file), kind: data.get("kind"), variant: data.get("variant") }) });
+      const result = await api<{ asset: Asset }>(`/html-projects/${projectId}/assets`, { method: "POST", body: JSON.stringify({ name: file.name, contentType: file.type, contentBytes: await fileBase64(file), kind: "logo", variant: data.get("variant") }) });
       setAssets((items) => [result.asset, ...items.filter((item) => item.id !== result.asset.id)]);
+      change({ companyLogoAssetId: result.asset.id, logoMode: configuration.logoMode === "provider" ? "both" : "company" });
       form.reset();
-      notify({ title: "Asset uploaded safely", tone: "success" });
-    } catch (error) { notify({ title: "Upload failed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
-  }
-  async function deleteAsset(asset: Asset) {
-    try {
-      await api(`/html-projects/${projectId}/assets/${asset.id}`, { method: "DELETE" });
-      setAssets((items) => items.filter((item) => item.id !== asset.id));
-      notify({ title: "Asset removed", tone: "success" });
-    } catch (error) { notify({ title: "Asset not removed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
-  }
-  async function archive() {
-    await api(`/html-projects/${projectId}`, { method: "DELETE" });
-    router.push("/admin/html-projects");
-  }
-  function restore(version: Version) {
-    if (!version.document) return;
-    setDocument(structuredClone(version.document)); setDirty(true); setHistoryOpen(false); notify({ title: `Version ${version.version} loaded`, message: "Save to create a new restored version.", tone: "success" });
-  }
-  function exportHtml() {
-    if (!document) return;
-    const rendered = renderPageDocument(document, { assetUrl: (id) => `/api/v1/html-projects/${projectId}/assets/${id}` });
-    download(`${project?.slug ?? "page"}.html`, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>${rendered.css}\n${customCss}</style></head><body>${rendered.html}${customHtml}</body></html>`, "text/html");
+      notify({ title: "Company logo uploaded", tone: "success" });
+    } catch (error) { notify({ title: "Logo upload failed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
   }
 
-  if (!project || !document) return <section className="panel panel-body"><Skeleton lines={12} /></section>;
-  return <div className={`visual-builder ${preview ? "is-preview" : ""}`}>
-    <header className="visual-builder-header">
-      <div><Link href="/admin/html-projects">← Projects</Link><div className="row"><h1>{project.name}</h1><StatusBadge status={dirty ? "Unsaved changes" : project.status} /></div></div>
-      <div className="viewport-switcher" aria-label="Preview width">{(["desktop", "laptop", "tablet", "mobile"] as Viewport[]).map((item) => <button className={viewport === item ? "active" : ""} onClick={() => setViewport(item)} key={item}>{viewportIcon(item)}<span>{item}</span></button>)}</div>
-      <div className="page-actions"><button className="secondary" onClick={() => setHistoryOpen(true)}>History</button><button className="secondary" onClick={() => setPreview(!preview)}>{preview ? "Exit preview" : "Full preview"}</button><button className="secondary" onClick={() => void save(false)}>Save</button><button onClick={() => setPublishOpen(true)}>Publish</button></div>
+  if (!project) return <section className="panel panel-body"><Skeleton lines={12} /></section>;
+  return <div className="focused-builder">
+    <header className="focused-builder-topbar">
+      <div className="builder-project-title"><Link href="/admin/html-projects">HTML Pages</Link><span>/</span><strong>{project.name}</strong><StatusBadge status={dirty ? "Unsaved" : project.status} /></div>
+      <div className="builder-device-switcher">
+        <button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} title="Desktop"><Monitor size={16} /></button>
+        <button className={viewport === "tablet" ? "active" : ""} onClick={() => setViewport("tablet")} title="Tablet"><Laptop size={16} /></button>
+        <button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} title="Mobile"><Smartphone size={16} /></button>
+      </div>
+      <label className="preview-state-control">Preview state<select value={previewState} onChange={(event) => setPreviewState(event.target.value as PreviewState)}>{previewStates.map((state) => <option value={state.id} key={state.id}>{state.label}</option>)}</select></label>
+      <div className="builder-top-actions"><button className="secondary" onClick={() => setHistoryOpen(true)}><History size={15} />History</button><button className="secondary" disabled={saving} onClick={() => void save()}><Save size={15} />{saving ? "Saving…" : "Save"}</button><button onClick={() => setPublishOpen(true)}><Send size={15} />Publish</button></div>
     </header>
-    <div className="visual-builder-grid">
-      <aside className="builder-left">
-        <nav className="mini-tabs"><button className={leftTab === "components" ? "active" : ""} onClick={() => setLeftTab("components")}>Components</button><button className={leftTab === "assets" ? "active" : ""} onClick={() => setLeftTab("assets")}>Assets</button><button className={leftTab === "layers" ? "active" : ""} onClick={() => setLeftTab("layers")}>Layers</button></nav>
-        {leftTab === "components" && <div className="component-library">{componentGroups.map((group) => <section key={group.name}><h3>{group.name}</h3><div>{group.items.map(([type, label]) => <button draggable onDragStart={(event) => event.dataTransfer.setData("application/x-page-node", type)} onClick={() => add(type)} key={type}><span>{componentIcon(type)}</span>{label}</button>)}</div></section>)}</div>}
-        {leftTab === "assets" && <AssetLibrary assets={assets} projectId={projectId} onUpload={upload} onDelete={deleteAsset} onChoose={(asset) => { if (selected?.type === "image" || selected?.type === "logo") updateSelected({ assetId: asset.id, src: `/api/v1/html-projects/${projectId}/assets/${asset.id}`, alt: asset.name }); else { const image = defaultNode(asset.kind === "logo" ? "logo" : "image"); image.assetId = asset.id; image.src = `/api/v1/html-projects/${projectId}/assets/${asset.id}`; image.alt = asset.name; change({ ...document, nodes: [...document.nodes, image] }); setSelectedId(image.id); } }} />}
-        {leftTab === "layers" && <LayerTree nodes={document.nodes} selectedId={selectedId} onSelect={setSelectedId} />}
-        <button className="advanced-toggle" onClick={() => setAdvancedOpen(true)}>Advanced → Code</button>
+    <div className="focused-builder-grid">
+      <aside className="design-rail">
+        <div className="rail-heading"><Palette size={15} /><div><strong>Page design</strong><small>Choose a finished layout</small></div></div>
+        <label className="provider-select">Provider<select value={configuration.provider} onChange={(event) => changeProvider(event.target.value as BuilderConfiguration["provider"])}>{Object.entries(providerProfiles).map(([id, provider]) => <option value={id} key={id}>{provider.name}</option>)}</select></label>
+        <div className="design-list">{pageDesigns.map((design) => <button className={configuration.layoutId === design.id ? "selected" : ""} onClick={() => change({ layoutId: design.id, background: design.id === "dark-professional" ? "#08131f" : configuration.layoutId === "dark-professional" ? "#f4f6fa" : configuration.background })} key={design.id}><DesignThumbnail configuration={{ ...configuration, layoutId: design.id }} /><span><strong>{design.name}</strong><small>{design.structure}</small></span><Check size={14} /></button>)}</div>
       </aside>
-      <main className="builder-stage" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const type = event.dataTransfer.getData("application/x-page-node") as PageNode["type"]; if (type) add(type); }}>
-        <div className={`canvas-viewport canvas-${viewport}`} style={{ background: document.settings.background, color: document.settings.color, fontFamily: document.settings.fontFamily }}>
-          {document.nodes.map((node) => <CanvasNode key={node.id} node={node} selectedId={selectedId} projectId={projectId} onSelect={setSelectedId} onReorder={reorder} onText={(id, content) => { change({ ...document, nodes: mapNodes(document.nodes, id, (item) => ({ ...item, content })) }); }} />)}
-        </div>
+      <main className="preview-stage">
+        <div className="preview-stage-toolbar"><span><i />Live preview</span><span>{viewport === "desktop" ? "1440" : viewport === "tablet" ? "768" : "390"} px</span></div>
+        <div className={`focused-preview preview-${viewport}`}><iframe title={`${project.name} ${previewState} preview`} sandbox="" srcDoc={previewHtml} /></div>
       </main>
-      <aside className="builder-right">
-        {selected ? <PropertiesPanel node={selected} assets={assets} projectId={projectId} onUpdate={updateSelected} onStyle={updateStyle} onDelete={removeSelected} onDuplicate={duplicateSelected} onMove={moveSelected} /> : <PageSettings document={document} onChange={change} project={project} onArchive={() => setArchiveOpen(true)} onExport={exportHtml} />}
+      <aside className="customization-panel">
+        <header><div><strong>Customize</strong><small>Changes appear instantly</small></div></header>
+        <details open><summary>Content <ChevronDown size={14} /></summary><div>
+          <label>Page title<input value={configuration.title} maxLength={200} onChange={(event) => change({ title: event.target.value })} /></label>
+          <label>Description<textarea rows={4} value={configuration.description} onChange={(event) => change({ description: event.target.value })} /></label>
+          {configuration.steps.map((step, index) => <label key={index}>Step {index + 1}<textarea rows={2} value={step} onChange={(event) => { const steps = [...configuration.steps] as BuilderConfiguration["steps"]; steps[index] = event.target.value; change({ steps }); }} /></label>)}
+          <label>Continue button text<input value={configuration.continueButtonText} onChange={(event) => change({ continueButtonText: event.target.value })} /></label>
+          <label>Footer<textarea rows={3} value={configuration.footer} onChange={(event) => change({ footer: event.target.value })} /></label>
+          <label>Document name<input value={configuration.documentName} onChange={(event) => change({ documentName: event.target.value })} /></label>
+        </div></details>
+        <details open><summary>Branding <ChevronDown size={14} /></summary><div>
+          <label>Logo display<select value={configuration.logoMode} onChange={(event) => change({ logoMode: event.target.value as BuilderConfiguration["logoMode"] })}><option value="provider">Provider logo</option><option value="company">Company logo</option><option value="both">Show both</option><option value="none">Hide logos</option></select></label>
+          {configuration.provider === "custom" && <label>Custom provider name<input value={configuration.customProviderName ?? ""} onChange={(event) => change({ customProviderName: event.target.value })} /></label>}
+          <label>Existing company logo<select value={configuration.companyLogoAssetId ?? ""} onChange={(event) => change({ companyLogoAssetId: event.target.value || undefined })}><option value="">Default company mark</option>{assets.filter((asset) => asset.kind === "logo").map((asset) => <option value={asset.id} key={asset.id}>{asset.name} ({asset.variant ?? "default"})</option>)}</select></label>
+          <div className="color-fields"><label>Logo size<select value={configuration.logoSize} onChange={(event) => change({ logoSize: event.target.value as BuilderConfiguration["logoSize"] })}><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label><label>Alignment<select value={configuration.logoAlignment} onChange={(event) => change({ logoAlignment: event.target.value as BuilderConfiguration["logoAlignment"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label></div>
+          <label>Logo spacing · {configuration.logoSpacing}px<input type="range" min="0" max="80" value={configuration.logoSpacing} onChange={(event) => change({ logoSpacing: Number(event.target.value) })} /></label>
+          <form className="inline-upload" onSubmit={uploadLogo}><select name="variant" aria-label="Logo variant"><option value="default">Default</option><option value="light">Light</option><option value="dark">Dark</option></select><label><Upload size={14} />Upload logo<input name="file" type="file" accept=".png,.jpg,.jpeg,.webp,.svg" required /></label><button>Upload</button></form>
+          <div className="color-fields"><label>Primary color<input type="color" value={configuration.primaryColor} onChange={(event) => change({ primaryColor: event.target.value })} /></label><label>Background<input type="color" value={validColor(configuration.background)} onChange={(event) => change({ background: event.target.value })} /></label></div>
+        </div></details>
+        <details open><summary>Behavior <ChevronDown size={14} /></summary><div>
+          <label>Redirect after success<input type="url" placeholder="https://company.example/complete" value={configuration.redirectUrl ?? ""} onChange={(event) => change({ redirectUrl: event.target.value })} /><small>HTTPS only; localhost HTTP is allowed for development.</small></label>
+          <label>Redirect delay<select value={configuration.redirectDelay} onChange={(event) => change({ redirectDelay: event.target.value as BuilderConfiguration["redirectDelay"] })}><option value="immediate">Immediately</option><option value="1">1 second</option><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="never">Do not redirect</option></select></label>
+        </div></details>
+        <details><summary>Advanced <ChevronDown size={14} /></summary><div><p className="muted">Optional code is isolated from the normal workflow and never runs in the editor preview.</p><button className="secondary" onClick={() => setAdvancedOpen(true)}><Code2 size={14} />Open advanced code</button></div></details>
       </aside>
     </div>
-    <Drawer open={advancedOpen} title="Advanced code" onClose={() => setAdvancedOpen(false)}><div className="stack"><div className="security-warning"><strong>Advanced only.</strong> Normal editing does not require code. Custom JavaScript is stored but not executed in the visual preview or default Cloudflare Worker.</div><label>Additional HTML<textarea rows={10} value={customHtml} onChange={(event) => { setCustomHtml(event.target.value); setDirty(true); }} /></label><label>Additional CSS<textarea className="code-editor-small" rows={14} value={customCss} onChange={(event) => { setCustomCss(event.target.value); setDirty(true); }} /></label><label>Restricted JavaScript<textarea className="code-editor-small" rows={10} value={javascript} onChange={(event) => { setJavascript(event.target.value); setDirty(true); }} /></label></div></Drawer>
-    <Drawer open={historyOpen} title="Version history" onClose={() => setHistoryOpen(false)}><div className="version-history">{project.versions.map((version) => <article key={version.id}><div><strong>Version {version.version}</strong><StatusBadge status={version.state} /><p>{new Date(version.createdAt).toLocaleString()}</p><small>Editor: {version.editorId ?? "Legacy version"}</small></div><div className="row"><button className="secondary button-sm" disabled={!version.document} onClick={() => restore(version)}>Restore</button><button className="secondary button-sm" disabled={!version.document} onClick={() => { if (version.document) setDocument(structuredClone(version.document)); setPreview(true); setHistoryOpen(false); }}>Preview</button></div></article>)}</div></Drawer>
-    <PublishDialog open={publishOpen} project={project} document={document} onClose={() => setPublishOpen(false)} onSave={() => save(false, "PUBLISHED")} />
-    <ConfirmDialog open={archiveOpen} title="Archive project?" description="The project will leave active lists. Published deployments must be disabled separately." confirmLabel="Archive" destructive onClose={() => setArchiveOpen(false)} onConfirm={() => void archive()} />
+    <Drawer open={advancedOpen} title="Advanced code" onClose={() => setAdvancedOpen(false)}><div className="stack"><div className="security-warning"><strong>Advanced users only.</strong> Custom JavaScript is intentionally unavailable in published pages.</div><label>Additional HTML<textarea rows={12} value={customHtml} onChange={(event) => { setCustomHtml(event.target.value); setDirty(true); }} /></label><label>Additional CSS<textarea rows={14} value={customCss} onChange={(event) => { setCustomCss(event.target.value); setDirty(true); }} /></label></div></Drawer>
+    <Drawer open={historyOpen} title="Version history" onClose={() => setHistoryOpen(false)}><div className="version-history">{project.versions.map((version) => <article key={version.id}><div><strong>Version {version.version}</strong><StatusBadge status={version.state} /><p>{new Date(version.createdAt).toLocaleString()}</p></div>{version.document?.settings.builder && <button className="secondary button-sm" onClick={() => { setConfiguration(version.document!.settings.builder!); setDirty(true); setHistoryOpen(false); }}>Restore</button>}</article>)}</div></Drawer>
+    <PublishDrawer open={publishOpen} project={project} configuration={configuration} onClose={() => setPublishOpen(false)} onSave={() => save(true, "PUBLISHED")} />
   </div>;
 }
 
-function CanvasNode({ node, selectedId, projectId, onSelect, onText, onReorder }: { node: PageNode; selectedId: string | null; projectId: string; onSelect: (id: string) => void; onText: (id: string, value: string) => void; onReorder: (sourceId: string, targetId: string) => void }) {
-  if (node.hidden) return null;
-  const selected = node.id === selectedId;
-  const canvasStyle = { ...node.style, backgroundImage: node.style?.backgroundImage ? `url("${node.style.backgroundImage.replaceAll('"', "")}")` : undefined } as React.CSSProperties;
-  const common = { className: `canvas-node canvas-${node.type} ${node.type === "status" ? `status-${node.statusKind ?? "waiting"}` : ""} ${selected ? "selected" : ""} ${node.locked ? "locked" : ""}`, style: canvasStyle, onClick: (event: React.MouseEvent) => { event.stopPropagation(); onSelect(node.id); }, draggable: !node.locked, onDragStart: (event: React.DragEvent) => { event.stopPropagation(); event.dataTransfer.setData("application/x-page-node-id", node.id); }, onDragOver: (event: React.DragEvent) => event.preventDefault(), onDrop: (event: React.DragEvent) => { const sourceId = event.dataTransfer.getData("application/x-page-node-id"); if (sourceId) { event.preventDefault(); event.stopPropagation(); onReorder(sourceId, node.id); } }, "data-node-id": node.id };
-  const children = node.children?.map((child) => <CanvasNode key={child.id} node={child} selectedId={selectedId} projectId={projectId} onSelect={onSelect} onText={onText} onReorder={onReorder} />);
-  if (["section", "header", "footer", "card", "callout", "navigation", "columns"].includes(node.type)) return <div {...common}>{children?.length ? children : <span className="canvas-placeholder">Drop components here</span>}</div>;
-  if (node.type === "heading") return <h2 {...common} contentEditable={!node.locked} suppressContentEditableWarning onBlur={(event) => onText(node.id, event.currentTarget.textContent ?? "")}>{node.content}</h2>;
-  if (node.type === "text") return <p {...common} contentEditable={!node.locked} suppressContentEditableWarning onBlur={(event) => onText(node.id, event.currentTarget.textContent ?? "")}>{node.content}</p>;
-  if (node.type === "button") return <button {...common} type="button" contentEditable={!node.locked} suppressContentEditableWarning onBlur={(event) => onText(node.id, event.currentTarget.textContent ?? "")}>{node.icon} {node.content}</button>;
-  if (node.type === "image" || node.type === "logo") return <div {...common}>{node.src || node.assetId ? <img src={node.assetId ? `/api/v1/html-projects/${projectId}/assets/${node.assetId}` : node.src} alt={node.alt ?? ""} /> : <span className="canvas-placeholder">Choose a logo from Assets</span>}</div>;
-  if (node.type === "providerLogo") return <div {...common}>{node.assetId ? <img src={`/api/v1/html-projects/${projectId}/assets/${node.assetId}`} alt={node.alt ?? "Company logo"} /> : <ProviderLogo provider={node.provider ?? "company"} />}</div>;
-  if (node.type === "deviceCode") return <div {...common}><small contentEditable={!node.locked} suppressContentEditableWarning onBlur={(event) => onText(node.id, event.currentTarget.textContent ?? "")}>{node.content}</small><strong>XXXX-XXXX</strong><span title="Protected dynamic value">🔒 Microsoft-generated value</span></div>;
-  if (node.type === "status") return <div {...common}><span className="status-dot" /> <span contentEditable={!node.locked} suppressContentEditableWarning onBlur={(event) => onText(node.id, event.currentTarget.textContent ?? "")}>{node.content}</span></div>;
-  if (node.type === "steps") return <ol {...common}>{node.items?.map((item, index) => <li key={index}>{item}</li>)}</ol>;
-  if (node.type === "resourceCard") return <article {...common}><ProviderLogo provider={node.provider ?? "document"} /><div><h3>{node.name}</h3><p>{node.content}</p>{children}</div></article>;
-  if (node.type === "divider") return <hr {...common} />;
-  if (node.type === "badge") return <span {...common} contentEditable={!node.locked} suppressContentEditableWarning onBlur={(event) => onText(node.id, event.currentTarget.textContent ?? "")}>{node.content}</span>;
-  return null;
+function DesignThumbnail({ configuration }: { configuration: BuilderConfiguration }) {
+  const document = buildPageDesign(configuration, "waiting");
+  const rendered = renderPageDocument(document, { deviceCode: "XXXX-XXXX" });
+  return <span className="mini-design-preview"><iframe title={`${configuration.layoutId} design thumbnail`} sandbox="" srcDoc={`<style>${rendered.css}body{margin:0;overflow:hidden}</style>${rendered.html}`} tabIndex={-1} /></span>;
 }
 
-function PropertiesPanel({ node, assets, projectId, onUpdate, onStyle, onDelete, onDuplicate, onMove }: { node: PageNode; assets: Asset[]; projectId: string; onUpdate: (patch: Partial<PageNode>) => void; onStyle: (patch: Partial<NodeStyle>) => void; onDelete: () => void; onDuplicate: () => void; onMove: (direction: -1 | 1) => void }) {
-  const textNode = ["heading", "text", "button", "badge", "status", "deviceCode"].includes(node.type);
-  const container = ["section", "header", "footer", "card", "callout", "columns", "navigation", "resourceCard"].includes(node.type);
-  const field = (label: string, key: keyof NodeStyle, placeholder = "") => <label>{label}<input value={node.style?.[key] ?? ""} placeholder={placeholder} onChange={(event) => onStyle({ [key]: event.target.value })} /></label>;
-  return <div className="properties-panel"><header><div><small>{node.type}</small><h2>{node.name}</h2></div><button className="icon-button" onClick={() => onUpdate({ locked: !node.locked })} title={node.locked ? "Unlock" : "Lock"}>{node.locked ? "🔒" : "🔓"}</button></header>
-    {node.type === "deviceCode" && <div className="protected-notice"><strong>Protected dynamic value</strong><p>The preview code is fixed. The live value always comes from Microsoft and cannot be edited.</p></div>}
-    {textNode && <section><h3>Content</h3>{node.type !== "deviceCode" && <label>Text<textarea rows={4} value={node.content ?? ""} onChange={(event) => onUpdate({ content: event.target.value })} /></label>}{node.type === "deviceCode" && <label>Label above code<input value={node.content ?? ""} onChange={(event) => onUpdate({ content: event.target.value })} /></label>}{node.type === "status" && <label>Status style<select value={node.statusKind ?? "waiting"} onChange={(event) => onUpdate({ statusKind: event.target.value as PageNode["statusKind"] })}>{["waiting", "connected", "expired", "failed", "success", "processing"].map((status) => <option value={status} key={status}>{status}</option>)}</select></label>}{node.type === "button" && <><label>Action<select value={node.action ?? "open-url"} onChange={(event) => onUpdate({ action: event.target.value as PageNode["action"] })}><option value="open-url">Open URL</option><option value="open-microsoft">Open Microsoft authorization</option><option value="copy-device-code">Copy Microsoft device code</option><option value="internal-route">Open internal route</option><option value="download">Download file</option><option value="copy-text">Copy text</option></select></label>{!["copy-device-code", "open-microsoft"].includes(node.action ?? "") && <label>Destination<input value={node.href ?? ""} onChange={(event) => onUpdate({ href: event.target.value })} /></label>}<label>Icon<input value={node.icon ?? ""} onChange={(event) => onUpdate({ icon: event.target.value })} /></label><label className="check-row"><input type="checkbox" checked={node.targetBlank ?? false} onChange={(event) => onUpdate({ targetBlank: event.target.checked })} />Open in new tab</label></>}</section>}
-    {(node.type === "providerLogo" || node.type === "resourceCard") && <section><h3>Provider</h3><label>Automatic provider logo<select value={node.provider ?? "company"} onChange={(event) => onUpdate({ provider: event.target.value as PageNode["provider"], assetId: undefined })}>{["microsoft365", "sharepoint", "onedrive", "adobe", "docusign", "document", "cloud", "company"].map((provider) => <option key={provider} value={provider}>{providerName(provider)}</option>)}</select></label>{node.type === "providerLogo" && <label>Replace with company asset<select value={node.assetId ?? ""} onChange={(event) => onUpdate({ assetId: event.target.value || undefined, alt: "Company logo" })}><option value="">Use automatic provider mark</option>{assets.filter((asset) => asset.kind === "logo").map((asset) => <option value={asset.id} key={asset.id}>{asset.name} ({asset.variant ?? "default"})</option>)}</select></label>}<p className="muted">The selected provider icon is included automatically in previews and published pages.</p></section>}
-    {(node.type === "image" || node.type === "logo") && <section><h3>{node.type === "logo" ? "Company logo" : "Image"}</h3><label>Existing asset<select value={node.assetId ?? ""} onChange={(event) => onUpdate({ assetId: event.target.value, src: `/api/v1/html-projects/${projectId}/assets/${event.target.value}` })}><option value="">External URL</option>{assets.filter((asset) => asset.contentType.startsWith("image/")).map((asset) => <option value={asset.id} key={asset.id}>{asset.name} {asset.variant ? `(${asset.variant})` : ""}</option>)}</select></label><label>Image URL<input value={node.src ?? ""} onChange={(event) => onUpdate({ src: event.target.value, assetId: undefined })} /></label><label>Alt text<input value={node.alt ?? ""} onChange={(event) => onUpdate({ alt: event.target.value })} /></label>{field("Width", "width", node.type === "logo" ? "180px" : "100%")}{field("Height / minimum height", "minHeight", node.type === "logo" ? "48px" : "280px")}{field("Radius", "borderRadius", "16px")}</section>}
-    {node.type === "steps" && <section><h3>Instruction steps</h3>{(node.items ?? []).map((item, index) => <div className="property-list-row" key={index}><textarea value={item} onChange={(event) => onUpdate({ items: node.items?.map((value, itemIndex) => itemIndex === index ? event.target.value : value) })} /><button className="icon-button" onClick={() => onUpdate({ items: node.items?.filter((_, itemIndex) => itemIndex !== index) })}>×</button></div>)}<button className="secondary" onClick={() => onUpdate({ items: [...(node.items ?? []), "New instruction step"] })}>+ Add step</button></section>}
-    <section><h3>Appearance</h3><div className="property-grid"><label>Background<input type="color" value={colorValue(node.style?.background, "#ffffff")} onChange={(event) => onStyle({ background: event.target.value })} /></label><label>Text color<input type="color" value={colorValue(node.style?.color, "#172033")} onChange={(event) => onStyle({ color: event.target.value })} /></label></div>{container && <label>Background image URL<input value={node.style?.backgroundImage ?? ""} onChange={(event) => onStyle({ backgroundImage: event.target.value })} /></label>}{textNode && <><div className="row property-toolbar"><button className="secondary button-sm" type="button" onClick={() => onStyle({ fontWeight: node.style?.fontWeight === "700" ? "" : "700" })}><strong>B</strong></button><button className="secondary button-sm" type="button" onClick={() => onStyle({ fontStyle: node.style?.fontStyle === "italic" ? "" : "italic" })}><em>I</em></button><button className="secondary button-sm" type="button" onClick={() => onStyle({ textDecoration: node.style?.textDecoration === "underline" ? "" : "underline" })}><u>U</u></button></div>{field("Font size", "fontSize", "18px")}<label>Weight<select value={node.style?.fontWeight ?? ""} onChange={(event) => onStyle({ fontWeight: event.target.value })}><option value="">Default</option><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semibold</option><option value="700">Bold</option><option value="800">Extra bold</option></select></label><label>Alignment<select value={node.style?.textAlign ?? "left"} onChange={(event) => onStyle({ textAlign: event.target.value as NodeStyle["textAlign"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>{field("Line height", "lineHeight", "1.6")}{field("Letter spacing", "letterSpacing", "0px")}</>}{field("Padding", "padding", "24px")}{field("Margin", "margin", "0 auto")}{field("Border", "border", "1px solid #dce3ef")}{field("Border radius", "borderRadius", "16px")}{field("Shadow", "boxShadow", "0 12px 40px #0002")}{container && <>{field("Width", "width", "100%")}{field("Maximum width", "maxWidth", "1120px")}{field("Minimum height", "minHeight", "auto")}{field("Gap", "gap", "24px")}</>}{node.type === "columns" && <label>Column structure<select value={node.style?.gridTemplateColumns ?? ""} onChange={(event) => onStyle({ gridTemplateColumns: event.target.value })}><option value="">Automatic</option><option value="1fr 1fr">50 / 50</option><option value="2fr 3fr">40 / 60</option><option value="3fr 2fr">60 / 40</option><option value="repeat(3,1fr)">Three equal columns</option><option value="repeat(4,1fr)">Four equal columns</option></select></label>}</section>
-    <section><h3>Visibility and controls</h3><label className="check-row"><input type="checkbox" checked={node.hidden ?? false} onChange={(event) => onUpdate({ hidden: event.target.checked })} />Hidden</label><label className="check-row"><input type="checkbox" checked={node.hideDesktop ?? false} onChange={(event) => onUpdate({ hideDesktop: event.target.checked })} />Hide on desktop</label><label className="check-row"><input type="checkbox" checked={node.hideMobile ?? false} onChange={(event) => onUpdate({ hideMobile: event.target.checked })} />Hide on mobile</label></section>
-    <footer><button className="secondary button-sm" onClick={() => onMove(-1)}>↑ Up</button><button className="secondary button-sm" onClick={() => onMove(1)}>↓ Down</button><button className="secondary button-sm" onClick={onDuplicate}>Duplicate</button><button className="secondary button-sm error" disabled={node.locked} onClick={onDelete}>Delete</button></footer>
-  </div>;
-}
-
-function PageSettings({ document, onChange, project, onArchive, onExport }: { document: PageDocument; onChange: (document: PageDocument) => void; project: Project; onArchive: () => void; onExport: () => void }) {
-  const settings = document.settings;
-  const update = (patch: Partial<PageDocument["settings"]>) => onChange({ ...document, settings: { ...settings, ...patch } });
-  return <div className="properties-panel"><header><div><small>Page</small><h2>Page settings</h2></div></header><section><label>Page name<input value={settings.title} onChange={(event) => update({ title: event.target.value })} /></label><label>SEO title<input value={settings.seoTitle} onChange={(event) => update({ seoTitle: event.target.value })} /></label><label>Description<textarea value={settings.description} onChange={(event) => update({ description: event.target.value })} /></label><label>Default font<select value={settings.fontFamily} onChange={(event) => update({ fontFamily: event.target.value })}><option value="Inter, system-ui, sans-serif">Inter / System</option><option value="Georgia, serif">Georgia</option><option value="'Segoe UI', sans-serif">Segoe UI</option><option value="'Helvetica Neue', sans-serif">Helvetica Neue</option><option value="ui-monospace, monospace">Monospace</option></select></label><div className="property-grid"><label>Background<input type="color" value={colorValue(settings.background, "#ffffff")} onChange={(event) => update({ background: event.target.value })} /></label><label>Text color<input type="color" value={colorValue(settings.color, "#172033")} onChange={(event) => update({ color: event.target.value })} /></label></div><label>Background image URL<input value={settings.backgroundImage ?? ""} onChange={(event) => update({ backgroundImage: event.target.value })} /></label><label>Maximum content width<input value={settings.maxWidth} onChange={(event) => update({ maxWidth: event.target.value })} /></label><label>Default visibility<select value={settings.visibility} onChange={(event) => update({ visibility: event.target.value as PageDocument["settings"]["visibility"] })}><option value="public">Public</option><option value="private">Private</option><option value="access-code">Access-code protected</option></select></label><label>Expiration<input type="datetime-local" value={settings.expiresAt?.slice(0, 16) ?? ""} onChange={(event) => update({ expiresAt: event.target.value ? new Date(event.target.value).toISOString() : undefined })} /></label></section><section><h3>Project</h3><p className="muted">{project.slug}<br />Template: {project.templateId}</p><button className="secondary" onClick={onExport}>Export HTML</button><button className="secondary error" onClick={onArchive}>Archive project</button></section></div>;
-}
-
-function AssetLibrary({ assets, projectId, onUpload, onChoose, onDelete }: { assets: Asset[]; projectId: string; onUpload: (event: FormEvent<HTMLFormElement>) => void; onChoose: (asset: Asset) => void; onDelete: (asset: Asset) => void }) {
-  return <div className="asset-library"><form className="stack" onSubmit={onUpload}><label>Asset type<select name="kind"><option value="logo">Logo</option><option value="image">Image</option><option value="document">PDF</option><option value="css">CSS asset</option></select></label><label>Logo variant<select name="variant"><option value="default">Default</option><option value="light">Light mode</option><option value="dark">Dark mode</option></select></label><label className="upload-drop">Upload PNG, JPG, WEBP, SVG, PDF or CSS<input type="file" name="file" required accept=".png,.jpg,.jpeg,.webp,.svg,.pdf,.css" /></label><button>Upload asset</button></form><div className="asset-grid">{assets.map((asset) => <div className="asset-tile" key={asset.id}><button onClick={() => onChoose(asset)}>{asset.contentType.startsWith("image/") ? <img src={`/api/v1/html-projects/${projectId}/assets/${asset.id}`} alt={asset.name} /> : <span>FILE</span>}<small>{asset.name}</small><em>{asset.variant}</em></button><button className="asset-delete" title="Remove asset" onClick={() => onDelete(asset)}>×</button></div>)}</div></div>;
-}
-
-function LayerTree({ nodes, selectedId, onSelect, depth = 0 }: { nodes: PageNode[]; selectedId: string | null; onSelect: (id: string) => void; depth?: number }) {
-  return <div className="layer-tree">{nodes.map((node) => <div key={node.id}><button className={node.id === selectedId ? "active" : ""} style={{ paddingLeft: `${12 + depth * 14}px` }} onClick={() => onSelect(node.id)}><span>{node.locked ? "🔒" : componentIcon(node.type)}</span>{node.name}{node.hidden && <small>hidden</small>}</button>{node.children && <LayerTree nodes={node.children} selectedId={selectedId} onSelect={onSelect} depth={depth + 1} />}</div>)}</div>;
-}
-
-function PublishDialog({ open, project, document, onClose, onSave }: { open: boolean; project: Project; document: PageDocument; onClose: () => void; onSave: () => Promise<void> }) {
+function PublishDrawer({ open, project, configuration, onClose, onSave }: { open: boolean; project: Project; configuration: BuilderConfiguration; onClose: () => void; onSave: () => Promise<boolean> }) {
   const { notify } = useToast();
-  const [hostname, setHostname] = useState("");
-  const [accessCode, setAccessCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) void api<{ hostname: string }>("/cloudflare/hostname").then((value) => setHostname(value.hostname)).catch(() => setHostname("Cloudflare configuration required")); }, [open]);
-  async function publish(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    const data = new FormData(event.currentTarget);
+  const [status, setStatus] = useState<CloudflareStatus | null>(null);
+  const [replaceConnection, setReplaceConnection] = useState(false);
+  const [authType, setAuthType] = useState<"API_TOKEN" | "GLOBAL_API_KEY">("API_TOKEN");
+  const [email, setEmail] = useState("");
+  const [credential, setCredential] = useState("");
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [zones, setZones] = useState<Zone[]>([]);
+  const [accountId, setAccountId] = useState("");
+  const [zoneId, setZoneId] = useState("");
+  const [baseDomain, setBaseDomain] = useState("");
+  const [saveCredentials, setSaveCredentials] = useState(true);
+  const [subdomainMode, setSubdomainMode] = useState<"random" | "custom">("random");
+  const [subdomain, setSubdomain] = useState("");
+  const [policy, setPolicy] = useState<"PUBLIC" | "PRIVATE" | "ACCESS_CODE">("PUBLIC");
+  const [expiration, setExpiration] = useState("never");
+  const [customExpiration, setCustomExpiration] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [result, setResult] = useState<{ id: string; hostname: string; accessCode?: string; qr?: string } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setResult(null);
+    void api<CloudflareStatus>("/cloudflare/configuration").then((value) => {
+      setStatus(value); setAuthType(value.authType ?? "API_TOKEN"); setAccountId(value.accountId ?? ""); setZoneId(value.zoneId ?? ""); setBaseDomain(value.baseDomain ?? "");
+      setSubdomain(randomLabel());
+    }).catch(() => setStatus(null));
+  }, [open]);
+  const usingSaved = Boolean(status?.configured && !replaceConnection);
+  const availableZones = zones.filter((zone) => !accountId || zone.account.id === accountId);
+  const liveUrl = subdomain && baseDomain ? `https://${subdomain}.${baseDomain}` : "";
+
+  async function testConnection(event: FormEvent) {
+    event.preventDefault(); setTesting(true);
     try {
-      await onSave();
-      const result = await api<{ accessCode?: string; deployment: { hostname: string } }>("/cloudflare", { method: "POST", body: JSON.stringify({ projectId: project.id, policy: data.get("policy"), expiresAt: data.get("expiresAt") || document.settings.expiresAt || undefined, proposedHostname: hostname }) });
-      setAccessCode(result.accessCode ?? "");
-      notify({ title: "Page published to Cloudflare", message: `https://${result.deployment.hostname}`, tone: "success" });
-      if (!result.accessCode) onClose();
-    } catch (error) { notify({ title: "Publish failed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
-    finally { setBusy(false); }
+      const discovered = await api<{ accounts: Account[]; zones: Zone[] }>("/cloudflare/configuration", { method: "POST", body: JSON.stringify({ action: "TEST", authType, email: authType === "GLOBAL_API_KEY" ? email : undefined, credential }) });
+      setAccounts(discovered.accounts); setZones(discovered.zones);
+      if (discovered.accounts.length === 1) setAccountId(discovered.accounts[0].id);
+      notify({ title: "Cloudflare connected", message: `${discovered.accounts.length} account(s), ${discovered.zones.length} zone(s) discovered.`, tone: "success" });
+    } catch (error) { notify({ title: "Connection failed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
+    finally { setTesting(false); }
   }
-  return <Modal open={open} title="Publish page" onClose={onClose}>{accessCode ? <div className="stack"><p className="muted">Copy this private deployment code now. It cannot be displayed again.</p><div className="device-code" style={{ fontSize: "1.5rem" }}>{accessCode}</div><button onClick={() => void navigator.clipboard.writeText(accessCode)}>Copy access code</button><button className="secondary" onClick={onClose}>Done</button></div> : <form className="stack" onSubmit={publish}><label>Visibility<select name="policy" defaultValue={document.settings.visibility === "access-code" ? "ACCESS_CODE" : "PUBLIC"}><option value="PUBLIC">Public</option><option value="ACCESS_CODE">Access-code protected</option></select></label><label>Expiration<input name="expiresAt" type="datetime-local" defaultValue={document.settings.expiresAt?.slice(0, 16)} /></label><label>Cloudflare hostname<div className="input-action"><input value={hostname} onChange={(event) => setHostname(event.target.value)} /><button type="button" className="secondary" onClick={() => void api<{ hostname: string }>("/cloudflare/hostname").then((value) => setHostname(value.hostname))}>Generate new</button></div></label><p className="muted">The current draft is saved as a published version before deployment. Cloudflare credentials remain encrypted server-side.</p><div className="row" style={{ justifyContent: "flex-end" }}><button type="button" className="secondary" onClick={onClose}>Cancel</button><button disabled={busy}>{busy ? "Publishing…" : "Confirm publish"}</button></div></form>}</Modal>;
+  async function publish() {
+    if (!liveUrl) return;
+    setPublishing(true);
+    try {
+      if (!(await onSave())) return;
+      const expiresAt = expirationDate(expiration, customExpiration);
+      const cloudflare = usingSaved ? undefined : { authType, email: authType === "GLOBAL_API_KEY" ? email : undefined, credential, accountId, zoneId, baseDomain, save: saveCredentials };
+      const response = await api<{ deployment: { id: string; hostname: string }; accessCode?: string }>("/cloudflare", { method: "POST", body: JSON.stringify({ projectId: project.id, policy, expiresAt, proposedHostname: `${subdomain}.${baseDomain}`, cloudflare }) });
+      const url = `https://${response.deployment.hostname}`;
+      setResult({ id: response.deployment.id, hostname: response.deployment.hostname, accessCode: response.accessCode, qr: await QRCode.toDataURL(url, { margin: 1, width: 180, color: { dark: "#172033", light: "#ffffff" } }) });
+      notify({ title: "Deployment successful", message: url, tone: "success" });
+    } catch (error) { notify({ title: "Publish failed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
+    finally { setPublishing(false); }
+  }
+  async function startMicrosoftSession() {
+    const popup = window.open("", "_blank");
+    try {
+      const response = await api<{ connectUrl: string; publishedConnectUrl?: string; bridgeError?: string }>("/microsoft/device/start", { method: "POST", body: JSON.stringify({ pageProjectId: project.id, deploymentId: result?.id }) });
+      const destination = response.publishedConnectUrl ?? response.connectUrl;
+      if (popup) popup.location.href = destination;
+      else window.location.href = destination;
+      if (response.bridgeError) notify({ title: "Opened secure local connection page", message: response.bridgeError, tone: "info" });
+    } catch (error) {
+      popup?.close();
+      notify({ title: "Microsoft session could not start", message: error instanceof Error ? error.message : undefined, tone: "error" });
+    }
+  }
+  return <Drawer open={open} title={result ? "Deployment successful" : "Publish & deploy"} onClose={onClose}>
+    {result ? <div className="deployment-success"><span className="success-check"><Check size={28} /></span><div><div className="eyebrow">Deployment successful</div><h2>Your page is live</h2><p className="muted">The wildcard Cloudflare router is serving the latest published version.</p></div><div className="published-url"><Cloud size={18} /><span><small>Live URL</small><strong>https://{result.hostname}</strong></span><button className="icon-button" onClick={() => void navigator.clipboard.writeText(`https://${result.hostname}`)}><Copy size={15} /></button></div>{result.qr && <img className="deployment-qr" src={result.qr} alt={`QR code for https://${result.hostname}`} />}{result.accessCode && <div className="access-code-result"><small>Copy this access code now</small><strong>{result.accessCode}</strong></div>}<div className="deployment-success-actions"><button onClick={() => window.open(`https://${result.hostname}`, "_blank", "noopener,noreferrer")}><ExternalLink size={15} />Open page</button><button className="secondary" onClick={() => void startMicrosoftSession()}><ExternalLink size={15} />Start Microsoft session</button><button className="secondary" onClick={() => void navigator.clipboard.writeText(`https://${result.hostname}`)}><Copy size={15} />Copy link</button><button className="secondary" onClick={() => setResult(null)}><RefreshCw size={15} />Republish</button><button className="secondary" onClick={onClose}>Edit page</button></div></div> :
+    <div className="publish-workflow">
+      <section><div className="publish-section-title"><span>1</span><div><strong>Cloudflare connection</strong><small>Credentials remain backend-only</small></div></div>
+        {usingSaved ? <div className="saved-cloudflare"><Cloud size={18} /><div><strong>{status?.zoneName ?? status?.baseDomain}</strong><small>{status?.accountName} · {status?.credential}</small></div><StatusBadge status="Connected" /><button className="secondary button-sm" onClick={() => setReplaceConnection(true)}>Replace</button></div> :
+        <form className="compact-cloudflare-form" onSubmit={testConnection}><label>Authentication<select value={authType} onChange={(event) => setAuthType(event.target.value as typeof authType)}><option value="API_TOKEN">API Token — recommended</option><option value="GLOBAL_API_KEY">Global API Key — legacy</option></select></label>{authType === "GLOBAL_API_KEY" && <label>Cloudflare email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>}<label>{authType === "API_TOKEN" ? "API token" : "Global API key"}<input type="password" value={credential} onChange={(event) => setCredential(event.target.value)} minLength={20} required /></label><button disabled={testing}>{testing ? "Testing…" : "Test connection"}</button>{accounts.length > 0 && <><label>Account<select value={accountId} onChange={(event) => { setAccountId(event.target.value); setZoneId(""); }}><option value="">Choose account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label><label>Domain / Zone<select value={zoneId} onChange={(event) => { setZoneId(event.target.value); const zone = zones.find((item) => item.id === event.target.value); if (zone) setBaseDomain(zone.name); }}><option value="">Choose zone</option>{availableZones.map((zone) => <option value={zone.id} key={zone.id}>{zone.name}</option>)}</select></label><label className="check-row"><input type="checkbox" checked={saveCredentials} onChange={(event) => setSaveCredentials(event.target.checked)} />Save securely for future deployments</label></>}</form>}</section>
+      <section><div className="publish-section-title"><span>2</span><div><strong>Address</strong><small>Choose a secure hostname</small></div></div><div className="segmented"><button className={subdomainMode === "random" ? "active" : ""} onClick={() => setSubdomainMode("random")}>Random subdomain</button><button className={subdomainMode === "custom" ? "active" : ""} onClick={() => setSubdomainMode("custom")}>Custom name</button></div><label>Subdomain<div className="input-action"><input value={subdomain} onChange={(event) => setSubdomain(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} readOnly={subdomainMode === "random"} />{subdomainMode === "random" && <button className="secondary" onClick={() => setSubdomain(randomLabel())} type="button"><RefreshCw size={14} />Regenerate</button>}</div></label>{baseDomain && <div className="url-preview"><span>{liveUrl}</span><button className="icon-button" onClick={() => void navigator.clipboard.writeText(liveUrl)}><Copy size={14} /></button></div>}</section>
+      <section><div className="publish-section-title"><span>3</span><div><strong>Access & expiration</strong><small>Control who can open this page</small></div></div><label>Visibility<select value={policy} onChange={(event) => setPolicy(event.target.value as typeof policy)}><option value="PUBLIC">Public</option><option value="PRIVATE">Private — blocked publicly</option><option value="ACCESS_CODE">Access code protected</option></select></label><label>Expiration<select value={expiration} onChange={(event) => setExpiration(event.target.value)}><option value="never">Never</option><option value="1h">1 hour</option><option value="24h">24 hours</option><option value="7d">7 days</option><option value="custom">Custom</option></select></label>{expiration === "custom" && <label>Custom expiration<input type="datetime-local" value={customExpiration} onChange={(event) => setCustomExpiration(event.target.value)} /></label>}<label>Success redirect<input value={configuration.redirectUrl || "No redirect configured"} readOnly /></label></section>
+      <button className="publish-primary" disabled={publishing || !baseDomain || (!usingSaved && (!credential || !accountId || !zoneId)) || !subdomain} onClick={() => void publish()}><Send size={16} />{publishing ? "Publishing…" : "Publish & Deploy"}</button>
+    </div>}
+  </Drawer>;
 }
 
-function defaultNode(type: PageNode["type"]): PageNode {
-  const base = { id: createId(type), type, name: type.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase()) } as PageNode;
-  const defaults: Partial<Record<PageNode["type"], Partial<PageNode>>> = {
-    section: { children: [], style: { padding: "64px 24px", minHeight: "240px" } },
-    header: { children: [], style: { padding: "20px 32px" } }, footer: { children: [], style: { padding: "28px 32px" } },
-    columns: { children: [], style: { gap: "28px" } }, card: { children: [], style: { padding: "28px", background: "#ffffff", borderRadius: "18px", border: "1px solid #dce3ef" } },
-    callout: { children: [], style: { padding: "20px", background: "#edf3ff", border: "1px solid #bfd0ff", borderRadius: "12px" } }, navigation: { children: [], style: { gap: "16px" } },
-    heading: { content: "Your new heading", style: { fontSize: "42px", fontWeight: "700" } }, text: { content: "Click this text and start typing.", style: { fontSize: "17px", lineHeight: "1.7" } },
-    button: { content: "Button label", action: "open-url", href: "https://company.example", targetBlank: true, style: { background: "#3157d5", color: "#ffffff", padding: "13px 20px", borderRadius: "10px" } },
-    image: { src: "https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1200&q=80", alt: "Company image", style: { width: "100%", borderRadius: "16px" } },
-    logo: { alt: "Company logo", style: { width: "180px", minHeight: "48px" } },
-    providerLogo: { provider: "company" }, resourceCard: { provider: "sharepoint", content: "Access approved company resources.", children: [defaultNode("button")] },
-    deviceCode: { content: "Microsoft device code", style: { padding: "20px", background: "#eef3ff", borderRadius: "14px", textAlign: "center" } },
-    status: { content: "Waiting for authorization", statusKind: "waiting" }, steps: { items: ["First instruction", "Second instruction", "Final instruction"] },
-    divider: { style: { margin: "24px 0" } }, badge: { content: "Badge" },
-  };
-  return { ...base, ...defaults[type] };
-}
-
-function findNode(nodes: PageNode[], id: string): PageNode | null { for (const node of nodes) { if (node.id === id) return node; const found = node.children && findNode(node.children, id); if (found) return found; } return null; }
-function mapNodes(nodes: PageNode[], id: string, transform: (node: PageNode) => PageNode): PageNode[] { return nodes.map((node) => node.id === id ? transform(node) : node.children ? { ...node, children: mapNodes(node.children, id, transform) } : node); }
-function removeNode(nodes: PageNode[], id: string): PageNode[] { return nodes.filter((node) => node.id !== id).map((node) => node.children ? { ...node, children: removeNode(node.children, id) } : node); }
-function insertAfter(nodes: PageNode[], id: string, copy: PageNode): PageNode[] { const output: PageNode[] = []; for (const node of nodes) { output.push(node.children ? { ...node, children: insertAfter(node.children, id, copy) } : node); if (node.id === id) output.push(copy); } return output; }
-function insertBefore(nodes: PageNode[], id: string, item: PageNode): PageNode[] { const output: PageNode[] = []; for (const node of nodes) { if (node.id === id) output.push(item); output.push(node.children ? { ...node, children: insertBefore(node.children, id, item) } : node); } return output; }
-function moveNode(nodes: PageNode[], id: string, direction: -1 | 1): PageNode[] { const index = nodes.findIndex((node) => node.id === id); if (index >= 0) { const next = [...nodes]; const target = Math.max(0, Math.min(nodes.length - 1, index + direction)); [next[index], next[target]] = [next[target], next[index]]; return next; } return nodes.map((node) => node.children ? { ...node, children: moveNode(node.children, id, direction) } : node); }
-function containsNode(node: PageNode, id: string): boolean { return Boolean(node.children?.some((child) => child.id === id || containsNode(child, id))); }
-function cloneNode(node: PageNode): PageNode { const copy = structuredClone(node); const renew = (item: PageNode): PageNode => ({ ...item, id: createId(item.type), children: item.children?.map(renew) }); return renew(copy); }
-function colorValue(value: string | undefined, fallback: string) { return value?.match(/^#[0-9a-f]{6}$/i) ? value : fallback; }
-function viewportIcon(viewport: Viewport) { return viewport === "desktop" ? "▱" : viewport === "laptop" ? "▰" : viewport === "tablet" ? "▯" : "▯"; }
-function componentIcon(type: string) { return ({ section: "▭", columns: "▥", card: "▢", header: "▔", footer: "▁", navigation: "☷", heading: "H", text: "¶", button: "▣", image: "▧", logo: "◆", divider: "—", badge: "◉", callout: "!", steps: "123", providerLogo: "◎", resourceCard: "◫", deviceCode: "••", status: "●" } as Record<string, string>)[type] ?? "◇"; }
-function providerName(value: string) { return ({ microsoft365: "Microsoft 365", sharepoint: "SharePoint", onedrive: "OneDrive", adobe: "Adobe Acrobat Sign", docusign: "DocuSign", document: "Generic document", cloud: "Cloud storage", company: "Company Portal" } as Record<string, string>)[value]; }
-function ProviderLogo({ provider }: { provider: NonNullable<PageNode["provider"]> }) { const color = ({ microsoft365: "#2563eb", sharepoint: "#03787c", onedrive: "#0078d4", adobe: "#e41e2b", docusign: "#4c00ff", document: "#52627a", cloud: "#2782c5", company: "#3157d5" } as const)[provider]; return <span className="provider-logo" style={{ "--provider-color": color } as React.CSSProperties}><b>{provider === "microsoft365" ? "▦" : provider === "sharepoint" ? "S" : provider === "onedrive" || provider === "cloud" ? "☁" : provider === "adobe" ? "A" : provider === "docusign" ? "✓" : provider === "document" ? "▤" : "C"}</b><span>{providerName(provider)}</span></span>; }
+function normalizeLayout(value: string): BuilderConfiguration["layoutId"] { return pageDesigns.some((design) => design.id === value) ? value as BuilderConfiguration["layoutId"] : "compact-card"; }
+function validColor(value: string) { return /^#[0-9a-f]{6}$/i.test(value) ? value : "#f4f6fa"; }
+function randomLabel() { const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; const bytes = crypto.getRandomValues(new Uint8Array(7)); return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join(""); }
+function expirationDate(value: string, custom: string) { const now = Date.now(); if (value === "1h") return new Date(now + 3_600_000).toISOString(); if (value === "24h") return new Date(now + 86_400_000).toISOString(); if (value === "7d") return new Date(now + 7 * 86_400_000).toISOString(); if (value === "custom" && custom) return new Date(custom).toISOString(); return undefined; }
 function fileBase64(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); }); }
-function download(name: string, content: string, type: string) { const url = URL.createObjectURL(new Blob([content], { type })); const anchor = window.document.createElement("a"); anchor.href = url; anchor.download = name; anchor.click(); URL.revokeObjectURL(url); }

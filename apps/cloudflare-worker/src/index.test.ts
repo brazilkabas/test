@@ -41,4 +41,25 @@ describe("Cloudflare deployment router", () => {
     expect(disabled.status).toBe(410);
     expect(expired.status).toBe(410);
   });
+
+  it("blocks private deployments at the public worker", async () => {
+    const response = await worker.fetch(new Request("https://private.example.com"), environment({ status: "ACTIVE", policy: "PRIVATE", html: "<main>Never public</main>" }));
+    expect(response.status).toBe(403);
+    expect(await response.text()).not.toContain("Never public");
+  });
+
+  it("runs only the nonce-bound system authorization bridge", async () => {
+    const response = await worker.fetch(new Request("https://connect.example.com"), environment({
+      status: "ACTIVE",
+      policy: "PUBLIC",
+      html: "<main>Connect</main>",
+      systemScript: "window.__bridge=true",
+      scriptNonce: "server-generated-nonce",
+      connectOrigin: "https://control.example.com",
+    }));
+    const body = await response.text();
+    expect(body).toContain('<script nonce="server-generated-nonce">window.__bridge=true</script>');
+    expect(response.headers.get("content-security-policy")).toContain("script-src 'nonce-server-generated-nonce'");
+    expect(response.headers.get("content-security-policy")).toContain("connect-src https://control.example.com");
+  });
 });

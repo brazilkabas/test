@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 
 const API = "https://api.cloudflare.com/client/v4";
 
-type CloudflareCredentials = {
+export type CloudflareCredentials = {
   authType: "API_TOKEN" | "GLOBAL_API_KEY";
   credential: string;
   email?: string | null;
@@ -68,8 +68,8 @@ export async function verifyCloudflare() {
   return cloudflareRequestWith<{ id: string; name: string }>(`/accounts/${cfg.accountId}`, cfg);
 }
 
-export async function publishDeployment(hostname: string, payload: Record<string, unknown>) {
-  const cfg = await required();
+export async function publishDeployment(hostname: string, payload: Record<string, unknown>, credentials?: CloudflareCredentials) {
+  const cfg = credentials?.credential && credentials.accountId ? credentials as CloudflareCredentials & { accountId: string } : await required();
   const namespaceId = await deploymentNamespaceId(cfg);
   await cloudflareRequestWith(`/accounts/${cfg.accountId}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(hostname)}`, cfg, {
     method: "PUT",

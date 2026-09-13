@@ -105,7 +105,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       expiresAt: true,
       connectionId: true,
       errorCode: true,
-      pageProject: { select: { versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
+      pageProject: { select: { id: true, versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
     },
   });
   if (!session) return null;
@@ -125,7 +125,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
         expiresAt: true,
         connectionId: true,
         errorCode: true,
-        pageProject: { select: { versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
+        pageProject: { select: { id: true, versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
       },
     });
   }

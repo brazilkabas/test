@@ -1,5 +1,7 @@
 "use client";
 
+import { Moon, Sun, X } from "lucide-react";
+
 import {
   createContext,
   type ReactNode,
@@ -57,7 +59,7 @@ export function ThemeToggle() {
     document.documentElement.dataset.theme = next;
     localStorage.setItem("company-theme", next);
   }
-  return <button className="icon-button" onClick={toggle} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>{theme === "dark" ? "☀" : "☾"}</button>;
+  return <button className="icon-button" onClick={toggle} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}</button>;
 }
 
 export function Modal({
@@ -84,7 +86,7 @@ export function Modal({
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <header className="modal-header"><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close">×</button></header>
+        <header className="modal-header"><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close"><X size={16} /></button></header>
         <div className="modal-body">{children}</div>
         {footer && <footer className="modal-footer">{footer}</footer>}
       </section>
@@ -107,7 +109,7 @@ export function Drawer({
   return (
     <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={title}>
-        <header className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close">×</button></header>
+        <header className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close"><X size={16} /></button></header>
         <div className="modal-body">{children}</div>
       </aside>
     </div>

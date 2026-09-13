@@ -3,7 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import { api } from "@/components/api";
-import { pageDocumentSchema, renderPageDocument, type PageDocument } from "@/lib/page-document";
+import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument } from "@/lib/page-document";
 
 type Authorization = {
   publicId: string;
@@ -49,8 +49,20 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     return () => window.clearInterval(timer);
   }, [authorization]);
 
+  useEffect(() => {
+    if (authorization?.status !== "CONNECTED") return;
+    const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
+    const behavior = parsed.success ? parsed.data.settings.builder : undefined;
+    if (!behavior?.redirectUrl || behavior.redirectDelay === "never" || !isSafeRedirectUrl(behavior.redirectUrl)) return;
+    const delay = behavior.redirectDelay === "immediate" ? 0 : Number(behavior.redirectDelay) * 1000;
+    const timer = window.setTimeout(() => { window.location.href = behavior.redirectUrl!; }, delay);
+    return () => window.clearTimeout(timer);
+  }, [authorization]);
+
   async function restart() {
-    const result = await api<{ connectUrl: string }>("/microsoft/device/start", { method: "POST", body: "{}" });
+    const response = await fetch(`/api/v1/microsoft/device/${encodeURIComponent(sessionId)}/restart?token=${encodeURIComponent(token)}`, { method: "POST" });
+    const result = await response.json() as { connectUrl?: string; error?: string };
+    if (!response.ok || !result.connectUrl) throw new Error(result.error ?? "Unable to restart authorization");
     window.location.assign(result.connectUrl);
   }
 
@@ -58,12 +70,13 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   if (authorization && customDocumentResult.success) {
     const destination = authorization.verificationUriComplete ?? authorization.verificationUri ?? "https://microsoft.com/devicelogin";
     const rendered = renderPageDocument(customDocumentResult.data, { deviceCode: authorization.userCode ?? "", verificationUri: destination, status: authorization.status });
-    return <main className="custom-connect-page" onClick={(event) => {
+    return <main className={`custom-connect-page status-${authorization.status.toLowerCase()}`} onClick={(event) => {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
       if (!target) return;
       const action = target.dataset.action;
       if (action === "copy-device-code") { event.preventDefault(); void navigator.clipboard.writeText(authorization.userCode ?? ""); }
       if (action === "open-microsoft") { event.preventDefault(); window.open(destination, "_blank", "noopener,noreferrer"); }
+      if (action === "restart-authorization") { event.preventDefault(); void restart(); }
     }}>
       <style>{rendered.css}</style>
       <div dangerouslySetInnerHTML={{ __html: rendered.html }} />
