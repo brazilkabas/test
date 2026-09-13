@@ -47,7 +47,7 @@ export function HtmlProjects() {
   }
 
   return <>
-    <div className="page-header"><div><div className="eyebrow">Visual publishing</div><h1>HTML Pages</h1><p className="muted">Provider-aware pages with ten finished designs, live responsive previews, and Cloudflare publishing.</p></div><button onClick={() => setCreateOpen(true)}>+ New page</button></div>
+    <div className="page-header"><div><div className="eyebrow">Visual publishing</div><h1>Page Builder</h1><p className="muted">Create provider-aware pages from structured settings, live previews, and finished designs.</p></div><button onClick={() => setCreateOpen(true)}>+ New page</button></div>
     <section className="panel">{loading ? <div className="panel-body"><Skeleton lines={6} /></div> : projects.length === 0 ? <EmptyState icon="▤" title="Create your first page" description="Choose a provider and one of ten finished layouts. No HTML knowledge is required." action={<button onClick={() => setCreateOpen(true)}>Browse designs</button>} /> : <div className="project-gallery">{projects.map((project) => {
       const template = visualTemplates.find((item) => item.id === project.templateId);
       const document = project.versions[0]?.document ?? template?.document;
