@@ -1,10 +1,10 @@
-interface Env {
+export interface Env {
   DEPLOYMENTS: {
     get(key: string, options: { type: "json" }): Promise<DeploymentRecord | null>;
   };
 }
 
-type DeploymentRecord = {
+export type DeploymentRecord = {
   status: "ACTIVE" | "DISABLED";
   html?: string;
   css?: string;
@@ -23,7 +23,7 @@ const headers = {
   "Cache-Control": "private, no-store",
 };
 
-export default {
+const worker = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const hostname = new URL(request.url).hostname.toLowerCase();
     const deployment = await env.DEPLOYMENTS.get(hostname, { type: "json" });
@@ -44,6 +44,8 @@ export default {
     return new Response(document, { status: 200, headers });
   },
 };
+
+export default worker;
 
 function page(status: number, title: string, message: string) {
   return new Response(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>${title}</title><style>${baseCss}</style></head><body><main><h1>${title}</h1><p>${message}</p></main></body></html>`, { status, headers });

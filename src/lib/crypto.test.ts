@@ -31,4 +31,11 @@ describe("secret handling", () => {
     const { randomAccessCode } = await import("@/lib/crypto");
     expect(randomAccessCode()).toMatch(/^[A-HJ-NP-Z2-9]{15}$/);
   });
+
+  it("generates DNS-safe random deployment labels", async () => {
+    const { randomHostnameLabel } = await import("@/lib/crypto");
+    const labels = new Set(Array.from({ length: 100 }, () => randomHostnameLabel()));
+    expect(labels.size).toBe(100);
+    for (const label of labels) expect(label).toMatch(/^[a-hj-km-np-z2-9]{8}$/);
+  });
 });

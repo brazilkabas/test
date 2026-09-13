@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
 import { api } from "@/components/api";
@@ -9,6 +10,7 @@ import { EmptyState, Modal, Skeleton, StatusBadge, useToast } from "@/components
 type Project = { id: string; name: string; slug: string; status: string; updatedAt: string; createdBy: { displayName: string | null; email: string }; versions: Array<{ version: number; createdAt: string }>; deployments: Array<{ hostname: string; status: string; deployedAt: string | null }> };
 
 export function HtmlProjects() {
+  const router = useRouter();
   const { notify } = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
   const [templates, setTemplates] = useState<Array<{ id: string; name: string }>>([]);
@@ -29,7 +31,7 @@ export function HtmlProjects() {
     const data = new FormData(event.currentTarget);
     try {
       const result = await api<{ project: { id: string } }>("/html-projects", { method: "POST", body: JSON.stringify({ name: data.get("name"), template: data.get("template") }) });
-      window.location.assign(`/admin/html-projects/${result.project.id}`);
+      router.push(`/admin/html-projects/${result.project.id}`);
     } catch (error) { notify({ title: "Project not created", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
   }
 

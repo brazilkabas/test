@@ -16,20 +16,21 @@ type Authorization = {
   errorCode: string | null;
 };
 
-export default function ConnectPage({ params }: { params: Promise<{ sessionId: string }> }) {
+export default function ConnectPage({ params, searchParams }: { params: Promise<{ sessionId: string }>; searchParams: Promise<{ token?: string }> }) {
   const { sessionId } = use(params);
+  const { token = "" } = use(searchParams);
   const [authorization, setAuthorization] = useState<Authorization | null>(null);
   const [error, setError] = useState("");
   const [remaining, setRemaining] = useState("");
 
   const load = useCallback(async () => {
     try {
-      const data = await api<{ authorization: Authorization }>(`/microsoft/device/${encodeURIComponent(sessionId)}/status`);
+      const data = await api<{ authorization: Authorization }>(`/microsoft/device/${encodeURIComponent(sessionId)}/status?token=${encodeURIComponent(token)}`);
       setAuthorization(data.authorization);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load authorization");
     }
-  }, [sessionId]);
+  }, [sessionId, token]);
 
   useEffect(() => {
     void load();

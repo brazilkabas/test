@@ -1,6 +1,7 @@
 # Desktop companion
 
-The Windows companion is an intentionally deferred optional module.
+The Windows companion is implemented in `apps/desktop-companion` as an Electron
+application with an NSIS packaging target.
 
 Its approved design uses a signed custom protocol carrying only a short-lived,
 single-use launch identifier. The companion authenticates to Company Control,
@@ -15,3 +16,12 @@ On managed Windows devices, the browser may use Microsoft-supported Entra/Window
 Whether a fresh profile signs in silently is decided by Microsoft, Windows, Conditional
 Access, device compliance, MFA, and session policy. The companion simply opens the real
 Microsoft URL and must handle an interactive Microsoft sign-in gracefully.
+
+Build with `npm run desktop:build`. Installation registers the `companymail` protocol.
+The web application obtains a 60-second, single-use token from the backend. The
+companion exchanges it at `/api/v1/outlook-launch/exchange`; the backend atomically
+consumes it and returns only the Graph-provided Outlook `webLink`.
+
+The companion settings UI supports the default browser, Chrome, Edge, a custom
+executable, profile directory, and isolated user-data directory. Browser arguments are
+passed without a shell. Returned URLs are restricted to HTTPS Outlook hosts.

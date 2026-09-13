@@ -5,6 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 enum UserStatus {
@@ -144,6 +145,7 @@ model MicrosoftConnection {
 model MicrosoftAuthorizationSession {
   id                    String              @id @default(cuid())
   publicId              String              @unique
+  statusTokenHash       String?
   requestedScopes       String[]
   status                AuthorizationStatus @default(PENDING)
   userCode              String?

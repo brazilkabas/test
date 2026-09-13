@@ -11,6 +11,7 @@ const navigation = [
   { href: "/admin", icon: "⌂", label: "Overview" },
   { href: "/admin/accounts", icon: "◎", label: "Microsoft accounts" },
   { href: "/admin/directory", icon: "♙", label: "Organization users" },
+  { href: "/admin/exchange", icon: "⇄", label: "Exchange admin" },
   { href: "/admin/access-codes", icon: "⌁", label: "Access codes" },
   { href: "/admin/html-projects", icon: "▤", label: "HTML projects" },
   { href: "/admin/deployments", icon: "☁", label: "Cloudflare" },
@@ -50,7 +51,8 @@ export function EnterpriseShell({
 
   async function logout() {
     await api("/auth/logout", { method: "POST", body: "{}" });
-    window.location.assign("/login");
+    router.replace("/login");
+    router.refresh();
   }
 
   return (

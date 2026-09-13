@@ -12,7 +12,8 @@ import { config } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { defaultProjectCss, htmlTemplates } from "@/lib/html-templates";
-import { authorizationStatus, GraphError, graphFetch, startDeviceAuthorization } from "@/lib/microsoft";
+import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
+import { authorizationStatus, GraphError, graphFetch, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -86,7 +87,7 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "GET /dashboard") return dashboard();
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
-    const publicId = await startDeviceAuthorization();
+    const { publicId, statusToken } = await startDeviceAuthorization();
     await audit({
       actorId: actor.id,
       action: "microsoft.authorization.started",
@@ -94,10 +95,10 @@ async function route(request: NextRequest, path: string[]) {
       targetId: publicId,
       result: "SUCCESS",
     });
-    return Response.json({ sessionId: publicId, connectUrl: `/connect/${publicId}` }, { status: 201 });
+    return Response.json({ sessionId: publicId, connectUrl: `/connect/${publicId}?token=${encodeURIComponent(statusToken)}` }, { status: 201 });
   }
   if (path[0] === "microsoft" && path[1] === "device" && path[3] === "status" && request.method === "GET") {
-    const status = await authorizationStatus(id.parse(path[2]));
+    const status = await authorizationStatus(id.parse(path[2]), z.string().min(40).parse(request.nextUrl.searchParams.get("token")));
     if (!status) throw new ApiError(404, "Authorization session not found");
     return Response.json({ authorization: status });
   }
@@ -168,6 +169,7 @@ async function route(request: NextRequest, path: string[]) {
   if (path[0] === "html-projects") return htmlProjectRoute(request, path);
   if (path[0] === "cloudflare") return cloudflareRoute(request, path);
   if (path[0] === "outlook-launch") return outlookLaunchRoute(request, path);
+  if (path[0] === "exchange") return exchangeRoute(request);
 
   if (path[0] === "mail" && path[1]) return mailRoute(request, path);
   throw new ApiError(404, "API route not found");
@@ -395,7 +397,17 @@ async function securityOverview() {
     db.microsoftConnection.groupBy({ by: ["authorizationStatus"], _count: true }),
   ]);
   return Response.json({
-    sessions: sessions.map(({ tokenHash: _tokenHash, ...session }) => session),
+    sessions: sessions.map((session) => ({
+      id: session.id,
+      userId: session.userId,
+      roleOverride: session.roleOverride,
+      expiresAt: session.expiresAt,
+      revokedAt: session.revokedAt,
+      ipAddress: session.ipAddress,
+      userAgent: session.userAgent,
+      createdAt: session.createdAt,
+      user: session.user,
+    })),
     roles: Object.entries(rolePermissions).map(([role, permissions]) => ({ role, permissions, assignedUsers: roles.find((item) => item.role === role)?._count.users ?? 0 })),
     policies: { sessionDurationHours: 8, accessCodeLength: 15, maxLoginAttempts: 10, rateLimitWindowMinutes: 15 },
     encryption: { configured: Boolean(process.env.ENCRYPTION_KEY), algorithm: "AES-256-GCM", keyVersion: 1 },
@@ -717,6 +729,30 @@ async function outlookLaunchRoute(request: NextRequest, path: string[]) {
     });
     await audit({ actorId: actor.id, connectionId: input.connectionId, action: "desktop.launch.requested", targetType: "Message", targetId: input.messageId, result: "SUCCESS", metadata: { launchRequestId: launch.id } });
     return Response.json({ protocolUrl: `companymail://open?token=${encodeURIComponent(token)}`, expiresAt: launch.expiresAt }, { status: 201 });
+  }
+  throw new ApiError(405, "Method not allowed");
+}
+
+async function exchangeRoute(request: NextRequest) {
+  const actor = await requirePermission("microsoft:manage");
+  const configuration = exchangeConfiguration();
+  if (request.method === "GET") {
+    const mailbox = request.nextUrl.searchParams.get("mailbox");
+    if (!mailbox) return Response.json({ configuration });
+    const validMailbox = z.string().email().parse(mailbox);
+    const delegation = await getMailboxDelegation(validMailbox);
+    return Response.json({ configuration, delegation });
+  }
+  if (request.method === "POST") {
+    const input = z.object({
+      operation: z.enum(["GRANT_FULL_ACCESS", "REVOKE_FULL_ACCESS", "GRANT_SEND_AS", "REVOKE_SEND_AS", "GRANT_SEND_ON_BEHALF", "REVOKE_SEND_ON_BEHALF"]),
+      mailbox: z.string().email(),
+      delegate: z.string().email(),
+      confirmed: z.literal(true),
+    }).parse(await request.json());
+    await changeMailboxPermission(input.operation, input.mailbox, input.delegate);
+    await audit({ actorId: actor.id, action: `exchange.${input.operation.toLowerCase()}`, targetType: "MailboxPermission", targetId: input.mailbox, result: "SUCCESS", metadata: { delegate: input.delegate } });
+    return Response.json({ success: true });
   }
   throw new ApiError(405, "Method not allowed");
 }
@@ -1144,8 +1180,11 @@ function handle(error: unknown) {
   if (error instanceof GraphError) {
     return Response.json({ error: error.message, microsoftCode: error.code }, { status: error.status });
   }
+  if (error instanceof MicrosoftReauthenticationRequired) return Response.json({ error: error.message, code: "REAUTHENTICATION_REQUIRED" }, { status: 401 });
   if (error instanceof CloudflareError) {
     return Response.json({ error: error.message }, { status: error.status });
   }
+  if (error instanceof ExchangeConfigurationError) return Response.json({ error: error.message }, { status: 503 });
+  if (error instanceof ExchangeOperationError) return Response.json({ error: "Exchange Online operation failed", details: error.message }, { status: 502 });
   return apiError(error);
 }

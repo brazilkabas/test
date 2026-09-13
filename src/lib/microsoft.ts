@@ -6,10 +6,11 @@ import {
   type ICachePlugin,
   type TokenCacheContext,
 } from "@azure/msal-node";
+import { randomBytes } from "node:crypto";
 
 import { AuthorizationStatus } from "@/generated/prisma/client";
 import { config } from "@/lib/config";
-import { decrypt, encrypt } from "@/lib/crypto";
+import { decrypt, encrypt, sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
@@ -23,10 +24,12 @@ type DeviceChallenge = {
   message: string;
 };
 
-export async function startDeviceAuthorization(): Promise<string> {
+export async function startDeviceAuthorization(): Promise<{ publicId: string; statusToken: string }> {
+  const statusToken = randomBytes(32).toString("base64url");
   const session = await db.microsoftAuthorizationSession.create({
     data: {
       publicId: crypto.randomUUID(),
+      statusTokenHash: sha256(statusToken),
       requestedScopes: config().microsoftScopes,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
     },
@@ -81,13 +84,14 @@ export async function startDeviceAuthorization(): Promise<string> {
       expiresAt: new Date(Date.now() + issued.expiresIn * 1000),
     },
   });
-  return session.publicId;
+  return { publicId: session.publicId, statusToken };
 }
 
-export async function authorizationStatus(publicId: string) {
+export async function authorizationStatus(publicId: string, statusToken: string) {
   const session = await db.microsoftAuthorizationSession.findUnique({
     where: { publicId },
     select: {
+      statusTokenHash: true,
       publicId: true,
       userCode: true,
       verificationUri: true,
@@ -100,7 +104,9 @@ export async function authorizationStatus(publicId: string) {
     },
   });
   if (!session) return null;
-  if (session.status === AuthorizationStatus.PENDING && session.expiresAt <= new Date()) {
+  const { statusTokenHash, ...safeSession } = session;
+  if (!statusTokenHash || sha256(statusToken) !== statusTokenHash) return null;
+  if (safeSession.status === AuthorizationStatus.PENDING && safeSession.expiresAt <= new Date()) {
     return db.microsoftAuthorizationSession.update({
       where: { publicId },
       data: { status: AuthorizationStatus.EXPIRED },
@@ -117,7 +123,7 @@ export async function authorizationStatus(publicId: string) {
       },
     });
   }
-  return session;
+  return safeSession;
 }
 
 async function completeAuthorization(

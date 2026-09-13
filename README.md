@@ -48,6 +48,7 @@ confirmation and a recipient argument.
 - [Cloudflare setup](CLOUDFLARE_SETUP.md)
 - [Desktop companion](DESKTOP_COMPANION.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
+- [Current implementation status](docs/IMPLEMENTATION_STATUS.md)
 
 Advanced directory, shared mailbox, Exchange administration, Cloudflare publishing,
 desktop companion, and third-party integration modules are intentionally deferred

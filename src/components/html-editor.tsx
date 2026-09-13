@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/components/api";
@@ -20,6 +21,7 @@ const blocks = [
 ] as const;
 
 export function HtmlEditor({ projectId }: { projectId: string }) {
+  const router = useRouter();
   const { notify } = useToast();
   const [project, setProject] = useState<Project | null>(null);
   const [html, setHtml] = useState("");
@@ -57,7 +59,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     const url = URL.createObjectURL(new Blob([output], { type: "text/html" }));
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${project?.slug ?? "project"}.html`; anchor.click(); URL.revokeObjectURL(url);
   }
-  async function archive() { await api(`/html-projects/${projectId}`, { method: "DELETE" }); window.location.assign("/admin/html-projects"); }
+  async function archive() { await api(`/html-projects/${projectId}`, { method: "DELETE" }); router.push("/admin/html-projects"); }
 
   if (!project) return <section className="panel panel-body"><Skeleton lines={10} /></section>;
   return <>
