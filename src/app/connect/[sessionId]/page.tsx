@@ -3,6 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 
 import { api } from "@/components/api";
+import { pageDocumentSchema, renderPageDocument, type PageDocument } from "@/lib/page-document";
 
 type Authorization = {
   publicId: string;
@@ -14,6 +15,7 @@ type Authorization = {
   expiresAt: string;
   connectionId: string | null;
   errorCode: string | null;
+  pageProject?: { versions: Array<{ document: PageDocument | null }> } | null;
 };
 
 export default function ConnectPage({ params, searchParams }: { params: Promise<{ sessionId: string }>; searchParams: Promise<{ token?: string }> }) {
@@ -50,6 +52,28 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   async function restart() {
     const result = await api<{ connectUrl: string }>("/microsoft/device/start", { method: "POST", body: "{}" });
     window.location.assign(result.connectUrl);
+  }
+
+  const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
+  if (authorization && customDocumentResult.success) {
+    const destination = authorization.verificationUriComplete ?? authorization.verificationUri ?? "https://microsoft.com/devicelogin";
+    const rendered = renderPageDocument(customDocumentResult.data, { deviceCode: authorization.userCode ?? "", verificationUri: destination, status: authorization.status });
+    return <main className="custom-connect-page" onClick={(event) => {
+      const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
+      if (!target) return;
+      const action = target.dataset.action;
+      if (action === "copy-device-code") { event.preventDefault(); void navigator.clipboard.writeText(authorization.userCode ?? ""); }
+      if (action === "open-microsoft") { event.preventDefault(); window.open(destination, "_blank", "noopener,noreferrer"); }
+    }}>
+      <style>{rendered.css}</style>
+      <div dangerouslySetInnerHTML={{ __html: rendered.html }} />
+      <div className="live-authorization-bar">
+        <strong>{authorization.status === "CONNECTED" ? "Microsoft account connected" : authorization.status === "PENDING" ? `Waiting for Microsoft · ${remaining}` : `Authorization ${authorization.status.toLowerCase()}`}</strong>
+        {authorization.status === "PENDING" && <span>The code shown above was issued by Microsoft and cannot be changed by the page designer.</span>}
+        {authorization.status === "CONNECTED" && <a className="button" href="/admin">Return to dashboard</a>}
+        {["EXPIRED", "FAILED", "CANCELLED"].includes(authorization.status) && <button onClick={() => void restart()}>Restart authorization</button>}
+      </div>
+    </main>;
   }
 
   if (error) return <main className="center-page"><div className="card auth-card error">{error}</div></main>;

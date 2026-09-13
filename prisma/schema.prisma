@@ -54,6 +54,11 @@ enum AccessCodePurpose {
   DEPLOYMENT
 }
 
+enum CloudflareAuthType {
+  API_TOKEN
+  GLOBAL_API_KEY
+}
+
 model User {
   id                   String                @id @default(cuid())
   email                String                @unique
@@ -166,9 +171,11 @@ model MicrosoftAuthorizationSession {
   expiresAt             DateTime
   errorCode             String?
   connectionId          String?
+  pageProjectId         String?
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
   connection            MicrosoftConnection? @relation(fields: [connectionId], references: [id])
+  pageProject           HtmlProject?          @relation(fields: [pageProjectId], references: [id])
 
   @@index([status, expiresAt])
 }
@@ -218,12 +225,16 @@ model HtmlProject {
   name        String
   slug        String               @unique
   status      ProjectStatus        @default(DRAFT)
+  templateId  String               @default("blank")
+  settings    Json?
   createdById String
   createdAt   DateTime             @default(now())
   updatedAt   DateTime             @updatedAt
   createdBy   User                 @relation(fields: [createdById], references: [id])
   versions    HtmlProjectVersion[]
   deployments CloudflareDeployment[]
+  assets      ProjectAsset[]
+  authorizationSessions MicrosoftAuthorizationSession[]
 }
 
 model HtmlProjectVersion {
@@ -233,10 +244,30 @@ model HtmlProjectVersion {
   html       String
   css        String?
   javascript String?
+  document   Json?
+  state      ProjectStatus @default(DRAFT)
+  editorId   String?
   createdAt  DateTime    @default(now())
   project    HtmlProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, version])
+}
+
+model ProjectAsset {
+  id          String      @id @default(cuid())
+  projectId   String
+  name        String
+  contentType String
+  size        Int
+  sha256      String
+  data        Bytes
+  kind        String
+  variant     String?
+  createdAt   DateTime    @default(now())
+  project     HtmlProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, kind])
+  @@unique([projectId, sha256])
 }
 
 model Domain {
@@ -333,4 +364,21 @@ model EncryptedSecretReference {
   keyVersion Int      @default(1)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+}
+
+model CloudflareConfiguration {
+  id                   String             @id @default("default")
+  authType             CloudflareAuthType
+  email                String?
+  encryptedCredential  Bytes
+  accountId            String?
+  accountName          String?
+  zoneId               String?
+  zoneName             String?
+  baseDomain           String?
+  credentialKeyVersion Int                @default(1)
+  lastTestedAt         DateTime?
+  lastTestStatus       String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 }

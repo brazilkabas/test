@@ -24,14 +24,18 @@ type DeviceChallenge = {
   message: string;
 };
 
-export async function startDeviceAuthorization(): Promise<{ publicId: string; statusToken: string }> {
+export async function startDeviceAuthorization(pageProjectId?: string): Promise<{ publicId: string; statusToken: string }> {
   const statusToken = randomBytes(32).toString("base64url");
+  const customizedPage = pageProjectId
+    ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
+    : await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } });
   const session = await db.microsoftAuthorizationSession.create({
     data: {
       publicId: crypto.randomUUID(),
       statusTokenHash: sha256(statusToken),
       requestedScopes: config().microsoftScopes,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      pageProjectId: customizedPage?.id,
     },
   });
 
@@ -101,6 +105,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       expiresAt: true,
       connectionId: true,
       errorCode: true,
+      pageProject: { select: { versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
     },
   });
   if (!session) return null;
@@ -120,6 +125,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
         expiresAt: true,
         connectionId: true,
         errorCode: true,
+        pageProject: { select: { versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
       },
     });
   }

@@ -15,6 +15,7 @@ const navigation = [
   { href: "/admin/access-codes", icon: "⌁", label: "Access codes" },
   { href: "/admin/html-projects", icon: "▤", label: "HTML projects" },
   { href: "/admin/deployments", icon: "☁", label: "Cloudflare" },
+  { href: "/admin/settings/cloudflare", icon: "⚙", label: "Cloudflare settings" },
   { href: "/admin/audit", icon: "≡", label: "Audit log" },
   { href: "/admin/diagnostics", icon: "⌁", label: "Diagnostics" },
   { href: "/admin/security", icon: "◇", label: "Security" },
