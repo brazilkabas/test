@@ -858,23 +858,29 @@ async function outlookLaunchRoute(request: NextRequest, path: string[]) {
   if (path[1] === "exchange" && request.method === "POST") {
     const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
     enforceRateLimit(`launch:${ip}`);
-    const { token } = z.object({ token: z.string().min(40).max(100) }).parse(await request.json());
-    const launch = await db.outlookLaunchRequest.findUnique({ where: { tokenHash: sha256(token) } });
-    if (!launch || launch.usedAt || launch.expiresAt <= new Date()) throw new ApiError(401, "Launch request is invalid, expired, or already used");
+    const { launchId } = z.object({ launchId: z.string().regex(/^[A-Za-z0-9_-]{40,100}$/) }).parse(await request.json());
+    const launch = await db.outlookLaunchRequest.findUnique({ where: { tokenHash: sha256(launchId) } });
+    if (!launch || launch.usedAt || launch.expiresAt <= new Date()) {
+      if (launch) await audit({ actorId: launch.requestedById, connectionId: launch.connectionId, action: "desktop.launch.rejected", targetType: "Message", targetId: launch.messageId, result: "FAILURE", metadata: { launchRequestId: launch.id, reason: launch.usedAt ? "already_used" : "expired" } });
+      throw new ApiError(401, "Launch request is invalid, expired, or already used");
+    }
     const consumed = await db.outlookLaunchRequest.updateMany({ where: { id: launch.id, usedAt: null, expiresAt: { gt: new Date() } }, data: { usedAt: new Date() } });
-    if (consumed.count !== 1) throw new ApiError(409, "Launch request was already consumed");
-    await audit({ connectionId: launch.connectionId, action: "desktop.outlook.launched", targetType: "Message", targetId: launch.messageId, result: "SUCCESS", metadata: { launchRequestId: launch.id } });
+    if (consumed.count !== 1) {
+      await audit({ actorId: launch.requestedById, connectionId: launch.connectionId, action: "desktop.launch.rejected", targetType: "Message", targetId: launch.messageId, result: "FAILURE", metadata: { launchRequestId: launch.id, reason: "concurrent_consumption" } });
+      throw new ApiError(409, "Launch request was already consumed");
+    }
+    await audit({ actorId: launch.requestedById, connectionId: launch.connectionId, action: "desktop.outlook.launched", targetType: "Message", targetId: launch.messageId, result: "SUCCESS", metadata: { launchRequestId: launch.id } });
     return Response.json({ webLink: launch.webLink });
   }
   if (request.method === "POST") {
     const actor = await requirePermission("mail:read");
     const input = z.object({ connectionId: z.string().min(1), messageId: z.string().min(1) }).parse(await request.json());
     const message = await graphFetch<{ webLink?: string }>(input.connectionId, `/me/messages/${encodeURIComponent(input.messageId)}?$select=webLink`);
-    if (!message.webLink || new URL(message.webLink).protocol !== "https:") throw new ApiError(422, "Microsoft did not return a safe Outlook web link");
-    const token = randomBytes(32).toString("base64url");
+    if (!message.webLink || !isAllowedOutlookWebLink(message.webLink)) throw new ApiError(422, "Microsoft did not return a safe Outlook web link");
+    const launchId = randomBytes(32).toString("base64url");
     const launch = await db.outlookLaunchRequest.create({
       data: {
-        tokenHash: sha256(token),
+        tokenHash: sha256(launchId),
         connectionId: input.connectionId,
         messageId: input.messageId,
         webLink: message.webLink,
@@ -883,9 +889,18 @@ async function outlookLaunchRoute(request: NextRequest, path: string[]) {
       },
     });
     await audit({ actorId: actor.id, connectionId: input.connectionId, action: "desktop.launch.requested", targetType: "Message", targetId: input.messageId, result: "SUCCESS", metadata: { launchRequestId: launch.id } });
-    return Response.json({ protocolUrl: `companymail://open?token=${encodeURIComponent(token)}`, expiresAt: launch.expiresAt }, { status: 201 });
+    return Response.json({ protocolUrl: `companymail://open/${encodeURIComponent(launchId)}`, expiresAt: launch.expiresAt }, { status: 201 });
   }
   throw new ApiError(405, "Method not allowed");
+}
+
+function isAllowedOutlookWebLink(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && ["outlook.office.com", "outlook.office365.com", "outlook.live.com", "outlook.cloud.microsoft"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 async function exchangeRoute(request: NextRequest) {

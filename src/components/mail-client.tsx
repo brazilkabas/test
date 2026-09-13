@@ -157,7 +157,8 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     if (!selected) return;
     try {
       const result = await api<{ protocolUrl: string }>(`/outlook-launch`, { method: "POST", body: JSON.stringify({ connectionId, messageId: selected.id }) });
-      window.location.assign(result.protocolUrl);
+      window.location.href = result.protocolUrl;
+      notify({ title: "Opening Company Mail Launcher", message: "Approve the browser prompt if it appears. The launch ID expires in 60 seconds.", tone: "success" });
     } catch (error) {
       notify({ title: "Desktop launch unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" });
     }
@@ -199,8 +200,8 @@ export function MailClient({ connectionId }: { connectionId: string }) {
               <button className="icon-button" title="Mark unread" aria-label="Mark unread" onClick={() => void updateMessage({ isRead: false })}>◉</button>
               <button className="icon-button" title="Flag" aria-label="Flag" onClick={() => void updateMessage({ flag: { flagStatus: selected.flag?.flagStatus === "flagged" ? "notFlagged" : "flagged" } })}>⚑</button>
               <button className="icon-button" title="Delete" aria-label="Delete" onClick={() => setDeleteOpen(true)}>⌫</button>
-              {selected.webLink && <a className="button secondary" target="_blank" rel="noopener noreferrer" href={selected.webLink}>Open in Outlook ↗</a>}
-              {selected.webLink && <button className="secondary" onClick={() => void openInDesktop()}>Desktop app</button>}
+              {selected.webLink && <button onClick={() => void openInDesktop()}>Open in Outlook ↗</button>}
+              {selected.webLink && <a className="button secondary" target="_blank" rel="noopener noreferrer" href={selected.webLink}>Open in browser</a>}
             </header>
             <article className="reading-content">
               <h1>{selected.subject || "(no subject)"}</h1>
