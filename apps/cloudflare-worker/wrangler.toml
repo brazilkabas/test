@@ -1,0 +1,12 @@
+name = "company-control-router"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# Bind the centrally managed namespace created by Company Control before deployment.
+# Replace this value with CLOUDFLARE_KV_NAMESPACE_ID in the deployment pipeline.
+[[kv_namespaces]]
+binding = "DEPLOYMENTS"
+id = "configure-in-cloudflare"
+
+# Configure one wildcard custom domain, for example:
+# routes = [{ pattern = "*.connect.company.com/*", zone_name = "company.com" }]
