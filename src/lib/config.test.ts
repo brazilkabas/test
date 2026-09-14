@@ -19,4 +19,14 @@ describe("Microsoft client configuration", () => {
     );
   });
 
+  it("passes any non-empty client ID to Microsoft unchanged", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "provider-validates-this-value");
+    const { microsoftClientId } = await import("@/lib/config");
+
+    expect(microsoftClientId()).toBe("provider-validates-this-value");
+  });
 });

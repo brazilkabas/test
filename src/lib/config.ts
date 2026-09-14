@@ -44,9 +44,6 @@ export function microsoftClientId(): string {
   if (!clientId) {
     throw new MicrosoftConfigurationError("MICROSOFT_CLIENT_ID is not configured.");
   }
-  if (!z.string().uuid().safeParse(clientId).success) {
-    throw new MicrosoftConfigurationError("MICROSOFT_CLIENT_ID must be a valid Entra Application (client) ID.");
-  }
   return clientId;
 }
 
