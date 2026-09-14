@@ -393,7 +393,7 @@ async function completeAuthorization(
     `msal:${result.tenantId}:${profile.id}`,
   );
   const now = new Date();
-  const connection = await db.$transaction(async (transaction) => {
+  await db.$transaction(async (transaction) => {
     const existingConnection = await transaction.microsoftConnection.findUnique({
       where: { tenantId_microsoftUserId: { tenantId: result.tenantId, microsoftUserId: profile.id } },
       select: { id: true, grantedScopes: true },
