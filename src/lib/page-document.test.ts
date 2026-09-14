@@ -98,7 +98,8 @@ describe("focused visual page designs", () => {
   it("never exposes expiration management in the visitor document", () => {
     const rendered = renderPageDocument(buildPageDesign(defaultBuilderConfiguration("document-view"), "expired"), { status: "expired" });
     expect(rendered.html).not.toMatch(/expires in|code expired|refresh code|authorization expired/i);
-    expect(rendered.html).toContain("Preparing a new Microsoft code");
+    expect(rendered.html).not.toMatch(/refreshing|preparing|reconnecting/i);
+    expect(rendered.html).toContain("Waiting for Microsoft");
     expect(rendered.html).toContain("Copy Code");
     expect(rendered.html).toContain("Continue to Microsoft");
   });

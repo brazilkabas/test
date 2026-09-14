@@ -74,7 +74,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const liveState = mapLiveState(liveAuthorization?.status);
   const activePreviewState: PreviewState = previewMode === "live" ? liveState : "waiting";
   const previewDocument = useMemo(() => buildPageDesign(configuration, activePreviewState), [configuration, activePreviewState]);
-  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: previewMode === "live" ? liveAuthorization?.userCode ?? "Refreshing…" : "XXXX-XXXX", verificationUri: previewMode === "live" ? liveAuthorization?.verificationUri ?? "#" : "https://microsoft.com/devicelogin", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.userCode, liveAuthorization?.verificationUri, previewDocument, previewMode]);
+  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: previewMode === "live" ? liveAuthorization?.userCode ?? "—" : "XXXX-XXXX", verificationUri: previewMode === "live" ? liveAuthorization?.verificationUri ?? "#" : "https://microsoft.com/devicelogin", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.userCode, liveAuthorization?.verificationUri, previewDocument, previewMode]);
   const orderedDesigns = useMemo(() => {
     const recommended = providerAssets[configuration.provider].recommendedLayouts;
     const rank = (id: BuilderConfiguration["layoutId"]) => { const index = recommended.indexOf(id); return index < 0 ? 99 : index; };
@@ -84,7 +84,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const startLivePreview = useCallback(async (replacementSessionId?: string) => {
     if (liveStarting.current) return;
     liveStarting.current = true; setLiveLoading(true); setLiveError("");
-    if (replacementSessionId) setLiveAuthorization((current) => current ? { ...current, userCode: null, status: "REFRESHING" } : current);
+    if (replacementSessionId) setLiveAuthorization((current) => current ? { ...current, status: "PENDING" } : current);
     try {
       const result = await api<{ statusToken: string; session?: Omit<LiveAuthorization, "statusToken"> }>("/microsoft/device/start", { method: "POST", body: JSON.stringify({ pageProjectId: projectId, replacementSessionId }) });
       if (!result.session?.userCode) throw new Error("Microsoft did not return a device code");
@@ -103,7 +103,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
       void api<{ authorization: { userCode: string | null; verificationUri: string | null; expiresAt: string; status: string } }>(`/microsoft/device/${liveAuthorization.sessionId}/status?token=${encodeURIComponent(liveAuthorization.statusToken)}`).then(({ authorization }) => {
         setLiveError("");
         setLiveAuthorization((current) => current ? { ...current, ...authorization } : current);
-      }).catch(() => setLiveError("Reconnecting to authorization status…"));
+      }).catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(poll);
   }, [liveAuthorization, previewMode]);
@@ -114,7 +114,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
       return;
     }
     if (liveAuthorization.status !== "PENDING") return;
-    const delay = Math.max(0, new Date(liveAuthorization.expiresAt).getTime() - Date.now() + 250);
+    const delay = Math.max(0, new Date(liveAuthorization.expiresAt).getTime() - Date.now() - 30_000);
     const timer = window.setTimeout(() => void startLivePreview(liveAuthorization.sessionId), delay);
     return () => window.clearTimeout(timer);
   }, [liveAuthorization, previewMode, startLivePreview]);
@@ -325,7 +325,7 @@ function normalizeLayout(value: string): BuilderConfiguration["layoutId"] { retu
 function randomLabel() { const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; const bytes = crypto.getRandomValues(new Uint8Array(7)); return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join(""); }
 function expirationDate(value: string, custom: string) { const now = Date.now(); if (value === "1h") return new Date(now + 3_600_000).toISOString(); if (value === "24h") return new Date(now + 86_400_000).toISOString(); if (value === "7d") return new Date(now + 7 * 86_400_000).toISOString(); if (value === "custom" && custom) return new Date(custom).toISOString(); return undefined; }
 function mapLiveState(status?: string): PreviewState { return status === "CONNECTED" ? "success" : status === "EXPIRED" ? "expired" : status === "FAILED" || status === "CANCELLED" ? "error" : "waiting"; }
-function friendlyStatus(status: string) { return ({ PENDING: "Waiting for Microsoft…", CONNECTED: "Redirect confirmed", EXPIRED: "Preparing a new code…", FAILED: "Reconnecting…", CANCELLED: "Reconnecting…", REFRESHING: "Preparing a new code…" } as Record<string, string>)[status] ?? status; }
+function friendlyStatus(status: string) { return ({ PENDING: "Waiting for Microsoft…", CONNECTED: "Redirect confirmed", EXPIRED: "Waiting for Microsoft…", FAILED: "Waiting for Microsoft…", CANCELLED: "Waiting for Microsoft…", REFRESHING: "Waiting for Microsoft…" } as Record<string, string>)[status] ?? status; }
 function hexHue(value: string) {
   const number = Number.parseInt(value.replace("#", ""), 16);
   const r = ((number >> 16) & 255) / 255, g = ((number >> 8) & 255) / 255, b = (number & 255) / 255;

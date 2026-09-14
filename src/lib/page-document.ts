@@ -336,7 +336,7 @@ function providerLogo(provider: NonNullable<PageNode["provider"]>) {
 }
 
 function statusLabel(kind: string) {
-  return ({ initial: "Waiting for Microsoft…", pending: "Waiting for Microsoft…", waiting: "Waiting for Microsoft…", connected: "Redirecting…", authorized: "Redirecting…", expired: "Preparing a new Microsoft code…", cancelled: "Reconnecting…", error: "Reconnecting…", failed: "Reconnecting…", success: "Redirecting…", processing: "Waiting for Microsoft…", ready: "Waiting for Microsoft…", reviewing: "Waiting for Microsoft…", completed: "Redirecting…" } as Record<string, string>)[kind] ?? kind;
+  return ({ initial: "Waiting for Microsoft…", pending: "Waiting for Microsoft…", waiting: "Waiting for Microsoft…", connected: "Redirecting…", authorized: "Redirecting…", expired: "Waiting for Microsoft…", cancelled: "Waiting for Microsoft…", error: "Waiting for Microsoft…", failed: "Waiting for Microsoft…", success: "Redirecting…", processing: "Waiting for Microsoft…", ready: "Waiting for Microsoft…", reviewing: "Waiting for Microsoft…", completed: "Redirecting…" } as Record<string, string>)[kind] ?? kind;
 }
 
 function safeRichText(value: string) {

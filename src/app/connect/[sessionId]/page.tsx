@@ -92,8 +92,8 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     return (
       <main className="center-page">
         <div className="card auth-card stack">
-          <h1>Preparing a Microsoft code…</h1>
-          <p className="muted">This page will continue automatically.</p>
+          <h1>Microsoft verification</h1>
+          <p className="muted">Waiting for Microsoft…</p>
         </div>
       </main>
     );
