@@ -43,6 +43,7 @@ export type MicrosoftAuthorizationPurpose = "identity" | "mailbox" | "mailbox-se
 
 type AuthorizationTarget = {
   connectionId?: string;
+  resourceAppId?: string;
 };
 
 type DeviceChallenge = {
@@ -60,7 +61,8 @@ export async function startBrowserAuthorization(
 ): Promise<{ publicId: string; statusToken: string; authorizationUrl: string }> {
   const authConfig = microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
-  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes, authConfig.resourceAppId);
+  const resourceAppId = target.resourceAppId ?? authConfig.resourceAppId;
+  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes, resourceAppId);
   const customizedPage = purpose === "identity" && pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
@@ -72,7 +74,7 @@ export async function startBrowserAuthorization(
       statusTokenHash: sha256(statusToken),
       requestedScopes: scopes,
       clientId: authConfig.clientId,
-      resourceAppId: authConfig.resourceAppId,
+      resourceAppId,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
       connectionId: target.connectionId,
@@ -173,7 +175,8 @@ export async function startDeviceAuthorization(
 ): Promise<{ publicId: string; statusToken: string }> {
   const authConfig = microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
-  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes, authConfig.resourceAppId);
+  const resourceAppId = target.resourceAppId ?? authConfig.resourceAppId;
+  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes, resourceAppId);
   const customizedPage = purpose === "identity" && pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
@@ -185,7 +188,7 @@ export async function startDeviceAuthorization(
       statusTokenHash: sha256(statusToken),
       requestedScopes: scopes,
       clientId: authConfig.clientId,
-      resourceAppId: authConfig.resourceAppId,
+      resourceAppId,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
       connectionId: target.connectionId,
@@ -195,8 +198,8 @@ export async function startDeviceAuthorization(
     console.info("[microsoft] Microsoft authentication configuration", {
       authFlow: "Device Code",
       clientId: authConfig.clientId,
-      resource: isMicrosoftGraphResource(authConfig.resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
-      resourceId: authConfig.resourceAppId,
+      resource: isMicrosoftGraphResource(resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
+      resourceId: resourceAppId,
       authority: microsoftAuthority(authConfig.authority),
       requestedScopes: scopes,
     });
@@ -238,8 +241,8 @@ export async function startDeviceAuthorization(
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
           clientId: microsoftClientId(),
-          resource: isMicrosoftGraphResource(authConfig.resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
-          resourceId: authConfig.resourceAppId,
+          resource: isMicrosoftGraphResource(resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
+          resourceId: resourceAppId,
           authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
           requestedScopes: scopes,
           errorCode,
@@ -293,6 +296,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
     select: {
       statusTokenHash: true,
       requestedScopes: true,
+      resourceAppId: true,
       publicId: true,
       userCode: true,
       verificationUri: true,
@@ -314,6 +318,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       select: {
         publicId: true,
         requestedScopes: true,
+        resourceAppId: true,
         userCode: true,
         verificationUri: true,
         message: true,
@@ -642,11 +647,8 @@ export async function acquireMicrosoftResourceToken(connectionId: string) {
         throw new MicrosoftReauthenticationRequired();
       }
       const authConfig = microsoftAuthConfig();
-      if (
-        connection.clientId !== authConfig.clientId
-        || connection.resourceAppId !== authConfig.resourceAppId
-      ) {
-        throw new MicrosoftConfigurationError("Configured Microsoft client/resource does not match this stored connection.");
+      if (connection.clientId !== authConfig.clientId) {
+        throw new MicrosoftConfigurationError("Configured Microsoft client does not match this stored connection.");
       }
       let legacyOutlookTokenCached = false;
       const cachePlugin: ICachePlugin = {

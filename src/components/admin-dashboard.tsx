@@ -27,7 +27,10 @@ export function AdminDashboard() {
   async function startConnection() {
     setBusy(true); setError("");
     try {
-      const result = await api<{ connectUrl: string }>("/microsoft/device/start", { method: "POST", body: "{}" });
+      const result = await api<{ connectUrl: string }>("/microsoft/device/start", {
+        method: "POST",
+        body: JSON.stringify({ target: "graph_webmail" }),
+      });
       window.location.assign(result.connectUrl);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to start authorization");

@@ -56,7 +56,7 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
     try {
       const result = await api<{ connectUrl: string }>("/microsoft/device/start", {
         method: "POST",
-        body: JSON.stringify(connectionId ? { connectionId } : {}),
+        body: JSON.stringify({ target: "graph_webmail", ...(connectionId ? { connectionId } : {}) }),
       });
       window.location.assign(result.connectUrl);
     } catch (error) {
