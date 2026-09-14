@@ -1766,7 +1766,7 @@ async function loadMailFolderTree(connectionId: string) {
     if (depth > 10 || folders.length >= 500) return;
     let next: string | null = path;
     while (next && folders.length < 500) {
-      const page = await graphFetch<GraphCollection<GraphMailFolder>>(connectionId, next);
+      const page: GraphCollection<GraphMailFolder> = await graphFetch<GraphCollection<GraphMailFolder>>(connectionId, next);
       for (const folder of page.value) {
         folders.push({ ...folder, depth });
         if ((folder.childFolderCount ?? 0) > 0 && folders.length < 500) {
