@@ -13,8 +13,8 @@ describe("focused visual page designs", () => {
     for (const template of visualTemplates) {
       expect(pageDocumentSchema.safeParse(template.document).success, template.name).toBe(true);
       const types = flatten(template.document.nodes).map((node) => node.type);
-      expect(types).not.toContain("deviceCode");
-      expect(types.filter((type) => type === "button").length).toBeGreaterThanOrEqual(1);
+      expect(types).toContain("deviceCode");
+      expect(types.filter((type) => type === "button").length).toBeGreaterThanOrEqual(2);
       expect(types).toContain("steps");
       expect(types).toContain("status");
     }
@@ -32,12 +32,16 @@ describe("focused visual page designs", () => {
     }
   });
 
-  it("renders browser sign-in without a device code or copy action", () => {
+  it("never renders authored content as the Microsoft device-code value", () => {
     const document = buildPageDesign(defaultBuilderConfiguration("compact-card"));
+    const deviceCode = flatten(document.nodes).find((node) => node.type === "deviceCode")!;
+    deviceCode.content = "ATTACKER-CONTROLLED-VALUE";
     const preview = renderPageDocument(document);
-    expect(preview.html).not.toContain("XXXX-XXXX");
-    expect(preview.html).not.toContain('data-action="copy-device-code"');
-    expect(preview.html).toContain('data-action="open-microsoft"');
+    expect(preview.html).toContain("XXXX-XXXX");
+    expect(preview.html).not.toContain("ATTACKER-CONTROLLED-VALUE</strong>");
+    const live = renderPageDocument(document, { deviceCode: "ABCD-EFGH" });
+    expect(live.html).toContain("ABCD-EFGH");
+    expect(live.html).not.toContain("XXXX-XXXX");
   });
 
   it("validates post-authorization redirects without accepting active schemes", () => {
@@ -63,13 +67,13 @@ describe("focused visual page designs", () => {
     const success = renderPageDocument(document, { status: "success" }).html;
     expect(success).not.toContain("Authorization Complete");
     expect(success).not.toContain("Authorization complete");
-    expect(success).not.toContain("XXXX-XXXX");
-    expect(success).not.toContain('data-action="copy-device-code"');
+    expect(success).toContain("XXXX-XXXX");
+    expect(success).toContain('data-action="copy-device-code"');
     expect(success).toContain('data-action="open-microsoft"');
     expect(success).toContain("Redirecting…");
   });
 
-  it("keeps the official Microsoft browser action and deliberate provider identity in every design", () => {
+  it("keeps the official Microsoft device action and deliberate provider identity in every design", () => {
     for (const design of pageDesigns) {
       const configuration = defaultBuilderConfiguration(design.id, "sharepoint");
       expect(configuration.continueButtonText).toBe("Continue to Microsoft");
@@ -96,7 +100,7 @@ describe("focused visual page designs", () => {
     expect(rendered.html).not.toMatch(/expires in|code expired|refresh code|authorization expired/i);
     expect(rendered.html).not.toMatch(/refreshing|preparing|reconnecting/i);
     expect(rendered.html).toContain("Waiting for Microsoft");
-    expect(rendered.html).not.toContain("Copy Code");
+    expect(rendered.html).toContain("Copy Code");
     expect(rendered.html).toContain("Continue to Microsoft");
   });
 });

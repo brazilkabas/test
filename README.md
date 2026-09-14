@@ -1,7 +1,7 @@
 # Company Control
 
 Secure internal Microsoft 365 administration platform. The first milestone provides a
-Microsoft Entra authorization-code + PKCE connection flow, encrypted MSAL token cache, Graph-backed mail
+Microsoft Entra device-code connection flow, encrypted MSAL token cache, Graph-backed mail
 operations, mailbox settings and Inbox rules, an internal dashboard, and audit logging.
 
 ## Quick start

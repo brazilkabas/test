@@ -1,22 +1,20 @@
 # Troubleshooting
 
-## Microsoft browser sign-in does not start
+## Microsoft device code does not appear
 
 If `MICROSOFT_CLIENT_ID` is blank, the API returns
 `MICROSOFT_CLIENT_ID is not configured.` Add your Entra Application (client) ID and
-restart the server. Confirm `MICROSOFT_REDIRECT_URI` exactly matches a Web redirect URI
-in the registration, outbound access to `login.microsoftonline.com` is available, and
-the registration supports multiple organizations. The authority is fixed to
+restart the server. Confirm public client flows are enabled, outbound access to
+`login.microsoftonline.com` is available, and the registration supports multiple
+organizations. The authority is fixed to
 `https://login.microsoftonline.com/organizations`.
 
-Normal browser sign-in uses authorization code with PKCE. WAM, an authentication
-broker, and a Windows helper are neither used nor required. Device code is available
-only as an optional fallback for headless or restricted-browser environments.
+Product sign-in uses Microsoft device authorization. WAM, an authentication broker,
+and a Windows helper are neither used nor required.
 
 ## Consent or permission errors
 
-Initial sign-in requests only `openid`, `profile`, `email`, and `User.Read`. Mail and
-mailbox-settings permissions are requested when those features are enabled. Tenant
+Compare `MICROSOFT_SCOPES` with delegated permissions in the app registration. Tenant
 policy may require administrator consent. Do not add broad permissions merely to make
 an error disappear.
 
@@ -24,7 +22,7 @@ an error disappear.
 
 MSAL could not silently acquire an approved token, commonly after revocation,
 Conditional Access changes, consent changes, or `invalid_grant`. Start a new official
-browser authorization. The application does not bypass interaction requirements.
+device authorization. The application does not bypass interaction requirements.
 
 ## Mailbox or shared mailbox denied
 

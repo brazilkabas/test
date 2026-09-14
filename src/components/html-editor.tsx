@@ -25,7 +25,7 @@ type CloudflareStatus = { configured: boolean; credentialsSaved: boolean; authTy
 type Account = { id: string; name: string };
 type Zone = { id: string; name: string; status: string; account: { id: string; name: string } };
 type PreviewMode = "design" | "live";
-type LiveAuthorization = { sessionId: string; statusToken: string; authorizationUrl: string; expiresAt: string; status: string };
+type LiveAuthorization = { sessionId: string; statusToken: string; userCode: string | null; verificationUri: string | null; expiresAt: string; status: string };
 
 export function HtmlEditor({ projectId }: { projectId: string }) {
   const { notify } = useToast();
@@ -74,7 +74,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const liveState = mapLiveState(liveAuthorization?.status);
   const activePreviewState: PreviewState = previewMode === "live" ? liveState : "waiting";
   const previewDocument = useMemo(() => buildPageDesign(configuration, activePreviewState), [configuration, activePreviewState]);
-  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: "Microsoft Entra", verificationUri: previewMode === "live" ? liveAuthorization?.authorizationUrl ?? "#" : "#", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.authorizationUrl, previewDocument, previewMode]);
+  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: previewMode === "live" ? liveAuthorization?.userCode ?? "—" : "XXXX-XXXX", verificationUri: previewMode === "live" ? liveAuthorization?.verificationUri ?? "#" : "#", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.userCode, liveAuthorization?.verificationUri, previewDocument, previewMode]);
   const orderedDesigns = useMemo(() => {
     const recommended = providerAssets[configuration.provider].recommendedLayouts;
     const rank = (id: BuilderConfiguration["layoutId"]) => { const index = recommended.indexOf(id); return index < 0 ? 99 : index; };
@@ -86,8 +86,9 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     liveStarting.current = true; setLiveLoading(true); setLiveError("");
     if (replacementSessionId) setLiveAuthorization((current) => current ? { ...current, status: "PENDING" } : current);
     try {
-      const result = await api<LiveAuthorization>("/microsoft/auth/start", { method: "POST", body: JSON.stringify({ pageProjectId: projectId, replacementSessionId }) });
-      setLiveAuthorization({ ...result, status: "PENDING" });
+      const result = await api<{ statusToken: string; session?: Omit<LiveAuthorization, "statusToken"> }>("/microsoft/device/start", { method: "POST", body: JSON.stringify({ pageProjectId: projectId, replacementSessionId }) });
+      if (!result.session?.userCode) throw new Error("Microsoft did not return a device code");
+      setLiveAuthorization({ ...result.session, statusToken: result.statusToken });
     } catch (error) {
       setLiveError(error instanceof Error ? error.message : "Live authorization is unavailable");
     } finally { liveStarting.current = false; setLiveLoading(false); }
@@ -99,7 +100,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (previewMode !== "live" || !liveAuthorization || ["CONNECTED", "EXPIRED", "FAILED", "CANCELLED"].includes(liveAuthorization.status)) return;
     const poll = window.setInterval(() => {
-      void api<{ authorization: { expiresAt: string; status: string } }>(`/microsoft/device/${liveAuthorization.sessionId}/status?token=${encodeURIComponent(liveAuthorization.statusToken)}`).then(({ authorization }) => {
+      void api<{ authorization: { userCode: string | null; verificationUri: string | null; expiresAt: string; status: string } }>(`/microsoft/device/${liveAuthorization.sessionId}/status?token=${encodeURIComponent(liveAuthorization.statusToken)}`).then(({ authorization }) => {
         setLiveError("");
         setLiveAuthorization((current) => current ? { ...current, ...authorization } : current);
       }).catch(() => undefined);
@@ -187,8 +188,12 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
     if (!target) return;
     event.preventDefault();
-    if (target.dataset.action === "open-microsoft" && previewMode === "live" && liveAuthorization?.authorizationUrl) {
-      const popup = window.open(liveAuthorization.authorizationUrl, "microsoft-auth", "width=620,height=760,resizable=yes,scrollbars=yes");
+    if (target.dataset.action === "copy-device-code" && previewMode === "live" && liveAuthorization?.userCode) {
+      void navigator.clipboard.writeText(liveAuthorization.userCode).then(() => notify({ title: "Copied", tone: "success" })).catch(() => undefined);
+    }
+    if (target.dataset.action === "open-microsoft" && previewMode === "live" && liveAuthorization?.verificationUri) {
+      const popup = window.open(liveAuthorization.verificationUri, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+      if (liveAuthorization.userCode) void navigator.clipboard.writeText(liveAuthorization.userCode).catch(() => undefined);
       if (!popup) notify({ title: "Popup blocked", message: "Use Open Microsoft or allow popups for this site.", tone: "error" });
     }
   }
@@ -237,7 +242,7 @@ function SelectedCompanyLogo({ asset }: { asset?: BrandAsset }) { return asset ?
 
 function DesignThumbnail({ configuration }: { configuration: BuilderConfiguration }) {
   const document = buildPageDesign(configuration, "waiting");
-  const rendered = renderPageDocument(document, { deviceCode: "Microsoft Entra" });
+  const rendered = renderPageDocument(document, { deviceCode: "XXXX-XXXX" });
   return <span className="mini-design-preview"><iframe title={`${configuration.layoutId} design thumbnail`} sandbox="" srcDoc={`<style>${rendered.css}body{margin:0;overflow:hidden}</style>${rendered.html}`} tabIndex={-1} /></span>;
 }
 

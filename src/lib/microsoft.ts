@@ -18,19 +18,13 @@ const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const GRAPH_SCOPE_ROOT = "https://graph.microsoft.com/";
 const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
 const NON_GRAPH_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
-const DEVICE_IDENTITY_SCOPES = new Set(["offline_access"]);
+const DEVICE_IDENTITY_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
 const NORMAL_GRAPH_SCOPES = new Map([
   ["user.read", "User.Read"],
   ["mail.readwrite", "Mail.ReadWrite"],
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
-const IDENTITY_AUTHORIZATION_SCOPES = [
-  "openid",
-  "profile",
-  "email",
-  `${GRAPH_SCOPE_ROOT}User.Read`,
-];
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
   `${GRAPH_SCOPE_ROOT}User.Read`,
@@ -58,7 +52,7 @@ type DeviceChallenge = {
 export async function startBrowserAuthorization(
   pageProjectId?: string,
   purpose: MicrosoftAuthorizationPurpose = "identity",
-): Promise<{ publicId: string; statusToken: string; authorizationUrl: string; expiresAt: Date }> {
+): Promise<{ publicId: string; statusToken: string; authorizationUrl: string }> {
   microsoftClientId();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
@@ -91,7 +85,7 @@ export async function startBrowserAuthorization(
     prompt: "select_account",
   });
   assertMicrosoftAuthorizationUrl(authorizationUrl);
-  return { publicId: session.publicId, statusToken, authorizationUrl, expiresAt: session.expiresAt };
+  return { publicId: session.publicId, statusToken, authorizationUrl };
 }
 
 export async function completeBrowserAuthorization(state: string, code: string) {
@@ -490,10 +484,13 @@ export function deviceAuthorizationScopes(scopes: string[]) {
   return [...new Set([...identity, ...graphDelegatedScopes(scopes)])];
 }
 
-export function microsoftAuthorizationScopes(purpose: MicrosoftAuthorizationPurpose) {
+export function microsoftAuthorizationScopes(
+  purpose: MicrosoftAuthorizationPurpose,
+  configuredScopes = config().microsoftScopes,
+) {
   if (purpose === "mailbox-settings") return [...MAILBOX_SETTINGS_SCOPES];
   if (purpose === "mailbox") return [...MAILBOX_ACCESS_SCOPES];
-  return [...IDENTITY_AUTHORIZATION_SCOPES];
+  return deviceAuthorizationScopes(configuredScopes);
 }
 
 function scopeName(scope: string) {

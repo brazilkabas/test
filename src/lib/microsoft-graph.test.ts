@@ -25,12 +25,25 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("keeps initial browser authorization minimal and defers feature scopes", () => {
-    expect(microsoftAuthorizationScopes("identity")).toEqual([
+  it("uses configured allowlisted scopes for device authorization", () => {
+    expect(microsoftAuthorizationScopes("identity", [
       "openid",
       "profile",
       "email",
+      "offline_access",
+      "User.Read",
+      "Mail.ReadWrite",
+      "Mail.Send",
+      "MailboxSettings.ReadWrite",
+    ])).toEqual([
+      "openid",
+      "profile",
+      "email",
+      "offline_access",
       "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/MailboxSettings.ReadWrite",
     ]);
     expect(microsoftAuthorizationScopes("mailbox")).toEqual([
       "offline_access",
@@ -45,7 +58,7 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("passes only the normal webmail and renewal scopes to MSAL", () => {
+  it("passes only OIDC and supported Graph scopes to MSAL", () => {
     expect(deviceAuthorizationScopes([
       "openid",
       "profile",
@@ -57,6 +70,9 @@ describe("Microsoft Graph token targeting", () => {
       "MailboxSettings.ReadWrite",
       "Directory.Read.All",
     ])).toEqual([
+      "openid",
+      "profile",
+      "email",
       "offline_access",
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.ReadWrite",

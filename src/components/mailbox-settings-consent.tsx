@@ -90,11 +90,11 @@ function MicrosoftFeatureConsent({
       return;
     }
     try {
-      const result = await api<{ sessionId: string; statusToken: string; authorizationUrl: string }>("/microsoft/auth/start", {
+      const result = await api<{ sessionId: string; statusToken: string; connectUrl: string }>("/microsoft/device/start", {
         method: "POST",
         body: JSON.stringify({ purpose, connectionId }),
       });
-      popup.current.location.href = result.authorizationUrl;
+      popup.current.location.href = result.connectUrl;
       setSession({ sessionId: result.sessionId, statusToken: result.statusToken });
     } catch (caught) {
       try { popup.current.close(); } catch {}

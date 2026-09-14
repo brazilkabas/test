@@ -6,7 +6,7 @@ const schema = z.object({
   MICROSOFT_AUTHORITY: z.string().url().default("https://login.microsoftonline.com/organizations"),
   MICROSOFT_REDIRECT_URI: z.string().url().optional(),
   MICROSOFT_SCOPES: z.string().default(
-    "openid,profile,email,User.Read",
+    "openid,profile,email,offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite",
   ),
   ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/, "must be a 32-byte hex key"),
   SESSION_SECRET: z.string().min(32),

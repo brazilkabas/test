@@ -2,8 +2,7 @@
 
 ## Implemented controls
 
-- Normal Microsoft authentication uses MSAL Node authorization code with PKCE and the
-  official Microsoft authorization endpoint. Device code is an explicit fallback only.
+- Microsoft authentication uses MSAL Node device authorization and official Microsoft URLs.
 - MSAL caches are encrypted with AES-256-GCM, context-bound to tenant and object ID.
 - App sessions use random bearer values stored only as HttpOnly, Secure-in-production,
   SameSite=Strict cookies; only hashes are persisted.
