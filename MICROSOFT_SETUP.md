@@ -26,9 +26,12 @@ Initial sign-in passes only these scopes to MSAL:
 
 - `openid`, `profile`, `email` — basic sign-in identity;
 - `User.Read` — signed-in profile;
+- `offline_access` — renew access without storing browser tokens;
+- `Mail.ReadWrite` — read and manage messages, folders, attachments, and drafts;
+- `Mail.Send` — send, reply to, and forward messages.
 
-Webmail is enabled through a separate authorization request containing `offline_access`,
-`User.Read`, `Mail.ReadWrite`, and `Mail.Send`. `MailboxSettings.ReadWrite` is requested
+These mailbox scopes are part of initial authorization so internal webmail is available
+immediately after a successful connection. `MailboxSettings.ReadWrite` is requested
 separately only when a user opens and enables mailbox-settings or Inbox-rule editing.
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
 because shared-mailbox workflows are not enabled.

@@ -29,7 +29,10 @@ const IDENTITY_AUTHORIZATION_SCOPES = [
   "openid",
   "profile",
   "email",
+  "offline_access",
   `${GRAPH_SCOPE_ROOT}User.Read`,
+  `${GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
+  `${GRAPH_SCOPE_ROOT}Mail.Send`,
 ];
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
