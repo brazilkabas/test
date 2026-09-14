@@ -5,6 +5,8 @@ import {
   graphDelegatedScopes,
   isMicrosoftGraphToken,
   microsoftAuthorizationScopes,
+  microsoftErrorCode,
+  microsoftProfileEmail,
 } from "@/lib/microsoft";
 
 describe("Microsoft Graph token targeting", () => {
@@ -85,6 +87,25 @@ describe("Microsoft Graph token targeting", () => {
     expect(isMicrosoftGraphToken(jwt("00000003-0000-0000-c000-000000000000"))).toBe(true);
     expect(isMicrosoftGraphToken(jwt("https://graph.microsoft.com"))).toBe(true);
     expect(isMicrosoftGraphToken(jwt("https://outlook.office365.com"))).toBe(false);
+  });
+
+  it("uses the sign-in address when Graph mail is unset", () => {
+    expect(microsoftProfileEmail({
+      mail: "",
+      userPrincipalName: "person@example.com",
+      otherMails: ["other@example.com"],
+    })).toBe("person@example.com");
+    expect(microsoftProfileEmail(
+      {},
+      { preferred_username: "claim@example.com" },
+    )).toBe("claim@example.com");
+  });
+
+  it("preserves Microsoft AADSTS failure codes", () => {
+    expect(microsoftErrorCode({
+      errorCode: "invalid_grant",
+      errorMessage: "AADSTS65002: Consent must be configured via preauthorization",
+    })).toBe("AADSTS65002");
   });
 });
 

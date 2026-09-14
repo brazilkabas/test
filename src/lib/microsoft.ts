@@ -322,7 +322,12 @@ async function completeAuthorization(
     displayName?: string;
     userPrincipalName?: string;
     mail?: string;
-  }>(result.accessToken, "/me?$select=id,displayName,userPrincipalName,mail");
+    otherMails?: string[];
+  }>(result.accessToken, "/me?$select=id,displayName,userPrincipalName,mail,otherMails");
+  const email = microsoftProfileEmail(
+    profile,
+    result.idTokenClaims as Record<string, unknown> | undefined,
+  );
   const stillPending = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
   if (!stillPending || stillPending.status !== AuthorizationStatus.PENDING || stillPending.expiresAt <= new Date()) return;
   const encryptedTokenCache = encrypt(
@@ -347,7 +352,7 @@ async function completeAuthorization(
       microsoftUserId: profile.id,
       displayName: profile.displayName,
       userPrincipalName: profile.userPrincipalName,
-      email: profile.mail,
+      email,
       encryptedTokenCache,
       grantedScopes,
       lastSuccessfulGraphAt: new Date(),
@@ -356,7 +361,7 @@ async function completeAuthorization(
     update: {
       displayName: profile.displayName,
       userPrincipalName: profile.userPrincipalName,
-      email: profile.mail,
+      email,
       encryptedTokenCache,
       grantedScopes,
       connectedAt: new Date(),
@@ -499,6 +504,20 @@ function scopeName(scope: string) {
     : scope;
 }
 
+export function microsoftProfileEmail(
+  profile: { mail?: string; userPrincipalName?: string; otherMails?: string[] },
+  claims?: Record<string, unknown>,
+) {
+  const candidates = [
+    profile.mail,
+    profile.userPrincipalName,
+    profile.otherMails?.[0],
+    typeof claims?.email === "string" ? claims.email : undefined,
+    typeof claims?.preferred_username === "string" ? claims.preferred_username : undefined,
+  ];
+  return candidates.find((value) => value?.trim())?.trim();
+}
+
 function hasLegacyOutlookCacheTarget(serialized: string) {
   try {
     const cache = JSON.parse(serialized) as { AccessToken?: Record<string, { target?: string }> };
@@ -607,10 +626,10 @@ async function markReauthentication(connectionId: string) {
   });
 }
 
-function microsoftErrorCode(error: unknown): string {
+export function microsoftErrorCode(error: unknown): string {
   if (typeof error !== "object" || !error) return "device_authorization_failed";
   const message = "errorMessage" in error ? String(error.errorMessage) : "message" in error ? String(error.message) : "";
-  const aadCode = message.match(/\bAADSTS(?:90094|90095|900941)\b/i)?.[0];
+  const aadCode = message.match(/\bAADSTS\d+\b/i)?.[0];
   if (aadCode) return aadCode.toUpperCase();
   return "errorCode" in error ? String(error.errorCode) : "device_authorization_failed";
 }

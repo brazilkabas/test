@@ -74,6 +74,13 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       <p className="muted">Your Microsoft 365 organization requires an administrator to approve this app’s requested permissions. The application will not retry or request broader permissions automatically.</p>
     </div></main>;
   }
+  if (authorization?.status === "FAILED") {
+    return <main className="center-page"><div className="card auth-card stack">
+      <h1>Microsoft authorization did not complete</h1>
+      <p className="muted">{authorizationFailureMessage(authorization.errorCode)}</p>
+      {authorization.errorCode && <p className="badge">{authorization.errorCode}</p>}
+    </div></main>;
+  }
   const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
   if (authorization && customDocumentResult.success) {
     const destination = authorization.verificationUri ?? "#";
@@ -145,6 +152,13 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
 
 function isAdminApprovalRequired(errorCode: string | null) {
   return Boolean(errorCode && /^AADSTS(?:90094|90095|900941)$/i.test(errorCode));
+}
+
+function authorizationFailureMessage(errorCode: string | null) {
+  if (errorCode === "AADSTS65002") {
+    return "Microsoft rejected the configured application ID because first-party API access was not preauthorized.";
+  }
+  return "Microsoft rejected or cancelled this authorization attempt. Start a new connection and review the Microsoft error code.";
 }
 
 function isMailboxSettingsAuthorization(scopes: string[]) {

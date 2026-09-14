@@ -59,6 +59,8 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
         <div className="panel-body">
           {tab === "Overview" && <div className="stack">
             <div className="definition-grid">
+              <Info label="Email" value={account.email ?? account.userPrincipalName ?? "Not provided by Microsoft"} />
+              <Info label="Microsoft sign-in" value={account.userPrincipalName ?? "Not provided by Microsoft"} />
               <Info label="Microsoft object ID" value={account.microsoftUserId} />
               <Info label="Tenant ID" value={account.tenantId} />
               <Info label="Connection state" value={<StatusBadge status={account.authorizationStatus} />} />
