@@ -405,7 +405,7 @@ async function dashboard() {
   const now = new Date();
   const [connections, activeAccessCodes, htmlProjects, activeDeployments, recentEvents, recentDeployments, recentMailActivity] = await Promise.all([
     db.microsoftConnection.findMany({
-      select: { id: true, authorizationStatus: true, displayName: true, userPrincipalName: true, lastSuccessfulGraphAt: true },
+      select: { id: true, authorizationStatus: true, displayName: true, userPrincipalName: true, lastSuccessfulGraphAt: true, resourceAppId: true },
       orderBy: { connectedAt: "desc" },
     }),
     db.accessCode.count({ where: { revokedAt: null, expiresAt: { gt: now } } }),

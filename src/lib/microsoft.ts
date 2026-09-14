@@ -398,10 +398,12 @@ async function completeAuthorization(
     }
   } else {
     const idTokenClaims = result.idTokenClaims as Record<string, unknown> | undefined;
+    const identityId = authenticatedAccount.localAccountId
+      || claimString(accessClaims?.oid)
+      || claimString(idTokenClaims?.oid);
+    if (!identityId) throw new Error("Microsoft returned no stable user object ID");
     profile = {
-      id: authenticatedAccount.localAccountId
-        || claimString(accessClaims?.oid)
-        || claimString(idTokenClaims?.oid),
+      id: identityId,
       displayName: authenticatedAccount.name || claimString(idTokenClaims?.name),
       userPrincipalName: authenticatedAccount.username || claimString(idTokenClaims?.preferred_username),
       mail: claimString(idTokenClaims?.email),
@@ -765,7 +767,7 @@ function hasLegacyOutlookCacheTarget(serialized: string) {
 }
 
 function tokenAudience(accessToken: string): string | null {
-  return claimString(tokenClaims(accessToken)?.aud);
+  return claimString(tokenClaims(accessToken)?.aud) ?? null;
 }
 
 function tokenClaims(accessToken: string): Record<string, unknown> | null {
