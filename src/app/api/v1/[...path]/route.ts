@@ -220,7 +220,10 @@ async function route(request: NextRequest, path: string[]) {
     if (!["EXPIRED", "FAILED", "CANCELLED"].includes(previous.status)) throw new ApiError(409, "Authorization can only be restarted after it ends");
     const incrementalSettings = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
       && !previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
-    const incrementalMailbox = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
+    const incrementalMailbox = previous.requestedScopes.some((scope) => {
+      const normalized = normalizeMicrosoftScope(scope);
+      return normalized === "mail.read" || normalized === "mail.readwrite";
+    });
     const pageProjectId = previous.pageProject?.id;
     if (!pageProjectId && !previous.connectionId && !incrementalSettings && !incrementalMailbox) throw new ApiError(404, "Authorization session cannot be restarted");
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
