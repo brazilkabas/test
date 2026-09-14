@@ -10,12 +10,44 @@ type AuthorizationStatus = {
   errorCode: string | null;
 };
 
-export function MailboxSettingsConsent({
+export function MailboxSettingsConsent(props: { connectionId: string; onGranted: () => void }) {
+  return <MicrosoftFeatureConsent
+    {...props}
+    purpose="mailbox-settings"
+    title="Additional Microsoft permission required"
+    description="Editing mailbox settings and Inbox rules is optional. Normal webmail does not request this permission."
+    buttonLabel="Enable mailbox settings"
+    adminApprovalDescription="mailbox-settings access"
+  />;
+}
+
+export function MailboxAccessConsent(props: { connectionId: string; onGranted: () => void }) {
+  return <MicrosoftFeatureConsent
+    {...props}
+    purpose="mailbox"
+    title="Connect webmail"
+    description="Basic Microsoft sign-in is complete. Enable mailbox access only when you want to use webmail."
+    buttonLabel="Enable webmail"
+    adminApprovalDescription="mailbox access"
+  />;
+}
+
+function MicrosoftFeatureConsent({
   connectionId,
   onGranted,
+  purpose,
+  title,
+  description,
+  buttonLabel,
+  adminApprovalDescription,
 }: {
   connectionId: string;
   onGranted: () => void;
+  purpose: "mailbox" | "mailbox-settings";
+  title: string;
+  description: string;
+  buttonLabel: string;
+  adminApprovalDescription: string;
 }) {
   const [session, setSession] = useState<{ sessionId: string; statusToken: string } | null>(null);
   const [error, setError] = useState("");
@@ -42,13 +74,13 @@ export function MailboxSettingsConsent({
           setError(authorization.status === "EXPIRED"
             ? "Microsoft verification expired. Start the optional permission request again."
             : isAdminApprovalRequired(authorization.errorCode)
-            ? "Your Microsoft 365 organization requires an administrator to approve mailbox-settings access."
+            ? `Your Microsoft 365 organization requires an administrator to approve ${adminApprovalDescription}.`
             : "Microsoft authorization was not completed. Retry without changing the requested permissions.");
         }
       }).catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(poll);
-  }, [connectionId, onGranted, session]);
+  }, [adminApprovalDescription, connectionId, onGranted, session]);
 
   async function enable() {
     setError("");
@@ -60,7 +92,7 @@ export function MailboxSettingsConsent({
     try {
       const result = await api<{ sessionId: string; statusToken: string; connectUrl: string }>("/microsoft/device/start", {
         method: "POST",
-        body: JSON.stringify({ purpose: "mailbox-settings", connectionId }),
+        body: JSON.stringify({ purpose, connectionId }),
       });
       popup.current.location.href = result.connectUrl;
       setSession({ sessionId: result.sessionId, statusToken: result.statusToken });
@@ -71,10 +103,10 @@ export function MailboxSettingsConsent({
   }
 
   return <section className="panel panel-body stack">
-    <h1>Additional Microsoft permission required</h1>
-    <p className="muted">Editing mailbox settings and Inbox rules is optional. Normal webmail does not request this permission.</p>
+    <h1>{title}</h1>
+    <p className="muted">{description}</p>
     {error && <p className="error">{error}</p>}
-    <div><button type="button" disabled={Boolean(session)} onClick={() => void enable()}>{session ? "Waiting for Microsoft…" : "Enable mailbox settings"}</button></div>
+    <div><button type="button" disabled={Boolean(session)} onClick={() => void enable()}>{session ? "Waiting for Microsoft…" : buttonLabel}</button></div>
   </section>;
 }
 

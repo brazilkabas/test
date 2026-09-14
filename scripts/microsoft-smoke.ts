@@ -3,7 +3,7 @@ import { PublicClientApplication } from "@azure/msal-node";
 import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "../src/lib/microsoft-authority";
 
 const clientId = process.env.MICROSOFT_CLIENT_ID;
-const scopes = (process.env.MICROSOFT_SCOPES ?? "User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite")
+const scopes = (process.env.MICROSOFT_MAIL_SMOKE_SCOPES ?? "offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);

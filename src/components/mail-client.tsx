@@ -6,6 +6,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, csrfToken } from "@/components/api";
 import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, useToast } from "@/components/design-system";
+import { MailboxAccessConsent } from "@/components/mailbox-settings-consent";
 
 type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number };
 type Message = {
@@ -53,6 +54,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all" | "forward" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [preview, setPreview] = useState<{ url: string; attachment: Attachment } | null>(null);
+  const [permissionReady, setPermissionReady] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
 
@@ -87,8 +89,16 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
-  useEffect(() => { void loadFolders(); }, [loadFolders]);
-  useEffect(() => { void loadMessages(false); }, [folder]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    void api<{ account: { grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
+      .then(({ account }) => {
+        const granted = account.grantedScopes.map((scope) => scope.toLowerCase().replace("https://graph.microsoft.com/", ""));
+        setPermissionReady(granted.includes("mail.readwrite") && granted.includes("mail.send"));
+      })
+      .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
+  }, [connectionId, notify]);
+  useEffect(() => { if (permissionReady) void loadFolders(); }, [loadFolders, permissionReady]);
+  useEffect(() => { if (permissionReady) void loadMessages(false); }, [folder, permissionReady]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
 
   async function openMessage(message: Message) {
@@ -171,7 +181,13 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }
 
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
+  const onPermissionGranted = useCallback(() => {
+    setPermissionReady(true);
+    notify({ title: "Webmail enabled", tone: "success" });
+  }, [notify]);
 
+  if (permissionReady === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
+  if (!permissionReady) return <MailboxAccessConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
   return (
     <div className="mail-workspace">
       <aside className={`mail-folders ${foldersOpen ? "is-mobile-open" : ""}`}>

@@ -25,7 +25,13 @@ const NORMAL_GRAPH_SCOPES = new Map([
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
-const NORMAL_MAILBOX_SCOPES = [
+const IDENTITY_AUTHORIZATION_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  `${GRAPH_SCOPE_ROOT}User.Read`,
+];
+const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
   `${GRAPH_SCOPE_ROOT}User.Read`,
   `${GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
@@ -39,7 +45,7 @@ const MAILBOX_SETTINGS_SCOPES = [
 const pending = new Map<string, Promise<void>>();
 const loggedGraphAudience = new Set<string>();
 
-export type MicrosoftAuthorizationPurpose = "mailbox" | "mailbox-settings";
+export type MicrosoftAuthorizationPurpose = "identity" | "mailbox" | "mailbox-settings";
 
 type DeviceChallenge = {
   userCode: string;
@@ -51,13 +57,13 @@ type DeviceChallenge = {
 
 export async function startDeviceAuthorization(
   pageProjectId?: string,
-  purpose: MicrosoftAuthorizationPurpose = "mailbox",
+  purpose: MicrosoftAuthorizationPurpose = "identity",
 ): Promise<{ publicId: string; statusToken: string }> {
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
-  const customizedPage = purpose === "mailbox" && pageProjectId
+  const customizedPage = purpose === "identity" && pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
-    : purpose === "mailbox"
+    : purpose === "identity"
       ? await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } })
       : null;
   const session = await db.microsoftAuthorizationSession.create({
@@ -72,6 +78,7 @@ export async function startDeviceAuthorization(
   if (config().NODE_ENV === "development") {
     console.info("[microsoft] authorization started", {
       authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      clientId: config().MICROSOFT_CLIENT_ID,
       requestedScopes: scopes.map(scopeName),
     });
   }
@@ -112,8 +119,10 @@ export async function startDeviceAuthorization(
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
           authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+          clientId: config().MICROSOFT_CLIENT_ID,
           requestedScopes: scopes.map(scopeName),
           errorCode,
+          errorDescription: microsoftErrorDescription(error),
         });
       }
       await db.microsoftAuthorizationSession.updateMany({
@@ -260,6 +269,7 @@ async function completeAuthorization(
   if (config().NODE_ENV === "development") {
     console.info("[microsoft] authorization completed", {
       authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      clientId: config().MICROSOFT_CLIENT_ID,
       requestedScopes: result.scopes.map(scopeName),
       tenantId: result.tenantId,
     });
@@ -372,9 +382,9 @@ export function deviceAuthorizationScopes(scopes: string[]) {
 }
 
 export function microsoftAuthorizationScopes(purpose: MicrosoftAuthorizationPurpose) {
-  return purpose === "mailbox-settings"
-    ? [...MAILBOX_SETTINGS_SCOPES]
-    : [...NORMAL_MAILBOX_SCOPES];
+  if (purpose === "mailbox-settings") return [...MAILBOX_SETTINGS_SCOPES];
+  if (purpose === "mailbox") return [...MAILBOX_ACCESS_SCOPES];
+  return [...IDENTITY_AUTHORIZATION_SCOPES];
 }
 
 function scopeName(scope: string) {
@@ -497,6 +507,16 @@ function microsoftErrorCode(error: unknown): string {
   const aadCode = message.match(/\bAADSTS(?:90094|90095|900941)\b/i)?.[0];
   if (aadCode) return aadCode.toUpperCase();
   return "errorCode" in error ? String(error.errorCode) : "device_authorization_failed";
+}
+
+function microsoftErrorDescription(error: unknown): string {
+  if (typeof error !== "object" || !error) return "Microsoft device authorization failed";
+  const description = "errorMessage" in error
+    ? String(error.errorMessage)
+    : "message" in error
+      ? String(error.message)
+      : "Microsoft device authorization failed";
+  return description.slice(0, 1000);
 }
 
 function classifyDeviceError(error: unknown): AuthorizationStatus {

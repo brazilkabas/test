@@ -25,7 +25,13 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("keeps mailbox settings out of normal mailbox authorization", () => {
+  it("separates identity, mailbox, and mailbox-settings authorization", () => {
+    expect(microsoftAuthorizationScopes("identity")).toEqual([
+      "openid",
+      "profile",
+      "email",
+      "https://graph.microsoft.com/User.Read",
+    ]);
     expect(microsoftAuthorizationScopes("mailbox")).toEqual([
       "offline_access",
       "https://graph.microsoft.com/User.Read",

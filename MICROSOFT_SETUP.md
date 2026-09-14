@@ -22,26 +22,25 @@ application unless a later confidential-client flow explicitly requires one.
 
 ## Delegated Graph permissions
 
-The initial milestone uses:
+Initial sign-in passes only these scopes to MSAL:
 
+- `openid`, `profile`, `email` — basic sign-in identity;
 - `User.Read` — signed-in profile;
-- `Mail.ReadWrite` — messages, attachments, folders, and drafts;
-- `Mail.Send` — send and reply;
-- `offline_access` — MSAL renewal.
 
-`MailboxSettings.ReadWrite` is requested separately only when a user opens and enables
-mailbox-settings or Inbox-rule editing. Shared permissions (`Mail.ReadWrite.Shared`,
-`Mail.Send.Shared`) are not requested because shared-mailbox workflows are not enabled.
+Webmail is enabled through a separate authorization request containing `offline_access`,
+`User.Read`, `Mail.ReadWrite`, and `Mail.Send`. `MailboxSettings.ReadWrite` is requested
+separately only when a user opens and enables mailbox-settings or Inbox-rule editing.
+Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
+because shared-mailbox workflows are not enabled.
 Directory permissions such as
 `User.ReadBasic.All` or `User.Read.All` are not needed for milestone one and may
 require administrator consent under tenant policy. Microsoft can also require admin
 consent for otherwise delegated permissions depending on tenant configuration.
 
-The normal device flow enforces the Graph list above as an allowlist and does not
-configure `openid`, `profile`, or `email`. MSAL can add its standard `openid` and
-`profile` protocol scopes automatically; these basic OIDC scopes do not cause the
-mailbox admin-approval requirement. The application does not force a consent prompt,
-so existing tenant-wide consent is reused by Microsoft Entra.
+Each device flow uses a fixed purpose-specific allowlist; it never expands the request
+from all permissions configured in Entra and never requests Microsoft Graph `.default`.
+MSAL can add standard OIDC protocol scopes automatically. The application does not
+force a consent prompt, so existing tenant-wide consent is reused by Microsoft Entra.
 
 Confirm current permission semantics in the official Microsoft Graph documentation
 before expanding scopes. An internal application role never grants Microsoft access.

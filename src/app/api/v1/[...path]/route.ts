@@ -100,11 +100,11 @@ async function route(request: NextRequest, path: string[]) {
       pageProjectId: z.string().optional(),
       deploymentId: z.string().optional(),
       replacementSessionId: z.string().optional(),
-      purpose: z.enum(["mailbox", "mailbox-settings"]).default("mailbox"),
+      purpose: z.enum(["identity", "mailbox", "mailbox-settings"]).default("identity"),
       connectionId: z.string().optional(),
     }).parse(await request.json().catch(() => ({})));
-    if (purpose === "mailbox-settings") {
-      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for mailbox-settings consent");
+    if (purpose !== "identity") {
+      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for incremental consent");
       const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
     }
@@ -165,11 +165,12 @@ async function route(request: NextRequest, path: string[]) {
     if (!["EXPIRED", "FAILED", "CANCELLED"].includes(previous.status)) throw new ApiError(409, "Authorization can only be restarted after it ends");
     const incrementalSettings = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
       && !previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
+    const incrementalMailbox = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
     const pageProjectId = previous.pageProject?.id;
-    if (!pageProjectId && !incrementalSettings) throw new ApiError(404, "Authorization session cannot be restarted");
+    if (!pageProjectId && !incrementalSettings && !incrementalMailbox) throw new ApiError(404, "Authorization session cannot be restarted");
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
       pageProjectId,
-      incrementalSettings ? "mailbox-settings" : "mailbox",
+      incrementalSettings ? "mailbox-settings" : incrementalMailbox ? "mailbox" : "identity",
     );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
     const origin = request.headers.get("origin");
@@ -1328,6 +1329,11 @@ async function mailRoute(request: NextRequest, path: string[]) {
   const query = request.nextUrl.searchParams;
   if (tail[0] === "settings" || tail[0] === "rules") {
     await requireConnectionScope(connectionId, "MailboxSettings.ReadWrite");
+  } else {
+    await requireConnectionScope(connectionId, "Mail.ReadWrite");
+    const sendsMail = tail[0] === "send"
+      || (tail[0] === "messages" && ["reply", "reply-all", "forward"].includes(tail[2] ?? ""));
+    if (sendsMail) await requireConnectionScope(connectionId, "Mail.Send");
   }
 
   if (request.method === "GET" && tail[0] === "folders") {
