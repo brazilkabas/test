@@ -4,15 +4,13 @@ import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "../src/lib/microsoft-authorit
 import {
   MICROSOFT_GRAPH_RESOURCE,
   MICROSOFT_GRAPH_RESOURCE_ID,
-  MICROSOFT_GRAPH_SCOPE_ROOT,
+  configuredResourceScopes,
+  isMicrosoftGraphResource,
 } from "../src/lib/microsoft-resource";
 
 const clientId = process.env.MICROSOFT_CLIENT_ID;
-const graphResourceId = process.env.MICROSOFT_GRAPH_RESOURCE_ID ?? MICROSOFT_GRAPH_RESOURCE_ID;
-const scopes = (process.env.MICROSOFT_MAIL_SMOKE_SCOPES ?? "offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite")
-  .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean);
+const resourceAppId = process.env.MICROSOFT_RESOURCE_APP_ID ?? "";
+const resourceScope = process.env.MICROSOFT_RESOURCE_SCOPE ?? "";
 const recipient = process.argv.find((value) => value.startsWith("--recipient="))?.split("=")[1];
 const allowSend = process.argv.includes("--confirm-send");
 
@@ -20,21 +18,20 @@ if (!clientId) {
   console.error("FAIL configuration: MICROSOFT_CLIENT_ID is required");
   process.exit(1);
 }
-if (graphResourceId.toLowerCase() !== MICROSOFT_GRAPH_RESOURCE_ID) {
-  console.error(`FAIL configuration: MICROSOFT_GRAPH_RESOURCE_ID must identify ${MICROSOFT_GRAPH_RESOURCE}`);
+if (!resourceAppId) {
+  console.error("FAIL configuration: MICROSOFT_RESOURCE_APP_ID is required");
   process.exit(1);
 }
-const requestedScopes = scopes.map((scope) => (
-  ["openid", "profile", "email", "offline_access"].includes(scope.toLowerCase())
-    || scope.toLowerCase().startsWith(MICROSOFT_GRAPH_SCOPE_ROOT)
-    ? scope
-    : `${MICROSOFT_GRAPH_SCOPE_ROOT}${scope}`
-));
+if (!isMicrosoftGraphResource(resourceAppId)) {
+  console.error(`FAIL configuration: this smoke test requires ${MICROSOFT_GRAPH_RESOURCE} (${MICROSOFT_GRAPH_RESOURCE_ID})`);
+  process.exit(1);
+}
+const requestedScopes = configuredResourceScopes(resourceAppId, resourceScope);
 
 console.info("Microsoft Auth Flow: Device Code", {
   clientId,
   resource: MICROSOFT_GRAPH_RESOURCE,
-  resourceId: graphResourceId,
+  resourceId: resourceAppId,
   authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
   requestedScopes,
 });

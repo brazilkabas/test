@@ -4,15 +4,15 @@ Create or use a multitenant Microsoft Entra app registration. Set:
 
 ```text
 MICROSOFT_CLIENT_ID=<application/client ID>
-MICROSOFT_GRAPH_RESOURCE_ID=00000003-0000-0000-c000-000000000000
+MICROSOFT_RESOURCE_APP_ID=<target resource/application ID>
+MICROSOFT_RESOURCE_SCOPE=<delegated scope or comma-separated scopes>
 MICROSOFT_AUTHORITY=https://login.microsoftonline.com/organizations
-MICROSOFT_SCOPES=openid,profile,email,offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite
 ```
 
-`MICROSOFT_CLIENT_ID` is your Entra app registration. The separate resource ID
-identifies Microsoft Graph and must never be used as, appended to, or substituted
-for the application client ID. OAuth v2 selects Graph by qualifying delegated
-permissions as `https://graph.microsoft.com/<scope>`.
+The client, target resource, and scope remain separate OAuth values and are never
+concatenated into an application identity. When `MICROSOFT_RESOURCE_SCOPE` is blank,
+the backend requests `<MICROSOFT_RESOURCE_APP_ID>/.default`. Prefer an explicit
+delegated scope for custom APIs.
 
 Do not configure a home-tenant GUID as the authority. After authentication,
 the tenant ID returned by Microsoft is still stored with the connection so accounts
@@ -25,11 +25,11 @@ the corresponding `device_code` and all OAuth tokens remain backend-only.
 
 ## Delegated Graph permissions
 
-`MICROSOFT_SCOPES` is configurable. Supported OIDC and Graph scopes are normalized and
-allowlisted before being passed to MSAL. The recommended product configuration is:
+To enable the Graph-backed webmail module, configure:
 
 ```text
-openid,profile,email,offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite
+MICROSOFT_RESOURCE_APP_ID=00000003-0000-0000-c000-000000000000
+MICROSOFT_RESOURCE_SCOPE=User.Read,Mail.Read
 ```
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
 because shared-mailbox workflows are not enabled.
@@ -38,7 +38,6 @@ Directory permissions such as
 require administrator consent under tenant policy. Microsoft can also require admin
 consent for otherwise delegated permissions depending on tenant configuration.
 
-The flow never requests Microsoft Graph `.default`.
 MSAL can add standard OIDC protocol scopes automatically. The application does not
 force a consent prompt, so existing tenant-wide consent is reused by Microsoft Entra.
 

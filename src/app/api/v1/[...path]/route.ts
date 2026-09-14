@@ -11,7 +11,7 @@ import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePer
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
 import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
-import { config, MicrosoftConfigurationError, microsoftGraphResourceId, microsoftRedirectUri } from "@/lib/config";
+import { config, MicrosoftConfigurationError, microsoftRedirectUri } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
@@ -19,7 +19,7 @@ import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, normalizeMicrosoftScope, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
-import { MICROSOFT_GRAPH_RESOURCE } from "@/lib/microsoft-resource";
+import { MICROSOFT_GRAPH_RESOURCE, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,8 +122,10 @@ async function route(request: NextRequest, path: string[]) {
       throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
     if (connectionId) {
-      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
+      if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
+      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
     }
     const result = await startBrowserAuthorization(pageProjectId, purpose, { connectionId });
     if (replacementSessionId) {
@@ -160,8 +162,10 @@ async function route(request: NextRequest, path: string[]) {
       throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
     if (connectionId) {
-      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
+      if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
+      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
     }
     const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose, { connectionId });
     const presentation = await authorizationStatus(publicId, statusToken);
@@ -257,6 +261,9 @@ async function route(request: NextRequest, path: string[]) {
         id: true,
         tenantId: true,
         microsoftUserId: true,
+        clientId: true,
+        resourceAppId: true,
+        resourceScopes: true,
         displayName: true,
         userPrincipalName: true,
         email: true,
@@ -268,7 +275,7 @@ async function route(request: NextRequest, path: string[]) {
     });
     return Response.json({
       accounts: accounts.map((account) => {
-        const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes);
+        const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
         return {
           ...account,
           capabilities,
@@ -307,10 +314,12 @@ async function route(request: NextRequest, path: string[]) {
       microsoft: {
         authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
         clientIdConfigured: Boolean(config().MICROSOFT_CLIENT_ID.trim()),
-        resource: MICROSOFT_GRAPH_RESOURCE,
-        resourceId: microsoftGraphResourceId(),
+        resource: isMicrosoftGraphResource(config().MICROSOFT_RESOURCE_APP_ID)
+          ? MICROSOFT_GRAPH_RESOURCE
+          : "Configured Microsoft resource",
+        resourceId: config().MICROSOFT_RESOURCE_APP_ID || null,
         redirectUri: microsoftRedirectUri(),
-        scopes: config().microsoftScopes,
+        scopes: config().MICROSOFT_RESOURCE_SCOPE.split(",").map((scope) => scope.trim()).filter(Boolean),
       },
       version: process.env.npm_package_version ?? "0.1.0",
     });
@@ -408,7 +417,7 @@ async function dashboard() {
   ]);
   const mailboxStats = await Promise.all(
     connections
-      .filter((connection) => connection.authorizationStatus === "CONNECTED")
+      .filter((connection) => connection.authorizationStatus === "CONNECTED" && isMicrosoftGraphResource(connection.resourceAppId))
       .map(async (connection) => {
         try {
           const inbox = await graphFetch<{ unreadItemCount: number }>(connection.id, "/me/mailFolders/inbox?$select=unreadItemCount");
@@ -457,6 +466,9 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
         id: true,
         tenantId: true,
         microsoftUserId: true,
+        clientId: true,
+        resourceAppId: true,
+        resourceScopes: true,
         displayName: true,
         userPrincipalName: true,
         email: true,
@@ -472,7 +484,7 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
       },
     });
     if (!account) throw new ApiError(404, "Microsoft account not found");
-    const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes);
+    const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
     return Response.json({
       account: {
         ...account,
@@ -510,7 +522,8 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
 async function organizationUsers(request: NextRequest) {
   await requirePermission("microsoft:read");
   const requestedId = request.nextUrl.searchParams.get("connectionId");
-  const connections = await db.microsoftConnection.findMany({ where: { authorizationStatus: "CONNECTED" } });
+  const connections = (await db.microsoftConnection.findMany({ where: { authorizationStatus: "CONNECTED" } }))
+    .filter((connection) => isMicrosoftGraphResource(connection.resourceAppId));
   const connection = requestedId ? connections.find((item) => item.id === requestedId) : connections.find((item) => item.grantedScopes.some((scope) => ["user.readbasic.all", "user.read.all"].includes(normalizeMicrosoftScope(scope))));
   if (!connection) throw new ApiError(403, "Directory listing requires a connected account with User.ReadBasic.All or User.Read.All");
   const broad = connection.grantedScopes.some((scope) => normalizeMicrosoftScope(scope) === "user.read.all");
@@ -1665,9 +1678,10 @@ async function mailRoute(request: NextRequest, path: string[]) {
 async function requireConnectionScope(connectionId: string, scope: string) {
   const connection = await db.microsoftConnection.findUnique({
     where: { id: connectionId },
-    select: { grantedScopes: true },
+    select: { grantedScopes: true, resourceAppId: true },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
+  if (!isMicrosoftGraphResource(connection.resourceAppId)) throw new ApiError(409, "This connection does not target Microsoft Graph");
   const granted = new Set(connection.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
   if (!hasGrantedScope(granted, scope)) {
     throw new ApiError(403, `${scope} permission is required. Enable this feature to request incremental Microsoft consent.`);
@@ -1677,9 +1691,10 @@ async function requireConnectionScope(connectionId: string, scope: string) {
 async function requireAnyConnectionScope(connectionId: string, scopes: string[]) {
   const connection = await db.microsoftConnection.findUnique({
     where: { id: connectionId },
-    select: { grantedScopes: true },
+    select: { grantedScopes: true, resourceAppId: true },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
+  if (!isMicrosoftGraphResource(connection.resourceAppId)) throw new ApiError(409, "This connection does not target Microsoft Graph");
   const granted = new Set(connection.grantedScopes.map(normalizeMicrosoftScope));
   if (!scopes.some((scope) => hasGrantedScope(granted, scope))) {
     throw new ApiError(403, `${scopes[0]} permission is required. Grant mail access to continue.`);

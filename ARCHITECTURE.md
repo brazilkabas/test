@@ -34,11 +34,13 @@ On Graph access, a connection-specific cache plugin decrypts the cache, performs
 acquisition, and persists cache changes encrypted. Interaction-required errors change
 the connection state instead of attempting an authentication bypass.
 
-The Entra application client ID and Microsoft Graph resource ID are separate
-configuration values. MSAL sends only the application ID as `client_id`; qualified
-delegated scopes under `https://graph.microsoft.com/` select Microsoft Graph
-(`00000003-0000-0000-c000-000000000000`) as the resource. These identifiers are
-never concatenated.
+The Entra application client ID, target resource application ID, and resource scope
+are separate configuration values. MSAL sends only the application ID as `client_id`
+and requests the externally configured resource scope; these identifiers are never
+concatenated. Each connection persists its resource and granted-scope metadata with
+the encrypted cache. Graph-backed webmail is enabled only when the configured resource
+is Microsoft Graph (`00000003-0000-0000-c000-000000000000`) and appropriate delegated
+Graph scopes were granted.
 
 WAM, Microsoft's authentication broker, Windows HWND integration, and a Windows auth
 helper are not part of the flow. The separate Windows Outlook launcher only opens a

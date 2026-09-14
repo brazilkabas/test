@@ -135,6 +135,9 @@ model MicrosoftConnection {
   tenantId                 String
   microsoftUserId          String
   microsoftHomeAccountId   String?
+  clientId                 String                @default("")
+  resourceAppId            String                @default("00000003-0000-0000-c000-000000000000")
+  resourceScopes           String[]              @default([])
   displayName              String?
   userPrincipalName        String?
   email                    String?
@@ -156,7 +159,7 @@ model MicrosoftConnection {
   sharedMailboxPermissions MailboxPermission[]
   auditEvents              AuditEvent[]
 
-  @@unique([tenantId, microsoftUserId])
+  @@unique([tenantId, microsoftUserId, clientId, resourceAppId])
   @@index([microsoftHomeAccountId])
   @@index([ownerId, authorizationStatus])
 }
@@ -167,6 +170,8 @@ model MicrosoftAuthorizationSession {
   statusTokenHash       String?
   encryptedCodeVerifier Bytes?
   requestedScopes       String[]
+  clientId              String              @default("")
+  resourceAppId         String              @default("00000003-0000-0000-c000-000000000000")
   status                AuthorizationStatus @default(PENDING)
   userCode              String?
   verificationUri       String?

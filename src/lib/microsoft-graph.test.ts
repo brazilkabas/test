@@ -4,6 +4,7 @@ import {
   deviceAuthorizationScopes,
   graphDelegatedScopes,
   isMicrosoftGraphToken,
+  isResourceToken,
   microsoftAuthorizationScopes,
   microsoftCapabilitiesFromScopes,
   microsoftErrorCode,
@@ -30,34 +31,20 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("uses configured allowlisted scopes for device authorization", () => {
+  it("uses only externally configured scopes for device authorization", () => {
     expect(microsoftAuthorizationScopes("identity", [
-      "openid",
-      "profile",
-      "email",
-      "offline_access",
-      "User.Read",
-      "Mail.ReadWrite",
-      "Mail.Send",
-      "MailboxSettings.ReadWrite",
-    ])).toEqual([
-      "openid",
-      "profile",
-      "email",
-      "offline_access",
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
-      "https://graph.microsoft.com/MailboxSettings.ReadWrite",
-    ]);
-    expect(microsoftAuthorizationScopes("mailbox")).toEqual([
+      "https://graph.microsoft.com/Mail.Read",
+    ])).toEqual([
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ]);
-    expect(microsoftAuthorizationScopes("mailbox-settings")).toEqual([
-      "offline_access",
+    expect(microsoftAuthorizationScopes("mailbox", [
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/MailboxSettings.ReadWrite",
+      "https://graph.microsoft.com/Mail.Read",
+    ])).toEqual([
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
   });
 
@@ -85,7 +72,10 @@ describe("Microsoft Graph token targeting", () => {
   });
 
   it("requests only User.Read and Mail.Read for read-only webmail", () => {
-    expect(microsoftAuthorizationScopes("identity", ["User.Read", "Mail.Read"])).toEqual([
+    expect(microsoftAuthorizationScopes("identity", [
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
+    ])).toEqual([
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ]);
@@ -103,6 +93,8 @@ describe("Microsoft Graph token targeting", () => {
     expect(isMicrosoftGraphToken(jwt("00000003-0000-0000-c000-000000000000"))).toBe(true);
     expect(isMicrosoftGraphToken(jwt("https://graph.microsoft.com"))).toBe(true);
     expect(isMicrosoftGraphToken(jwt("https://outlook.office365.com"))).toBe(false);
+    expect(isResourceToken(jwt("api://custom-resource"), "api://custom-resource")).toBe(true);
+    expect(isResourceToken(jwt("api://other-resource"), "api://custom-resource")).toBe(false);
   });
 
   it("uses the sign-in address when Graph mail is unset", () => {
