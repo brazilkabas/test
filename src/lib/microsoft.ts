@@ -365,6 +365,23 @@ async function graphFetchWithToken<T>(
     }
     const body = await response.json().catch(() => ({}));
     const code = body?.error?.code as string | undefined;
+    const message = body?.error?.message ?? "Microsoft Graph request failed";
+    if (config().NODE_ENV === "development") {
+      console.warn("[microsoft] Graph request failed", {
+        target: "Microsoft Graph",
+        hostname: url.hostname,
+        path: url.pathname,
+        status: response.status,
+        code,
+      });
+    }
+    if (/AADSTS500014/i.test(message) && /outlook\.office(?:365)?\.com/i.test(message)) {
+      throw new GraphError(
+        503,
+        "ExchangeOnlineUnavailable",
+        "Microsoft Graph authentication succeeded, but Exchange Online is disabled or unavailable for this tenant. Verify its Microsoft 365 subscription, Exchange Online license, and Exchange Online enterprise application.",
+      );
+    }
     if ((response.status === 429 || response.status >= 500) && attempt < 3) {
       const retryAfter = Number(response.headers.get("retry-after"));
       await new Promise((resolve) =>
@@ -372,7 +389,7 @@ async function graphFetchWithToken<T>(
       );
       continue;
     }
-    throw new GraphError(response.status, code, body?.error?.message ?? "Microsoft Graph request failed");
+    throw new GraphError(response.status, code, message);
   }
   throw new GraphError(503, "RetriesExhausted", "Microsoft Graph retries exhausted");
 }
