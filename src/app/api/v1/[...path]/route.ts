@@ -19,7 +19,7 @@ import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, microsoftTokenCacheContext, normalizeMicrosoftScope, repairMicrosoftCapabilities, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
-import { MICROSOFT_GRAPH_RESOURCE, MICROSOFT_GRAPH_RESOURCE_ID, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
+import { MICROSOFT_GRAPH_RESOURCE, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -121,14 +121,13 @@ async function route(request: NextRequest, path: string[]) {
     if (purpose !== "identity" && !connectionId) {
       throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
-    let targetResourceAppId: string | undefined;
     if (connectionId) {
       const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
       if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
-      targetResourceAppId = connection.resourceAppId;
+      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
     }
-    const result = await startBrowserAuthorization(pageProjectId, purpose, { connectionId, resourceAppId: targetResourceAppId });
+    const result = await startBrowserAuthorization(pageProjectId, purpose, { connectionId });
     if (replacementSessionId) {
       await db.microsoftAuthorizationSession.updateMany({
         where: { publicId: replacementSessionId, status: "PENDING" },
@@ -152,25 +151,23 @@ async function route(request: NextRequest, path: string[]) {
   }
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
-    const { pageProjectId, deploymentId, replacementSessionId, purpose, connectionId, target } = z.object({
+    const { pageProjectId, deploymentId, replacementSessionId, purpose, connectionId } = z.object({
       pageProjectId: z.string().optional(),
       deploymentId: z.string().optional(),
       replacementSessionId: z.string().optional(),
       purpose: z.enum(["identity", "mailbox", "mailbox-settings"]).default("identity"),
       connectionId: z.string().optional(),
-      target: z.enum(["configured", "graph_webmail"]).default("configured"),
     }).parse(await request.json().catch(() => ({})));
     if (purpose !== "identity" && !connectionId) {
       throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
-    let targetResourceAppId = target === "graph_webmail" ? MICROSOFT_GRAPH_RESOURCE_ID : undefined;
     if (connectionId) {
       const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
       if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
-      targetResourceAppId = connection.resourceAppId;
+      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
     }
-    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose, { connectionId, resourceAppId: targetResourceAppId });
+    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose, { connectionId });
     const presentation = await authorizationStatus(publicId, statusToken);
     if (replacementSessionId && presentation?.userCode) {
       await db.microsoftAuthorizationSession.updateMany({ where: { publicId: replacementSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
@@ -236,7 +233,7 @@ async function route(request: NextRequest, path: string[]) {
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
       pageProjectId,
       incrementalSettings ? "mailbox-settings" : incrementalMailbox ? "mailbox" : "identity",
-      { connectionId: previous.connectionId ?? undefined, resourceAppId: previous.resourceAppId },
+      { connectionId: previous.connectionId ?? undefined },
     );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
     const origin = request.headers.get("origin");

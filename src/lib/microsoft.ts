@@ -31,11 +31,6 @@ const NORMAL_GRAPH_SCOPES = new Map([
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
-export const MICROSOFT_WEBMAIL_SCOPES = [
-  `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
-  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
-  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Send`,
-] as const;
 const pending = new Map<string, Promise<void>>();
 const loggedGraphAudience = new Set<string>();
 
@@ -43,7 +38,6 @@ export type MicrosoftAuthorizationPurpose = "identity" | "mailbox" | "mailbox-se
 
 type AuthorizationTarget = {
   connectionId?: string;
-  resourceAppId?: string;
 };
 
 type DeviceChallenge = {
@@ -61,8 +55,7 @@ export async function startBrowserAuthorization(
 ): Promise<{ publicId: string; statusToken: string; authorizationUrl: string }> {
   const authConfig = microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
-  const resourceAppId = target.resourceAppId ?? authConfig.resourceAppId;
-  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes, resourceAppId);
+  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes);
   const customizedPage = purpose === "identity" && pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
@@ -74,7 +67,7 @@ export async function startBrowserAuthorization(
       statusTokenHash: sha256(statusToken),
       requestedScopes: scopes,
       clientId: authConfig.clientId,
-      resourceAppId,
+      resourceAppId: authConfig.resourceAppId,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
       connectionId: target.connectionId,
@@ -175,8 +168,7 @@ export async function startDeviceAuthorization(
 ): Promise<{ publicId: string; statusToken: string }> {
   const authConfig = microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
-  const resourceAppId = target.resourceAppId ?? authConfig.resourceAppId;
-  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes, resourceAppId);
+  const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes);
   const customizedPage = purpose === "identity" && pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
@@ -188,7 +180,7 @@ export async function startDeviceAuthorization(
       statusTokenHash: sha256(statusToken),
       requestedScopes: scopes,
       clientId: authConfig.clientId,
-      resourceAppId,
+      resourceAppId: authConfig.resourceAppId,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
       connectionId: target.connectionId,
@@ -198,8 +190,8 @@ export async function startDeviceAuthorization(
     console.info("[microsoft] Microsoft authentication configuration", {
       authFlow: "Device Code",
       clientId: authConfig.clientId,
-      resource: isMicrosoftGraphResource(resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
-      resourceId: resourceAppId,
+      resource: isMicrosoftGraphResource(authConfig.resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
+      resourceId: authConfig.resourceAppId,
       authority: microsoftAuthority(authConfig.authority),
       requestedScopes: scopes,
     });
@@ -241,8 +233,8 @@ export async function startDeviceAuthorization(
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
           clientId: microsoftClientId(),
-          resource: isMicrosoftGraphResource(resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
-          resourceId: resourceAppId,
+          resource: isMicrosoftGraphResource(authConfig.resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
+          resourceId: authConfig.resourceAppId,
           authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
           requestedScopes: scopes,
           errorCode,
@@ -296,7 +288,6 @@ export async function authorizationStatus(publicId: string, statusToken: string)
     select: {
       statusTokenHash: true,
       requestedScopes: true,
-      resourceAppId: true,
       publicId: true,
       userCode: true,
       verificationUri: true,
@@ -318,7 +309,6 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       select: {
         publicId: true,
         requestedScopes: true,
-        resourceAppId: true,
         userCode: true,
         verificationUri: true,
         message: true,
@@ -647,8 +637,11 @@ export async function acquireMicrosoftResourceToken(connectionId: string) {
         throw new MicrosoftReauthenticationRequired();
       }
       const authConfig = microsoftAuthConfig();
-      if (connection.clientId !== authConfig.clientId) {
-        throw new MicrosoftConfigurationError("Configured Microsoft client does not match this stored connection.");
+      if (
+        connection.clientId !== authConfig.clientId
+        || connection.resourceAppId !== authConfig.resourceAppId
+      ) {
+        throw new MicrosoftConfigurationError("Configured Microsoft client/resource does not match this stored connection.");
       }
       let legacyOutlookTokenCached = false;
       const cachePlugin: ICachePlugin = {
@@ -780,16 +773,9 @@ export function deviceAuthorizationScopes(scopes: string[]) {
 }
 
 export function microsoftAuthorizationScopes(
-  purpose: MicrosoftAuthorizationPurpose,
+  _purpose: MicrosoftAuthorizationPurpose,
   configuredScopes = microsoftAuthConfig().requestedScopes,
-  resourceAppId = MICROSOFT_GRAPH_RESOURCE_ID,
 ) {
-  if (
-    isMicrosoftGraphResource(resourceAppId)
-    && (purpose === "identity" || purpose === "mailbox")
-  ) {
-    return [...MICROSOFT_WEBMAIL_SCOPES];
-  }
   return [...new Set(configuredScopes.map((scope) => scope.trim()).filter(Boolean))];
 }
 

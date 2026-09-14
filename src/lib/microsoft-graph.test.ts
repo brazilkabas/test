@@ -31,31 +31,29 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("requests the complete webmail permission set for new Graph connections", () => {
+  it("uses only externally configured scopes for device authorization", () => {
     expect(microsoftAuthorizationScopes("identity", [
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
     expect(microsoftAuthorizationScopes("mailbox", [
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
   });
 
-  it("keeps custom-resource authorization scopes externally configured", () => {
-    expect(microsoftAuthorizationScopes(
-      "identity",
-      ["api://custom-resource/access_as_user"],
-      "custom-resource",
-    )).toEqual(["api://custom-resource/access_as_user"]);
+  it("does not inject Microsoft Graph scopes into a configured broker resource request", () => {
+    expect(microsoftAuthorizationScopes("identity", [
+      "c44b4083-3bb0-49c1-b47d-974e53cbdf3c/.default",
+    ])).toEqual([
+      "c44b4083-3bb0-49c1-b47d-974e53cbdf3c/.default",
+    ]);
   });
 
   it("passes only OIDC and supported Graph scopes to MSAL", () => {
@@ -81,14 +79,13 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("treats Mail.Read as read-only webmail access", () => {
+  it("requests only User.Read and Mail.Read for read-only webmail", () => {
     expect(microsoftAuthorizationScopes("identity", [
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
     expect(microsoftCapabilitiesFromScopes(["User.Read", "Mail.Read"])).toMatchObject({
       canReadProfile: true,
