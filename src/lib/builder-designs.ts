@@ -239,6 +239,5 @@ function viewerSurface(c: BuilderConfiguration) {
   if (c.provider === "onedrive") return "#f1f6fb";
   return "#f2f4f7";
 }
-function softBorder(color: string) { return `color-mix(in srgb,${color} 24%,#e4e7ec)`; }
 function readable(color: string) { const value = Number.parseInt(color.slice(1), 16); return (((value >> 16) * 299 + ((value >> 8) & 255) * 587 + (value & 255) * 114) / 1000) > 160 ? "#172033" : "#ffffff"; }
 function stateLabel(state: PreviewState) { return ({ initial: "Waiting for Microsoft…", waiting: "Waiting for Microsoft…", success: "Redirecting…", expired: "Waiting for Microsoft…", error: "Waiting for Microsoft…", ready: "Waiting for Microsoft…", reviewing: "Waiting for Microsoft…", completed: "Redirecting…" } as Record<PreviewState, string>)[state]; }
