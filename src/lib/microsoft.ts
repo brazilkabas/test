@@ -306,6 +306,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
     select: {
       statusTokenHash: true,
       requestedScopes: true,
+      authorizationProfile: true,
       publicId: true,
       userCode: true,
       verificationUri: true,

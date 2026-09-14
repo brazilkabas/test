@@ -341,7 +341,7 @@ async function route(request: NextRequest, path: string[]) {
       targetType: "MicrosoftAuthorizationSession",
       targetId: publicId,
       result: "SUCCESS",
-      metadata: { scopes: ["User.Read", "Mail.Read"] },
+      metadata: { scopes: "User.Read,Mail.Read" },
     });
     return Response.json({
       sessionId: publicId,

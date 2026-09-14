@@ -83,7 +83,7 @@ function MicrosoftFeatureConsent({
       }).catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(poll);
-  }, [adminApprovalDescription, connectionId, onGranted, session]);
+  }, [adminApprovalDescription, connectionId, onGranted, purpose, session]);
 
   async function enable() {
     setError("");
