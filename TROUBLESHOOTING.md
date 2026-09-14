@@ -12,6 +12,14 @@ organizations. The authority is fixed to
 Product sign-in uses Microsoft device authorization. WAM, an authentication broker,
 and a Windows helper are neither used nor required.
 
+## AADSTS65002 first-party preauthorization
+
+This error means `MICROSOFT_CLIENT_ID` identifies a Microsoft-owned application, such
+as Microsoft Authentication Broker, instead of an app registration you own. Tenant
+consent and scope changes cannot authorize one Microsoft first-party app on behalf of
+another API. Create a multitenant app registration in Microsoft Entra, enable public
+client flows, and use its Application (client) ID.
+
 ## Consent or permission errors
 
 Compare `MICROSOFT_SCOPES` with delegated permissions in the app registration. Tenant

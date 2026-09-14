@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const MICROSOFT_AUTHENTICATION_BROKER_CLIENT_ID = "29d9ed98-a469-4536-ade2-f981bc1d605e";
+
 const schema = z.object({
   DATABASE_URL: z.string().url(),
   MICROSOFT_CLIENT_ID: z.string().default(""),
@@ -46,6 +48,11 @@ export function microsoftClientId(): string {
   }
   if (!z.string().uuid().safeParse(clientId).success) {
     throw new MicrosoftConfigurationError("MICROSOFT_CLIENT_ID must be a valid Entra Application (client) ID.");
+  }
+  if (clientId.toLowerCase() === MICROSOFT_AUTHENTICATION_BROKER_CLIENT_ID) {
+    throw new MicrosoftConfigurationError(
+      "MICROSOFT_CLIENT_ID must be your own Entra app registration, not Microsoft Authentication Broker.",
+    );
   }
   return clientId;
 }
