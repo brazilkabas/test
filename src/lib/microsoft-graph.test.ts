@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { graphDelegatedScopes, isMicrosoftGraphToken } from "@/lib/microsoft";
+import { deviceAuthorizationScopes, graphDelegatedScopes, isMicrosoftGraphToken } from "@/lib/microsoft";
 
 describe("Microsoft Graph token targeting", () => {
   it("qualifies Graph scopes and rejects legacy Outlook resource scopes", () => {
@@ -11,10 +11,31 @@ describe("Microsoft Graph token targeting", () => {
       "Mail.ReadWrite",
       "https://graph.microsoft.com/Mail.Send",
       "https://outlook.office365.com/Mail.Read",
+      "User.Read.All",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.ReadWrite",
       "https://graph.microsoft.com/Mail.Send",
+    ]);
+  });
+
+  it("uses only the normal webmail scopes and does not force OIDC consent", () => {
+    expect(deviceAuthorizationScopes([
+      "openid",
+      "profile",
+      "email",
+      "offline_access",
+      "User.Read",
+      "Mail.ReadWrite",
+      "Mail.Send",
+      "MailboxSettings.ReadWrite",
+      "Directory.Read.All",
+    ])).toEqual([
+      "offline_access",
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/MailboxSettings.ReadWrite",
     ]);
   });
 

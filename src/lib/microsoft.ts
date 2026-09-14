@@ -17,7 +17,14 @@ import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const GRAPH_SCOPE_ROOT = "https://graph.microsoft.com/";
 const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
-const IDENTITY_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
+const NON_GRAPH_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
+const DEVICE_IDENTITY_SCOPES = new Set(["offline_access"]);
+const NORMAL_GRAPH_SCOPES = new Map([
+  ["user.read", "User.Read"],
+  ["mail.readwrite", "Mail.ReadWrite"],
+  ["mail.send", "Mail.Send"],
+  ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
+]);
 const pending = new Map<string, Promise<void>>();
 const loggedGraphAudience = new Set<string>();
 
@@ -301,17 +308,20 @@ async function acquireGraphToken(connectionId: string) {
 export function graphDelegatedScopes(scopes: string[]) {
   const graphScopes = scopes.flatMap((scope) => {
     const value = scope.trim();
-    if (!value || IDENTITY_SCOPES.has(value.toLowerCase())) return [];
-    if (/^https?:\/\//i.test(value)) {
-      return value.toLowerCase().startsWith(GRAPH_SCOPE_ROOT) ? [value] : [];
-    }
-    return [`${GRAPH_SCOPE_ROOT}${value}`];
+    if (!value || NON_GRAPH_SCOPES.has(value.toLowerCase())) return [];
+    const name = value.toLowerCase().startsWith(GRAPH_SCOPE_ROOT)
+      ? value.slice(GRAPH_SCOPE_ROOT.length)
+      : value;
+    const allowed = NORMAL_GRAPH_SCOPES.get(name.toLowerCase());
+    return allowed ? [`${GRAPH_SCOPE_ROOT}${allowed}`] : [];
   });
   return [...new Set(graphScopes.length ? graphScopes : [`${GRAPH_SCOPE_ROOT}User.Read`])];
 }
 
-function deviceAuthorizationScopes(scopes: string[]) {
-  const identity = scopes.filter((scope) => IDENTITY_SCOPES.has(scope.trim().toLowerCase()));
+export function deviceAuthorizationScopes(scopes: string[]) {
+  const identity = scopes
+    .map((scope) => scope.trim().toLowerCase())
+    .filter((scope) => DEVICE_IDENTITY_SCOPES.has(scope));
   return [...new Set([...identity, ...graphDelegatedScopes(scopes)])];
 }
 

@@ -28,13 +28,17 @@ The initial milestone uses:
 - `Mail.ReadWrite` — messages, attachments, folders, and user Inbox rules;
 - `Mail.Send` — send and reply;
 - `MailboxSettings.ReadWrite` — mailbox settings;
-- `openid`, `profile`, `email`, `offline_access` — identity and MSAL renewal.
+- `offline_access` — MSAL renewal.
 
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) should be added only
 when the shared-mailbox milestone is enabled. Directory permissions such as
 `User.ReadBasic.All` or `User.Read.All` are not needed for milestone one and may
 require administrator consent under tenant policy. Microsoft can also require admin
 consent for otherwise delegated permissions depending on tenant configuration.
+
+The normal device flow enforces the list above as an allowlist. It does not request
+`openid`, `profile`, or `email`, and it does not force a consent prompt. Existing
+tenant-wide consent is reused by Microsoft Entra.
 
 Confirm current permission semantics in the official Microsoft Graph documentation
 before expanding scopes. An internal application role never grants Microsoft access.

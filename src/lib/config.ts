@@ -4,7 +4,7 @@ const schema = z.object({
   DATABASE_URL: z.string().url(),
   MICROSOFT_CLIENT_ID: z.string().uuid(),
   MICROSOFT_SCOPES: z.string().default(
-    "openid,profile,email,offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite",
+    "offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite",
   ),
   ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/, "must be a 32-byte hex key"),
   SESSION_SECRET: z.string().min(32),
