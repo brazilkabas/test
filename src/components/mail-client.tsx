@@ -65,6 +65,10 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
 
+  useEffect(() => {
+    localStorage.setItem("company-last-mail-connection", connectionId);
+  }, [connectionId]);
+
   const loadFolders = useCallback(async () => {
     try {
       const result = await api<{ folders: Array<Folder & { isHidden?: boolean }>; wellKnownFolders: Record<string, Folder> }>(`/mail/${connectionId}/folders`);

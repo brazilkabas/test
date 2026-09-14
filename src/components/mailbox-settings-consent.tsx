@@ -25,9 +25,9 @@ export function MailboxAccessConsent(props: { connectionId: string; onGranted: (
   return <MicrosoftFeatureConsent
     {...props}
     purpose="mailbox"
-    title="Grant mail access"
-    description="This legacy account was connected without webmail permissions. Grant Mail.ReadWrite and Mail.Send once to enable folders, messages, updates, and sending."
-    buttonLabel="Grant mail access"
+    title="Connect mailbox"
+    description="Authorize read-only Microsoft Graph access for this existing connected account. Your current account connection remains unchanged."
+    buttonLabel="Connect mailbox"
     adminApprovalDescription="mailbox access"
   />;
 }
@@ -67,6 +67,9 @@ function MicrosoftFeatureConsent({
             setError("A different Microsoft account was authorized. Retry with this mailbox account.");
             return;
           }
+          if (purpose === "mailbox") {
+            window.dispatchEvent(new CustomEvent("microsoft-graph-mail-connected", { detail: { connectionId } }));
+          }
           onGranted();
         } else if (authorization.status === "FAILED" || authorization.status === "CANCELLED" || authorization.status === "EXPIRED") {
           window.clearInterval(poll);
@@ -90,9 +93,12 @@ function MicrosoftFeatureConsent({
       return;
     }
     try {
-      const result = await api<{ sessionId: string; statusToken: string; connectUrl: string }>("/microsoft/device/start", {
+      const endpoint = purpose === "mailbox"
+        ? `/microsoft/accounts/${connectionId}/mail-auth/start`
+        : "/microsoft/device/start";
+      const result = await api<{ sessionId: string; statusToken: string; connectUrl: string }>(endpoint, {
         method: "POST",
-        body: JSON.stringify({ purpose, connectionId }),
+        body: JSON.stringify(purpose === "mailbox" ? {} : { purpose, connectionId }),
       });
       popup.current.location.href = result.connectUrl;
       setSession({ sessionId: result.sessionId, statusToken: result.statusToken });
