@@ -19,7 +19,7 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("uses only the normal webmail scopes and does not force OIDC consent", () => {
+  it("passes only the normal webmail and renewal scopes to MSAL", () => {
     expect(deviceAuthorizationScopes([
       "openid",
       "profile",

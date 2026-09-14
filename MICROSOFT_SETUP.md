@@ -36,9 +36,11 @@ when the shared-mailbox milestone is enabled. Directory permissions such as
 require administrator consent under tenant policy. Microsoft can also require admin
 consent for otherwise delegated permissions depending on tenant configuration.
 
-The normal device flow enforces the list above as an allowlist. It does not request
-`openid`, `profile`, or `email`, and it does not force a consent prompt. Existing
-tenant-wide consent is reused by Microsoft Entra.
+The normal device flow enforces the Graph list above as an allowlist and does not
+configure `openid`, `profile`, or `email`. MSAL can add its standard `openid` and
+`profile` protocol scopes automatically; these basic OIDC scopes do not cause the
+mailbox admin-approval requirement. The application does not force a consent prompt,
+so existing tenant-wide consent is reused by Microsoft Entra.
 
 Confirm current permission semantics in the official Microsoft Graph documentation
 before expanding scopes. An internal application role never grants Microsoft access.
