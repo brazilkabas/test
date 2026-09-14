@@ -17,7 +17,7 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, normalizeMicrosoftScope, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, microsoftTokenCacheContext, normalizeMicrosoftScope, repairMicrosoftCapabilities, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
 import { MICROSOFT_GRAPH_RESOURCE, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
 
@@ -256,6 +256,7 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "GET /microsoft/accounts") {
     await requirePermission("microsoft:read");
     const accounts = await db.microsoftConnection.findMany({
+      where: { authorizationStatus: { not: "REVOKED" } },
       orderBy: { connectedAt: "desc" },
       select: {
         id: true,
@@ -269,13 +270,22 @@ async function route(request: NextRequest, path: string[]) {
         email: true,
         authorizationStatus: true,
         grantedScopes: true,
+        capabilities: true,
         connectedAt: true,
         lastSuccessfulGraphAt: true,
       },
     });
+    const repairedCapabilities = await Promise.all(accounts.map(async (account) => {
+      try {
+        return await repairMicrosoftCapabilities(account.id);
+      } catch {
+        return null;
+      }
+    }));
     return Response.json({
-      accounts: accounts.map((account) => {
-        const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
+      accounts: accounts.map((account, index) => {
+        const capabilities = repairedCapabilities[index]
+          ?? microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
         return {
           ...account,
           capabilities,
@@ -476,6 +486,7 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
         lastSuccessfulGraphAt: true,
         authorizationStatus: true,
         grantedScopes: true,
+        capabilities: true,
         tenantDisplayName: true,
         adminRoleSummary: true,
         owner: { select: { id: true, email: true, displayName: true } },
@@ -484,7 +495,13 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
       },
     });
     if (!account) throw new ApiError(404, "Microsoft account not found");
-    const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
+    let capabilities;
+    try {
+      capabilities = await repairMicrosoftCapabilities(connectionId)
+        ?? microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
+    } catch {
+      capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
+    }
     return Response.json({
       account: {
         ...account,
@@ -496,6 +513,10 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
   }
   if (request.method === "DELETE") {
     const actor = await requirePermission("microsoft:manage");
+    const { confirmation } = z.object({ confirmation: z.literal("DELETE") }).parse(
+      await request.json().catch(() => ({})),
+    );
+    if (confirmation !== "DELETE") throw new ApiError(400, "Type DELETE to confirm");
     await db.$transaction(async (transaction) => {
       await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${connectionId}))`;
       const connection = await transaction.microsoftConnection.findUnique({ where: { id: connectionId } });
@@ -508,8 +529,11 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
         where: { id: connectionId },
         data: {
           authorizationStatus: "REVOKED",
-          encryptedTokenCache: encrypt("{}", `msal:${connection.tenantId}:${connection.microsoftUserId}`),
+          encryptedTokenCache: encrypt("{}", microsoftTokenCacheContext(connection)),
           accessTokenExpiresAt: null,
+          grantedScopes: [],
+          resourceScopes: [],
+          capabilities: {},
         },
       });
     });
@@ -1423,11 +1447,8 @@ async function mailRoute(request: NextRequest, path: string[]) {
 
   if (request.method === "GET" && tail[0] === "folders") {
     const [data, defaults] = await Promise.all([
-      graphFetch<GraphCollection<Record<string, unknown>>>(
-        connectionId,
-        "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden&includeHiddenFolders=true",
-      ),
-      graphFetch<{ responses: Array<{ id: string; status: number; body?: Record<string, unknown> }> }>(connectionId, "/$batch", {
+      loadMailFolderTree(connectionId),
+      graphFetch<{ responses: Array<{ id: string; status: number; body?: Record<string, unknown> & { error?: { code?: string; message?: string } } }> }>(connectionId, "/$batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1440,8 +1461,17 @@ async function mailRoute(request: NextRequest, path: string[]) {
       }),
     ]);
     const ids = ["inbox", "drafts", "sentitems", "archive", "deleteditems", "junkemail"];
-    const wellKnownFolders = Object.fromEntries(defaults.responses.filter((entry) => entry.status === 200 && entry.body).map((entry) => [ids[Number(entry.id) - 1], entry.body]));
-    return Response.json({ folders: data.value, wellKnownFolders });
+    const failedDefault = defaults.responses.find((entry) => entry.status !== 200 || !entry.body);
+    if (failedDefault) {
+      throw new GraphError(
+        failedDefault.status,
+        failedDefault.body?.error?.code,
+        failedDefault.body?.error?.message ?? "Microsoft Graph could not load a standard mail folder",
+        `/v1.0/me/mailFolders/${ids[Number(failedDefault.id) - 1]}`,
+      );
+    }
+    const wellKnownFolders = Object.fromEntries(defaults.responses.map((entry) => [ids[Number(entry.id) - 1], entry.body]));
+    return Response.json({ folders: data, wellKnownFolders });
   }
   if (request.method === "GET" && tail[0] === "messages" && !tail[1]) {
     const nextLink = query.get("nextLink");
@@ -1719,6 +1749,43 @@ const ruleSchema = z.object({
 
 type GraphCollection<T> = { value: T[]; "@odata.nextLink"?: string };
 
+type GraphMailFolder = {
+  id: string;
+  displayName: string;
+  parentFolderId?: string;
+  childFolderCount?: number;
+  totalItemCount?: number;
+  unreadItemCount?: number;
+  isHidden?: boolean;
+  depth?: number;
+};
+
+async function loadMailFolderTree(connectionId: string) {
+  const folders: GraphMailFolder[] = [];
+  const load = async (path: string, depth: number): Promise<void> => {
+    if (depth > 10 || folders.length >= 500) return;
+    let next: string | null = path;
+    while (next && folders.length < 500) {
+      const page = await graphFetch<GraphCollection<GraphMailFolder>>(connectionId, next);
+      for (const folder of page.value) {
+        folders.push({ ...folder, depth });
+        if ((folder.childFolderCount ?? 0) > 0 && folders.length < 500) {
+          await load(
+            `/me/mailFolders/${encodeURIComponent(folder.id)}/childFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden`,
+            depth + 1,
+          );
+        }
+      }
+      next = page["@odata.nextLink"] ?? null;
+    }
+  };
+  await load(
+    "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden&includeHiddenFolders=true",
+    0,
+  );
+  return folders;
+}
+
 function messageListPath(folder: string, query: URLSearchParams) {
   const params = new URLSearchParams({
     "$top": "30",
@@ -1838,7 +1905,15 @@ function handle(error: unknown) {
   if (error instanceof z.ZodError) return Response.json({ error: "Invalid request", details: error.issues }, { status: 400 });
   if (error instanceof MicrosoftConfigurationError) return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof GraphError) {
-    return Response.json({ error: error.message, microsoftCode: error.code }, { status: error.status });
+    return Response.json({
+      error: error.message,
+      source: "microsoft_graph",
+      operation: microsoftGraphOperation(error.endpoint),
+      endpoint: error.endpoint,
+      status: error.status,
+      graphCode: error.code,
+      message: error.message,
+    }, { status: error.status });
   }
   if (error instanceof MicrosoftReauthenticationRequired) return Response.json({ error: error.message, code: "REAUTHENTICATION_REQUIRED" }, { status: 401 });
   if (error instanceof CloudflareError) {
@@ -1847,4 +1922,14 @@ function handle(error: unknown) {
   if (error instanceof ExchangeConfigurationError) return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof ExchangeOperationError) return Response.json({ error: "Exchange Online operation failed", details: error.message }, { status: 502 });
   return apiError(error);
+}
+
+function microsoftGraphOperation(endpoint?: string) {
+  if (!endpoint) return "graph_request";
+  if (/\/mailFolders(?:\?|$)/i.test(endpoint)) return "list_mail_folders";
+  if (/\/childFolders(?:\?|$)/i.test(endpoint)) return "list_child_folders";
+  if (/\/messages(?:\?|$)/i.test(endpoint)) return "list_or_access_messages";
+  if (/\/sendMail(?:\?|$)/i.test(endpoint)) return "send_mail";
+  if (/\/me(?:\?|$)/i.test(endpoint)) return "read_profile";
+  return "graph_request";
 }

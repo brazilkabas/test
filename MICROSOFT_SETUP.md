@@ -29,8 +29,17 @@ To enable the Graph-backed webmail module, configure:
 
 ```text
 MICROSOFT_RESOURCE_APP_ID=00000003-0000-0000-c000-000000000000
-MICROSOFT_RESOURCE_SCOPE=User.Read,Mail.Read
+MICROSOFT_RESOURCE_SCOPE=User.Read,Mail.ReadWrite,Mail.Send
 ```
+The Entra registration's delegated Microsoft Graph permissions must include:
+
+- `User.Read` (`e1fe6dd8-ba31-4d61-89e7-88639da4683d`)
+- `Mail.ReadWrite` (`024d486e-b451-40bb-833d-3e66d98c5c73`)
+- `Mail.Send` (`e383f46e-2787-4529-855e-0e479a3ffac0`)
+
+New Graph account connections request these webmail permissions together so the
+mailbox can be verified and opened without a second consent flow. Existing
+profile-only accounts receive a one-time webmail upgrade flow.
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
 because shared-mailbox workflows are not enabled.
 Directory permissions such as

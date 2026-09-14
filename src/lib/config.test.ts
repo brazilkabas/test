@@ -70,6 +70,21 @@ describe("Microsoft client configuration", () => {
     ]);
   });
 
+  it("passes an explicit custom API scope without inventing permissions", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "client-application");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "custom-api-application");
+    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "api://custom-api-application/access_as_user");
+    const { microsoftAuthConfig } = await import("@/lib/config");
+
+    expect(microsoftAuthConfig().requestedScopes).toEqual([
+      "api://custom-api-application/access_as_user",
+    ]);
+  });
+
   it("rejects using the resource application as the client application", async () => {
     vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
     vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));

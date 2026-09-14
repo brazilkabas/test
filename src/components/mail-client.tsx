@@ -8,7 +8,7 @@ import { api, csrfToken } from "@/components/api";
 import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, useToast } from "@/components/design-system";
 import { MailboxAccessConsent } from "@/components/mailbox-settings-consent";
 
-type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number };
+type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number; depth?: number };
 type Message = {
   id: string;
   subject: string;
@@ -96,13 +96,14 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
-  useEffect(() => {
-    void api<{ account: { capabilities: MailCapabilities } }>(`/microsoft/accounts/${connectionId}`)
+  const loadCapabilities = useCallback(() => {
+    return api<{ account: { capabilities: MailCapabilities } }>(`/microsoft/accounts/${connectionId}`)
       .then(({ account }) => {
         setCapabilities(account.capabilities);
       })
       .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
   }, [connectionId, notify]);
+  useEffect(() => { void loadCapabilities(); }, [loadCapabilities]);
   useEffect(() => { if (capabilities?.canReadMail) void loadFolders(); }, [capabilities?.canReadMail, loadFolders]);
   useEffect(() => { if (capabilities?.canReadMail) void loadMessages(false); }, [capabilities?.canReadMail, folder]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
@@ -188,15 +189,9 @@ export function MailClient({ connectionId }: { connectionId: string }) {
 
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
   const onPermissionGranted = useCallback(() => {
-    setCapabilities((current) => current ? { ...current, canReadMail: true } : {
-      canReadMail: true,
-      canModifyMail: false,
-      canSendMail: false,
-      canReadMailboxSettings: false,
-      canModifyMailboxSettings: false,
-    });
     notify({ title: "Mail access granted", tone: "success" });
-  }, [notify]);
+    void loadCapabilities();
+  }, [loadCapabilities, notify]);
 
   if (capabilities === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
   if (!capabilities.canReadMail) return <MailboxAccessConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
@@ -206,7 +201,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
         <div className="mail-brand-row"><Link href="/admin">← Control panel</Link></div>
         {capabilities.canModifyMail && capabilities.canSendMail && <button className="compose-button" onClick={() => setComposeOpen(true)}>＋ New message</button>}
         <nav aria-label="Mailbox folders">{wellKnown.map(([id, label, icon]) => <button className={folder === id ? "active" : ""} key={id} onClick={() => { setFolder(id); setFoldersOpen(false); }}><span>{icon}</span>{label}<small>{wellKnownFolders[id]?.unreadItemCount || ""}</small></button>)}</nav>
-        {folders.length > 0 && <><h3>Custom folders</h3><nav>{folders.map((item) => <button className={folder === item.id ? "active" : ""} key={item.id} onClick={() => { setFolder(item.id); setFoldersOpen(false); }}><span>□</span><span>{item.displayName}</span><small>{item.unreadItemCount || ""}</small></button>)}</nav></>}
+        {folders.length > 0 && <><h3>Custom folders</h3><nav>{folders.map((item) => <button className={folder === item.id ? "active" : ""} style={{ paddingLeft: `${14 + (item.depth ?? 0) * 16}px` }} key={item.id} onClick={() => { setFolder(item.id); setFoldersOpen(false); }}><span>□</span><span>{item.displayName}</span><small>{item.unreadItemCount || ""}</small></button>)}</nav></>}
         <h3>Shared mailboxes</h3><div className="mailbox-disabled">No verified shared access</div>
         {capabilities.canModifyMailboxSettings && <><h3>Manage</h3><nav><Link href={`/mail/${connectionId}/rules`}>⇢ Inbox rules</Link><Link href={`/mail/${connectionId}/settings`}>⚙ Mailbox settings</Link></nav></>}
       </aside>

@@ -15,7 +15,9 @@ and a Windows helper are neither used nor required.
 `MICROSOFT_CLIENT_ID` must be your own Entra Application (client) ID.
 `MICROSOFT_RESOURCE_APP_ID` and `MICROSOFT_RESOURCE_SCOPE` separately identify the
 target API and delegated permission. For Graph-backed webmail, use resource ID
-`00000003-0000-0000-c000-000000000000` with explicit `User.Read,Mail.Read` scopes.
+`00000003-0000-0000-c000-000000000000` with delegated `User.Read`,
+`Mail.ReadWrite`, and `Mail.Send` permissions. `Mail.ReadWrite` includes mail read
+and folder access; the application must not require a separate `Mail.Read` grant.
 If Microsoft returns `AADSTS65002`, development logs show the effective client,
 resource, authority, scopes, and exact Microsoft error without logging credentials.
 

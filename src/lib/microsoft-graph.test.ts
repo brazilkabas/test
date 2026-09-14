@@ -31,21 +31,31 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("uses only externally configured scopes for device authorization", () => {
+  it("requests the complete webmail permission set for new Graph connections", () => {
     expect(microsoftAuthorizationScopes("identity", [
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.Read",
+      "https://graph.microsoft.com/Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
     ]);
     expect(microsoftAuthorizationScopes("mailbox", [
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.Read",
+      "https://graph.microsoft.com/Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
     ]);
+  });
+
+  it("keeps custom-resource authorization scopes externally configured", () => {
+    expect(microsoftAuthorizationScopes(
+      "identity",
+      ["api://custom-resource/access_as_user"],
+      "custom-resource",
+    )).toEqual(["api://custom-resource/access_as_user"]);
   });
 
   it("passes only OIDC and supported Graph scopes to MSAL", () => {
@@ -71,17 +81,19 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("requests only User.Read and Mail.Read for read-only webmail", () => {
+  it("treats Mail.Read as read-only webmail access", () => {
     expect(microsoftAuthorizationScopes("identity", [
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.Read",
+      "https://graph.microsoft.com/Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
     ]);
     expect(microsoftCapabilitiesFromScopes(["User.Read", "Mail.Read"])).toMatchObject({
       canReadProfile: true,
       canReadMail: true,
+      canReadMailFolders: true,
       canModifyMail: false,
       canSendMail: false,
       canReadMailboxSettings: false,
@@ -125,6 +137,7 @@ describe("Microsoft Graph token targeting", () => {
     ])).toMatchObject({
       canReadProfile: true,
       canReadMail: true,
+      canReadMailFolders: true,
       canModifyMail: true,
       canSendMail: true,
       canReadMailboxSettings: true,

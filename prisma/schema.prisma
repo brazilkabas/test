@@ -148,6 +148,7 @@ model MicrosoftConnection {
   encryptedTokenCache      Bytes
   tokenCacheKeyVersion     Int                   @default(1)
   grantedScopes            String[]
+  capabilities             Json                  @default("{}")
   tenantDisplayName        String?
   adminRoleSummary         Json?
   ownerId                  String?

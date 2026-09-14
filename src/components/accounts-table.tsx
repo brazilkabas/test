@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@/components/api";
-import { ConfirmDialog, EmptyState, Modal, Skeleton, StatusBadge, useToast } from "@/components/design-system";
+import { EmptyState, Modal, Skeleton, StatusBadge, useToast } from "@/components/design-system";
 
 type Account = {
   id: string;
@@ -32,6 +32,8 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
   const [loading, setLoading] = useState(true);
   const [permissions, setPermissions] = useState<Account | null>(null);
   const [disconnect, setDisconnect] = useState<Account | null>(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   async function load() {
     try {
@@ -64,13 +66,21 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
 
   async function confirmDisconnect() {
     if (!disconnect) return;
+    setDeleting(true);
     try {
-      await api(`/microsoft/accounts/${disconnect.id}`, { method: "DELETE" });
-      notify({ title: "Connection removed", message: "Cached Microsoft credentials were erased locally.", tone: "success" });
+      await api(`/microsoft/accounts/${disconnect.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ confirmation: deleteConfirmation }),
+      });
+      setAccounts((current) => current.filter((account) => account.id !== disconnect.id));
+      window.dispatchEvent(new CustomEvent("microsoft-account-deleted", { detail: { connectionId: disconnect.id } }));
+      notify({ title: "Microsoft account access deleted", message: "Stored Microsoft authentication access was erased from this website.", tone: "success" });
       setDisconnect(null);
-      await load();
+      setDeleteConfirmation("");
     } catch (error) {
-      notify({ title: "Disconnect failed", message: error instanceof Error ? error.message : undefined, tone: "error" });
+      notify({ title: "Delete access failed", message: error instanceof Error ? error.message : undefined, tone: "error" });
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -90,13 +100,22 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
               <td><StatusBadge status={account.mailboxAvailability} /></td>
               <td>0</td>
               <td>{account.capabilities.canSendMail ? "Mail operator" : account.capabilities.canReadMail ? "Mail viewer" : "Profile only"}</td>
-              <td><details className="action-menu"><summary aria-label={`Actions for ${account.displayName}`}>•••</summary><div><Link href={`/mail/${account.id}`}>Open mail</Link><Link href={`/profiles/${account.id}`}>Open profile</Link><button onClick={() => void startConnection(account.id)}>Reconnect</button><button onClick={() => setPermissions(account)}>View permissions</button><a href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer">Open Outlook</a><Link href={`/admin/audit?connectionId=${account.id}`}>Audit history</Link><button className="error" onClick={() => setDisconnect(account)}>Disconnect</button></div></details></td>
+              <td><details className="action-menu"><summary aria-label={`Actions for ${account.displayName}`}>•••</summary><div><Link href={`/mail/${account.id}`}>Open mail</Link><Link href={`/profiles/${account.id}`}>Open profile</Link><button onClick={() => void startConnection(account.id)}>Reconnect</button><button onClick={() => setPermissions(account)}>View permissions</button><a href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer">Open Outlook</a><Link href={`/admin/audit?connectionId=${account.id}`}>Audit history</Link><button className="error" onClick={() => { setDeleteConfirmation(""); setDisconnect(account); }}>Delete Access</button></div></details></td>
             </tr>
           ))}</tbody></table></div>
         )}
       </section>
       <Modal open={Boolean(permissions)} title="Microsoft delegated permissions" onClose={() => setPermissions(null)}>{permissions && <div className="stack"><p className="muted">Permissions granted to {permissions.displayName ?? permissions.userPrincipalName}. Internal roles do not expand these Microsoft permissions.</p><div className="row">{permissions.grantedScopes.map((scope) => <span className="badge" key={scope}>{scope}</span>)}</div></div>}</Modal>
-      <ConfirmDialog open={Boolean(disconnect)} title="Disconnect Microsoft account?" description="This erases the local encrypted MSAL cache and prevents further Graph access. It does not bypass or modify Microsoft tenant policy." confirmLabel="Disconnect account" destructive onClose={() => setDisconnect(null)} onConfirm={() => void confirmDisconnect()} />
+      <Modal open={Boolean(disconnect)} title="Delete Microsoft account access?" onClose={() => { if (!deleting) setDisconnect(null); }}>
+        <div className="stack">
+          <p>This will remove this Microsoft account and its stored authentication access from this website.</p>
+          <label>Type DELETE to confirm.<input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} autoComplete="off" /></label>
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button type="button" className="secondary" disabled={deleting} onClick={() => setDisconnect(null)}>Cancel</button>
+            <button type="button" className="error" disabled={deleteConfirmation !== "DELETE" || deleting} onClick={() => void confirmDisconnect()}>{deleting ? "Deleting…" : "Delete access"}</button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }

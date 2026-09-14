@@ -26,7 +26,7 @@ export function MailboxAccessConsent(props: { connectionId: string; onGranted: (
     {...props}
     purpose="mailbox"
     title="Grant mail access"
-    description="The Microsoft account is connected, but Mail.Read has not been granted. Grant read-only mail access to open the inbox."
+    description="This legacy account was connected without webmail permissions. Grant Mail.ReadWrite and Mail.Send once to enable folders, messages, updates, and sending."
     buttonLabel="Grant mail access"
     adminApprovalDescription="mailbox access"
   />;

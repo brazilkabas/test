@@ -75,10 +75,10 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
           </div>}
           {tab === "Mailbox" && (account.capabilities.canReadMail
             ? <EmptyState icon="✉" title="Mailbox is available" description="Open the full folder-aware mail workspace for this employee." action={<Link className="button" href={`/mail/${account.id}`}>Open mailbox</Link>} />
-            : <Unavailable title="Mail access not granted" description="Grant Mail.Read to open this connected account's mailbox." />)}
+            : <Unavailable title="Mail access not granted" description="Grant webmail access to open this connected account's mailbox." />)}
           {tab === "Folders" && (account.capabilities.canReadMail
             ? <SimpleTable rows={folders} columns={["displayName", "totalItemCount", "unreadItemCount"]} />
-            : <Unavailable title="Mail access not granted" description="Folder listing requires Mail.Read." />)}
+            : <Unavailable title="Mail access not granted" description="Folder listing requires Mail.Read or Mail.ReadWrite." />)}
           {tab === "Rules" && (account.capabilities.canModifyMailboxSettings
             ? <SimpleTable rows={rules} columns={["displayName", "isEnabled", "sequence"]} />
             : <Unavailable title="Inbox rules unavailable" description="Inbox-rule management requires MailboxSettings.ReadWrite." />)}
