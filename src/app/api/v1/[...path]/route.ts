@@ -264,10 +264,16 @@ async function route(request: NextRequest, path: string[]) {
       },
     });
     return Response.json({
-      accounts: accounts.map((account) => ({
-        ...account,
-        capabilities: microsoftCapabilitiesFromScopes(account.grantedScopes),
-      })),
+      accounts: accounts.map((account) => {
+        const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes);
+        return {
+          ...account,
+          capabilities,
+          mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail
+            ? "AVAILABLE"
+            : "UNAVAILABLE",
+        };
+      }),
     });
   }
   if (key === "GET /microsoft/users") return organizationUsers(request);
@@ -463,12 +469,13 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
       },
     });
     if (!account) throw new ApiError(404, "Microsoft account not found");
+    const capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes);
     return Response.json({
       account: {
         ...account,
         tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
-        mailboxAvailability: account.authorizationStatus === "CONNECTED" ? "AVAILABLE" : "UNAVAILABLE",
-        capabilities: microsoftCapabilitiesFromScopes(account.grantedScopes),
+        mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail ? "AVAILABLE" : "UNAVAILABLE",
+        capabilities,
       },
     });
   }
@@ -640,14 +647,14 @@ async function microsoftDiagnostics(request: NextRequest, rawConnectionId: strin
   const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
   const checks: Array<{ id: string; label: string; path: string; requiredScope: string }> = [
     { id: "profile", label: "Microsoft /me profile", path: "/me?$select=id,displayName,userPrincipalName", requiredScope: "User.Read" },
-    { id: "inbox", label: "Inbox listing", path: "/me/mailFolders/inbox/messages?$top=1&$select=id,subject", requiredScope: "Mail.ReadWrite" },
+    { id: "inbox", label: "Inbox listing", path: "/me/mailFolders/inbox/messages?$top=1&$select=id,subject", requiredScope: "Mail.Read" },
     { id: "settings", label: "Mailbox settings", path: "/me/mailboxSettings?$select=timeZone,language", requiredScope: "MailboxSettings.ReadWrite" },
     { id: "rules", label: "Inbox rules", path: "/me/mailFolders/inbox/messageRules", requiredScope: "MailboxSettings.ReadWrite" },
   ];
   const granted = new Set(connection.grantedScopes.map(normalizeMicrosoftScope));
   const results = [];
   for (const check of checks) {
-    if (!granted.has(check.requiredScope.toLowerCase())) {
+    if (!hasGrantedScope(granted, check.requiredScope)) {
       results.push({ id: check.id, label: check.label, status: "REQUIRES_PERMISSION", requiredScope: check.requiredScope });
       continue;
     }
@@ -1389,6 +1396,8 @@ async function mailRoute(request: NextRequest, path: string[]) {
   const query = request.nextUrl.searchParams;
   if (tail[0] === "settings" || tail[0] === "rules") {
     await requireConnectionScope(connectionId, "MailboxSettings.ReadWrite");
+  } else if (request.method === "GET") {
+    await requireAnyConnectionScope(connectionId, ["Mail.Read", "Mail.ReadWrite"]);
   } else {
     await requireConnectionScope(connectionId, "Mail.ReadWrite");
     const sendsMail = tail[0] === "send"
@@ -1657,9 +1666,28 @@ async function requireConnectionScope(connectionId: string, scope: string) {
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
   const granted = new Set(connection.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
-  if (!granted.has(scope.toLowerCase())) {
+  if (!hasGrantedScope(granted, scope)) {
     throw new ApiError(403, `${scope} permission is required. Enable this feature to request incremental Microsoft consent.`);
   }
+}
+
+async function requireAnyConnectionScope(connectionId: string, scopes: string[]) {
+  const connection = await db.microsoftConnection.findUnique({
+    where: { id: connectionId },
+    select: { grantedScopes: true },
+  });
+  if (!connection) throw new ApiError(404, "Microsoft connection not found");
+  const granted = new Set(connection.grantedScopes.map(normalizeMicrosoftScope));
+  if (!scopes.some((scope) => hasGrantedScope(granted, scope))) {
+    throw new ApiError(403, `${scopes[0]} permission is required. Grant mail access to continue.`);
+  }
+}
+
+function hasGrantedScope(granted: Set<string>, scope: string) {
+  const normalized = normalizeMicrosoftScope(scope);
+  return granted.has(normalized)
+    || (normalized === "mail.read" && granted.has("mail.readwrite"))
+    || (normalized === "mailboxsettings.read" && granted.has("mailboxsettings.readwrite"));
 }
 
 const ruleSchema = z.object({

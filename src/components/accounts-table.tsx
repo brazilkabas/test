@@ -17,6 +17,7 @@ type Account = {
   connectedAt: string;
   lastSuccessfulGraphAt: string | null;
   grantedScopes: string[];
+  mailboxAvailability: string;
   capabilities: {
     canReadMail: boolean;
     canSendMail: boolean;
@@ -86,7 +87,7 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
               <td><StatusBadge status={account.authorizationStatus} /></td>
               <td><small>{account.microsoftUserId}</small></td>
               <td>{account.lastSuccessfulGraphAt ? new Date(account.lastSuccessfulGraphAt).toLocaleString() : "Never"}</td>
-              <td><StatusBadge status={account.authorizationStatus === "CONNECTED" ? "Available" : "Unavailable"} /></td>
+              <td><StatusBadge status={account.mailboxAvailability} /></td>
               <td>0</td>
               <td>{account.capabilities.canSendMail ? "Mail operator" : account.capabilities.canReadMail ? "Mail viewer" : "Profile only"}</td>
               <td><details className="action-menu"><summary aria-label={`Actions for ${account.displayName}`}>•••</summary><div><Link href={`/mail/${account.id}`}>Open mail</Link><Link href={`/profiles/${account.id}`}>Open profile</Link><button onClick={() => void startConnection(account.id)}>Reconnect</button><button onClick={() => setPermissions(account)}>View permissions</button><a href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer">Open Outlook</a><Link href={`/admin/audit?connectionId=${account.id}`}>Audit history</Link><button className="error" onClick={() => setDisconnect(account)}>Disconnect</button></div></details></td>

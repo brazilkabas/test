@@ -16,6 +16,7 @@ describe("Microsoft Graph token targeting", () => {
       "openid",
       "offline_access",
       "User.Read",
+      "Mail.Read",
       "Mail.ReadWrite",
       "https://graph.microsoft.com/Mail.Send",
       "https://outlook.office365.com/Mail.Read",
@@ -23,6 +24,7 @@ describe("Microsoft Graph token targeting", () => {
       "https://graph.microsoft.com/.default",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
       "https://graph.microsoft.com/Mail.ReadWrite",
       "https://graph.microsoft.com/Mail.Send",
     ]);
@@ -49,10 +51,8 @@ describe("Microsoft Graph token targeting", () => {
       "https://graph.microsoft.com/MailboxSettings.ReadWrite",
     ]);
     expect(microsoftAuthorizationScopes("mailbox")).toEqual([
-      "offline_access",
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
     expect(microsoftAuthorizationScopes("mailbox-settings")).toEqual([
       "offline_access",
@@ -82,6 +82,21 @@ describe("Microsoft Graph token targeting", () => {
       "https://graph.microsoft.com/Mail.Send",
       "https://graph.microsoft.com/MailboxSettings.ReadWrite",
     ]);
+  });
+
+  it("requests only User.Read and Mail.Read for read-only webmail", () => {
+    expect(microsoftAuthorizationScopes("identity", ["User.Read", "Mail.Read"])).toEqual([
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
+    ]);
+    expect(microsoftCapabilitiesFromScopes(["User.Read", "Mail.Read"])).toMatchObject({
+      canReadProfile: true,
+      canReadMail: true,
+      canModifyMail: false,
+      canSendMail: false,
+      canReadMailboxSettings: false,
+      canModifyMailboxSettings: false,
+    });
   });
 
   it("accepts only Microsoft Graph token audiences", () => {

@@ -23,15 +23,14 @@ const NON_GRAPH_SCOPES = new Set(["openid", "profile", "email", "offline_access"
 const DEVICE_IDENTITY_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
 const NORMAL_GRAPH_SCOPES = new Map([
   ["user.read", "User.Read"],
+  ["mail.read", "Mail.Read"],
   ["mail.readwrite", "Mail.ReadWrite"],
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
 const MAILBOX_ACCESS_SCOPES = [
-  "offline_access",
   `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
-  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
-  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Send`,
+  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Read`,
 ];
 const MAILBOX_SETTINGS_SCOPES = [
   "offline_access",
@@ -396,6 +395,31 @@ async function completeAuthorization(
   ) {
     throw new MicrosoftAccountMismatch();
   }
+  const grantedCapabilities = microsoftCapabilitiesFromScopes(result.scopes);
+  if (grantedCapabilities.canReadMail) {
+    try {
+      await graphFetchWithToken(
+        result.accessToken,
+        "/me/mailFolders/inbox/messages?$top=10",
+      );
+    } catch (error) {
+      await db.auditEvent.create({
+        data: {
+          action: "microsoft.graph.mail_verification_failed",
+          targetType: "MicrosoftAuthorizationSession",
+          targetId: authorizationSessionId,
+          requestId: crypto.randomUUID(),
+          result: "FAILURE",
+          metadata: {
+            endpoint: "/me/mailFolders/inbox/messages",
+            microsoftCode: error instanceof GraphError ? error.code : undefined,
+            httpStatus: error instanceof GraphError ? error.status : undefined,
+          },
+        },
+      });
+      throw error;
+    }
+  }
   const email = microsoftProfileEmail(
     profile,
     result.idTokenClaims as Record<string, unknown> | undefined,
@@ -490,6 +514,15 @@ async function completeAuthorization(
           result: "SUCCESS",
           metadata: { endpoint: "/me" },
         },
+        ...(grantedCapabilities.canReadMail ? [{
+          connectionId: savedConnection.id,
+          action: "microsoft.graph.mail_verification_succeeded",
+          targetType: "MicrosoftConnection",
+          targetId: savedConnection.id,
+          requestId: crypto.randomUUID(),
+          result: "SUCCESS",
+          metadata: { endpoint: "/me/mailFolders/inbox/messages" },
+        }] : []),
       ],
     });
     return savedConnection;

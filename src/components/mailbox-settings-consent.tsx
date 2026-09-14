@@ -25,9 +25,9 @@ export function MailboxAccessConsent(props: { connectionId: string; onGranted: (
   return <MicrosoftFeatureConsent
     {...props}
     purpose="mailbox"
-    title="Connect webmail"
-    description="Basic Microsoft sign-in is complete. Enable mailbox access only when you want to use webmail."
-    buttonLabel="Enable webmail"
+    title="Grant mail access"
+    description="The Microsoft account is connected, but Mail.Read has not been granted. Grant read-only mail access to open the inbox."
+    buttonLabel="Grant mail access"
     adminApprovalDescription="mailbox access"
   />;
 }
