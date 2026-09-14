@@ -12,11 +12,11 @@ Do not configure a home-tenant GUID as the authority. After authentication,
 the tenant ID returned by Microsoft is still stored with the connection so accounts
 from different organizations remain correctly isolated.
 
-Under **Authentication**, add `MICROSOFT_REDIRECT_URI` as a **Web** redirect URI.
+Under **Authentication**, add `MICROSOFT_REDIRECT_URI` under **Mobile and desktop
+applications** and enable **Allow public client flows**. The URI must match exactly.
 Normal sign-in uses authorization code with PKCE and does not use a client secret,
-WAM, an authentication broker, an HWND, or a Windows helper. Enable **Allow public
-client flows** only if the optional device-code fallback is required. For local
-development, register `http://localhost:3000/api/v1/microsoft/callback`.
+WAM, an authentication broker, an HWND, or a Windows helper. For local development,
+register `http://localhost:3000/api/v1/microsoft/callback`.
 
 ## Delegated Graph permissions
 
