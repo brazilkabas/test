@@ -12,6 +12,7 @@ import { AuthorizationStatus } from "@/generated/prisma/client";
 import { config } from "@/lib/config";
 import { decrypt, encrypt, sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
+import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const pending = new Map<string, Promise<void>>();
@@ -120,7 +121,6 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       publicId: true,
       userCode: true,
       verificationUri: true,
-      verificationUriComplete: true,
       message: true,
       status: true,
       expiresAt: true,
@@ -140,7 +140,6 @@ export async function authorizationStatus(publicId: string, statusToken: string)
         publicId: true,
         userCode: true,
         verificationUri: true,
-        verificationUriComplete: true,
         message: true,
         status: true,
         expiresAt: true,
@@ -331,7 +330,7 @@ function createClient(cachePlugin?: ICachePlugin) {
   return new PublicClientApplication({
     auth: {
       clientId: config().MICROSOFT_CLIENT_ID,
-      authority: `https://login.microsoftonline.com/${config().MICROSOFT_TENANT_ID}`,
+      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
     },
     cache: cachePlugin ? { cachePlugin } : undefined,
     system: { loggerOptions: { piiLoggingEnabled: false } },

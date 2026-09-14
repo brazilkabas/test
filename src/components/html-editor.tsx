@@ -74,7 +74,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
   const liveState = mapLiveState(liveAuthorization?.status);
   const activePreviewState: PreviewState = previewMode === "live" ? liveState : "waiting";
   const previewDocument = useMemo(() => buildPageDesign(configuration, activePreviewState), [configuration, activePreviewState]);
-  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: previewMode === "live" ? liveAuthorization?.userCode ?? "—" : "XXXX-XXXX", verificationUri: previewMode === "live" ? liveAuthorization?.verificationUri ?? "#" : "https://microsoft.com/devicelogin", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.userCode, liveAuthorization?.verificationUri, previewDocument, previewMode]);
+  const rendered = useMemo(() => renderPageDocument(previewDocument, { deviceCode: previewMode === "live" ? liveAuthorization?.userCode ?? "—" : "XXXX-XXXX", verificationUri: previewMode === "live" ? liveAuthorization?.verificationUri ?? "#" : "#", status: activePreviewState, assetUrl: (id) => `/api/v1/brand-assets/${id}/content` }), [activePreviewState, liveAuthorization?.userCode, liveAuthorization?.verificationUri, previewDocument, previewMode]);
   const orderedDesigns = useMemo(() => {
     const recommended = providerAssets[configuration.provider].recommendedLayouts;
     const rank = (id: BuilderConfiguration["layoutId"]) => { const index = recommended.indexOf(id); return index < 0 ? 99 : index; };

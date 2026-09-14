@@ -3,9 +3,18 @@
 Use the existing Entra app registration as a public client. Set:
 
 ```text
-MICROSOFT_TENANT_ID=<tenant GUID, organizations, or approved tenant authority>
 MICROSOFT_CLIENT_ID=<application/client ID>
 ```
+
+Device-code authentication always uses the multitenant organizations authority:
+
+```text
+https://login.microsoftonline.com/organizations/
+```
+
+Do not configure a home-tenant GUID as the global authority. After authentication,
+the tenant ID returned by Microsoft is still stored with the connection so accounts
+from different organizations remain correctly isolated.
 
 Under **Authentication**, enable **Allow public client flows**. Device authorization
 does not use a client secret or redirect URI. Do not add a client secret to this

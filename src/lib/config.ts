@@ -2,7 +2,6 @@ import { z } from "zod";
 
 const schema = z.object({
   DATABASE_URL: z.string().url(),
-  MICROSOFT_TENANT_ID: z.string().min(1),
   MICROSOFT_CLIENT_ID: z.string().uuid(),
   MICROSOFT_SCOPES: z.string().default(
     "openid,profile,email,offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite",
@@ -41,7 +40,6 @@ export function config(): AppConfig {
 export function publicConfigurationStatus() {
   const keys = [
     "DATABASE_URL",
-    "MICROSOFT_TENANT_ID",
     "MICROSOFT_CLIENT_ID",
     "ENCRYPTION_KEY",
     "SESSION_SECRET",
@@ -50,7 +48,6 @@ export function publicConfigurationStatus() {
 
   return {
     configured: Object.fromEntries(keys.map((key) => [key, Boolean(process.env[key])])),
-    microsoftTenantId: process.env.MICROSOFT_TENANT_ID ?? null,
     microsoftClientId: process.env.MICROSOFT_CLIENT_ID ?? null,
     scopes: (process.env.MICROSOFT_SCOPES ?? "").split(",").filter(Boolean),
   };

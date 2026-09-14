@@ -18,6 +18,7 @@ import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDoc
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
+import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -214,7 +215,7 @@ async function route(request: NextRequest, path: string[]) {
     return Response.json({
       database: "healthy",
       microsoft: {
-        tenantId: config().MICROSOFT_TENANT_ID,
+        authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
         clientId: config().MICROSOFT_CLIENT_ID,
         scopes: config().microsoftScopes,
       },

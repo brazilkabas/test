@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 beforeAll(() => {
   process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/test";
-  process.env.MICROSOFT_TENANT_ID = "organizations";
   process.env.MICROSOFT_CLIENT_ID = "00000000-0000-4000-8000-000000000000";
   process.env.ENCRYPTION_KEY = "ab".repeat(32);
   process.env.SESSION_SECRET = "test-session-secret-with-at-least-32-characters";

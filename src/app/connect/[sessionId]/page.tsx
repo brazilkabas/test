@@ -9,7 +9,6 @@ type Authorization = {
   publicId: string;
   userCode: string | null;
   verificationUri: string | null;
-  verificationUriComplete: string | null;
   message: string | null;
   status: string;
   expiresAt: string;
@@ -65,7 +64,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
 
   const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
   if (authorization && customDocumentResult.success) {
-    const destination = authorization.verificationUriComplete ?? authorization.verificationUri ?? "https://microsoft.com/devicelogin";
+    const destination = authorization.verificationUri ?? "#";
     const rendered = renderPageDocument(customDocumentResult.data, { deviceCode: authorization.userCode ?? "", verificationUri: destination, status: authorization.status });
     return <main className={`custom-connect-page status-${authorization.status.toLowerCase()}`} onClick={(event) => {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
@@ -110,7 +109,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
           <button className="secondary" onClick={() => void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined)}>Copy Code</button>
           <a
             className="button"
-            href={authorization.verificationUriComplete ?? authorization.verificationUri ?? "https://microsoft.com/devicelogin"}
+            href={authorization.verificationUri ?? "#"}
             onClick={(event) => {
               event.preventDefault();
               popup.current = window.open(event.currentTarget.href, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");

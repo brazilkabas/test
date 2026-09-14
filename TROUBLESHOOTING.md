@@ -2,9 +2,10 @@
 
 ## Device code does not appear
 
-Confirm tenant/client IDs, public-client flow enablement, outbound access to
-`login.microsoftonline.com`, and that the app registration supports accounts in the
-configured authority. Pending authorization is process-local until Microsoft
+Confirm the client ID, public-client flow enablement, outbound access to
+`login.microsoftonline.com`, and that the app registration supports multiple
+organizations. Device-code authentication uses the fixed `organizations` authority.
+Pending authorization is process-local until Microsoft
 completes it; restarting the server requires a new device code.
 
 ## Consent or permission errors
