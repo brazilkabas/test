@@ -34,7 +34,7 @@ export function defaultBuilderConfiguration(layoutId: BuilderConfiguration["layo
     layoutId, provider,
     title: profile.title,
     description: profile.description,
-    steps: ["Copy the verification code.", "Continue to Microsoft and paste the code.", "Complete authentication on Microsoft’s website."],
+    steps: ["Continue to Microsoft.", "Complete sign-in and any required MFA.", "Return automatically after authorization."],
     continueButtonText: "Continue to Microsoft",
     footer: "Authentication continues securely on Microsoft’s website.",
     successMessage: "",
@@ -159,12 +159,9 @@ function authorization(c: BuilderConfiguration, state: PreviewState, dark: boole
   const muted = dark ? "#aebdca" : "#667085";
   return [
     n("auth-active", "section", "Authorization", { children: [
-      n("auth-code", "deviceCode", "Verification code", { content: "Verification code", style: { margin: "16px 0 10px", borderRadius: preset.radius } }),
-      button("auth-copy", "Copy Code", "copy-device-code", { width: "100%", padding: "10px", background: "transparent", color: c.primaryColor, border: `1px solid ${softBorder(c.primaryColor)}`, borderRadius: preset.radius }),
-      text("auth-copy-feedback", "Copied", { textAlign: "center", color: muted, fontSize: "11px", margin: "5px 0 0" }),
+      text("auth-security", "Microsoft handles your credentials, MFA, Conditional Access, consent, and account selection.", { margin: "16px 0", color: muted }),
       steps("auth-steps", c.steps, { margin: "16px 0", color: muted }),
       button("auth-continue", c.continueButtonText, "open-microsoft", { width: "100%", padding: "13px", background: c.primaryColor, color: readable(c.primaryColor), borderRadius: preset.radius }),
-      button("auth-popup-fallback", "Open Microsoft", "open-microsoft", { width: "100%", padding: "10px", background: "transparent", color: c.primaryColor, border: "0", borderRadius: preset.radius }),
     ] }),
     n("auth-status", "status", "Authorization status", { content: stateLabel(state), statusKind: "waiting", style: { margin: "14px 0 0", color: muted } }),
     text("auth-footer", c.footer, { margin: "14px 0 0", textAlign: "center", fontSize: "11px", color: muted }),

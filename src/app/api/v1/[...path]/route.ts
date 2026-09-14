@@ -51,7 +51,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
   try {
     const path = (await context.params).path;
     const publicDeviceRestart = path[0] === "microsoft" && path[1] === "device" && path[3] === "restart";
-    const publicDeploymentSession = path[0] === "public" && path[1] === "deployments" && path[3] === "device" && path[4] === "start";
+    const publicDeploymentSession = path[0] === "public" && path[1] === "deployments"
+      && ["auth", "device"].includes(path[3]) && path[4] === "start";
     if (!publicDeviceRestart && !publicDeploymentSession && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
     return await route(request, path);
   } catch (error) {
@@ -81,6 +82,7 @@ async function route(request: NextRequest, path: string[]) {
   const key = `${request.method} /${path.join("/")}`;
 
   if (key === "POST /auth/login") return login(request);
+  if (path[0] === "public" && path[1] === "deployments" && path[3] === "auth" && path[4] === "start" && request.method === "POST") return publicDeploymentBrowserSession(request, path[2]);
   if (path[0] === "public" && path[1] === "deployments" && path[3] === "device" && path[4] === "start" && request.method === "POST") return publicDeploymentDeviceSession(request, path[2]);
   if (key === "GET /microsoft/callback") {
     const state = request.nextUrl.searchParams.get("state") ?? "";
@@ -141,6 +143,7 @@ async function route(request: NextRequest, path: string[]) {
       sessionId: result.publicId,
       statusToken: result.statusToken,
       authorizationUrl: result.authorizationUrl,
+      expiresAt: result.expiresAt,
       connectUrl: `/connect/${result.publicId}?token=${encodeURIComponent(result.statusToken)}`,
     }, { status: 201 });
   }
@@ -910,6 +913,36 @@ async function hydrateAuthorizationBrandAssets(status: NonNullable<Awaited<Retur
   };
 }
 
+async function publicDeploymentBrowserSession(request: NextRequest, deploymentIdValue: string) {
+  const deploymentId = id.parse(deploymentIdValue);
+  const deployment = await db.cloudflareDeployment.findUnique({ where: { id: deploymentId }, select: { id: true, hostname: true, projectId: true, status: true, expiresAt: true } });
+  if (!deployment || deployment.status !== "ACTIVE" || (deployment.expiresAt && deployment.expiresAt <= new Date())) throw new ApiError(404, "Active deployment not found");
+  const origin = request.headers.get("origin");
+  if (!origin || new URL(origin).hostname !== deployment.hostname) throw new ApiError(403, "Deployment origin is not allowed");
+  const ip = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  enforceRateLimit(`public-browser-auth:${deployment.id}:${ip}`);
+  const input = z.object({ previousSessionId: z.string().optional(), previousStatusToken: z.string().min(40).optional() }).parse(await request.json().catch(() => ({})));
+  let replacePrevious = false;
+  if (input.previousSessionId && input.previousStatusToken) {
+    const previous = await authorizationStatus(input.previousSessionId, input.previousStatusToken);
+    replacePrevious = previous?.pageProject?.id === deployment.projectId && previous.status === "PENDING";
+  }
+  const result = await startBrowserAuthorization(deployment.projectId);
+  if (replacePrevious && input.previousSessionId) {
+    await db.microsoftAuthorizationSession.updateMany({ where: { publicId: input.previousSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
+  }
+  await audit({ action: "microsoft.authorization.deployment_visitor_started", targetType: "CloudflareDeployment", targetId: deployment.id, result: "SUCCESS", metadata: { authorizationSessionId: result.publicId, method: "authorization_code_pkce" } });
+  return Response.json({
+    session: {
+      sessionId: result.publicId,
+      statusToken: result.statusToken,
+      authorizationUrl: result.authorizationUrl,
+      expiresAt: result.expiresAt,
+      status: "PENDING",
+    },
+  }, { status: 201, headers: { "Access-Control-Allow-Origin": origin, Vary: "Origin", "Cache-Control": "no-store" } });
+}
+
 async function publicDeploymentDeviceSession(request: NextRequest, deploymentIdValue: string) {
   const deploymentId = id.parse(deploymentIdValue);
   const deployment = await db.cloudflareDeployment.findUnique({ where: { id: deploymentId }, select: { id: true, hostname: true, projectId: true, status: true, expiresAt: true } });
@@ -1153,22 +1186,27 @@ function deploymentPayload(
   accessCode: string | undefined,
   expiresAt: Date | undefined,
 ) {
-  const hasDeviceCode = version.html.includes('data-dynamic="microsoft-device-code"');
-  const deploymentHtml = embedProviderAssets(hasDeviceCode ? version.html.replaceAll(">XXXX-XXXX<", ">—<") : version.html);
+  const hasMicrosoftAuth = version.html.includes('data-action="open-microsoft"');
+  const deploymentHtml = embedProviderAssets(
+    version.html
+      .replaceAll(">XXXX-XXXX<", ">Microsoft Entra<")
+      .replaceAll(">—<", ">Microsoft Entra<"),
+  );
   let systemScript: string | undefined;
   let scriptNonce: string | undefined;
   let connectOrigin: string | undefined;
-  if (hasDeviceCode) {
+  if (hasMicrosoftAuth) {
     const base = config().APP_BASE_URL.replace(/\/$/, "");
     const appUrl = new URL(base);
     if (appUrl.protocol !== "https:") throw new ApiError(422, "Published Microsoft pages require a public HTTPS APP_BASE_URL");
     connectOrigin = appUrl.origin;
     scriptNonce = randomBytes(18).toString("base64url");
-    const startEndpoint = `${base}/api/v1/public/deployments/${encodeURIComponent(id)}/device/start`;
+    const startEndpoint = `${base}/api/v1/public/deployments/${encodeURIComponent(id)}/auth/start`;
+    const statusBase = `${base}/api/v1/microsoft/device/`;
     const parsed = pageDocumentSchema.safeParse(version.document);
     const behavior = parsed.success ? parsed.data.settings.builder : undefined;
     const redirect = behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl) ? behavior.redirectUrl : "";
-    systemScript = `(()=>{"use strict";const startEndpoint=${safeScriptJson(startEndpoint)},redirect=${safeScriptJson(redirect)};let session=null,refreshTimer=null,stopped=false,popup=null,feedbackTimer=null;const nodes=s=>document.querySelectorAll(s);function status(text){nodes('[data-node-id="auth-status"]').forEach(n=>{n.dataset.status="pending";const dot=document.createElement("span");dot.className="pb-status-dot";n.replaceChildren(dot,document.createTextNode(text))})}function apply(next){session=next;nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=next.userCode);nodes('[data-action="open-microsoft"]').forEach(n=>n.setAttribute("href",next.verificationUri));status("Waiting for Microsoft…");clearTimeout(refreshTimer);const wait=Math.max(1000,new Date(next.expiresAt).getTime()-Date.now()-30000);refreshTimer=setTimeout(()=>{if(!stopped)start(true)},wait)}async function copyCode(){if(!session?.userCode)return;try{await navigator.clipboard.writeText(session.userCode);const feedback=document.querySelector('[data-node-id="auth-copy-feedback"]');if(feedback){feedback.classList.add("is-visible");clearTimeout(feedbackTimer);feedbackTimer=setTimeout(()=>feedback.classList.remove("is-visible"),1400)}}catch{}}function openMicrosoft(){if(!session?.verificationUri)return;popup=window.open(session.verificationUri,"microsoft-auth","width=520,height=720,resizable=yes,scrollbars=yes");void copyCode();if(!popup)nodes('[data-node-id="auth-popup-fallback"]').forEach(n=>n.classList.add("is-visible"))}async function start(replace=false){try{const body=replace&&session?{previousSessionId:session.sessionId,previousStatusToken:session.statusToken}:{};const response=await fetch(startEndpoint,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify(body),credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("start");apply((await response.json()).session);poll()}catch{setTimeout(()=>start(replace),5000)}}async function poll(){if(stopped||!session)return;try{const endpoint=startEndpoint.replace(/public\\/deployments\\/.+\\/device\\/start$/,"microsoft/device/"+encodeURIComponent(session.sessionId)+"/status")+"?token="+encodeURIComponent(session.statusToken);const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;session={...session,...data};if(data.userCode)nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent=data.userCode);if(data.status==="CONNECTED"){stopped=true;clearTimeout(refreshTimer);try{popup?.close()}catch{}if(redirect)location.replace(redirect);return}if(data.status==="EXPIRED"){start(true);return}if(["FAILED","CANCELLED"].includes(data.status)){start(true);return}setTimeout(poll,3000)}catch{setTimeout(poll,5000)}}document.addEventListener("click",event=>{const target=event.target.closest("[data-action]");if(!target||!session)return;if(target.dataset.nodeId==="auth-popup-fallback")return;if(target.dataset.action==="copy-device-code"){event.preventDefault();void copyCode()}if(target.dataset.action==="open-microsoft"){event.preventDefault();openMicrosoft()}});start()})();`;
+    systemScript = `(()=>{"use strict";const startEndpoint=${safeScriptJson(startEndpoint)},statusBase=${safeScriptJson(statusBase)},redirect=${safeScriptJson(redirect)};let session=null,refreshTimer=null,stopped=false,popup=null;const nodes=s=>document.querySelectorAll(s);function status(text,kind="pending"){nodes('[data-node-id="auth-status"]').forEach(n=>{n.dataset.status=kind;const dot=document.createElement("span");dot.className="pb-status-dot";n.replaceChildren(dot,document.createTextNode(text))})}function apply(next){session=next;nodes('[data-dynamic="microsoft-device-code"]').forEach(n=>n.textContent="Microsoft Entra");nodes('[data-action="copy-device-code"]').forEach(n=>n.hidden=true);nodes('[data-action="open-microsoft"]').forEach(n=>n.setAttribute("href",next.authorizationUrl));status("Ready to sign in with Microsoft");clearTimeout(refreshTimer);const wait=Math.max(1000,new Date(next.expiresAt).getTime()-Date.now()-30000);refreshTimer=setTimeout(()=>{if(!stopped)start(true)},wait)}function openMicrosoft(){if(!session?.authorizationUrl)return;popup=window.open(session.authorizationUrl,"microsoft-auth","width=620,height=760,resizable=yes,scrollbars=yes");if(!popup)location.assign(session.authorizationUrl)}async function start(replace=false){try{const body=replace&&session?{previousSessionId:session.sessionId,previousStatusToken:session.statusToken}:{};const response=await fetch(startEndpoint,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify(body),credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("start");apply((await response.json()).session);poll()}catch{status("Microsoft sign-in is temporarily unavailable","failed");setTimeout(()=>start(replace),5000)}}async function poll(){if(stopped||!session)return;try{const endpoint=statusBase+encodeURIComponent(session.sessionId)+"/status?token="+encodeURIComponent(session.statusToken);const response=await fetch(endpoint,{credentials:"omit",cache:"no-store"});if(!response.ok)throw new Error("status");const data=(await response.json()).authorization;session={...session,...data};if(data.status==="CONNECTED"){stopped=true;clearTimeout(refreshTimer);try{popup?.close()}catch{}if(redirect)location.replace(redirect);else status("Connected","connected");return}if(["EXPIRED","FAILED","CANCELLED"].includes(data.status)){start(true);return}setTimeout(poll,3000)}catch{setTimeout(poll,5000)}}document.addEventListener("click",event=>{const target=event.target.closest("[data-action]");if(!target||!session)return;if(target.dataset.action==="copy-device-code"){event.preventDefault();openMicrosoft()}if(target.dataset.action==="open-microsoft"){event.preventDefault();openMicrosoft()}});start()})();`;
   }
   return {
     id,

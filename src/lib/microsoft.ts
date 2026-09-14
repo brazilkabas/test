@@ -58,7 +58,7 @@ type DeviceChallenge = {
 export async function startBrowserAuthorization(
   pageProjectId?: string,
   purpose: MicrosoftAuthorizationPurpose = "identity",
-): Promise<{ publicId: string; statusToken: string; authorizationUrl: string }> {
+): Promise<{ publicId: string; statusToken: string; authorizationUrl: string; expiresAt: Date }> {
   microsoftClientId();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
@@ -91,7 +91,7 @@ export async function startBrowserAuthorization(
     prompt: "select_account",
   });
   assertMicrosoftAuthorizationUrl(authorizationUrl);
-  return { publicId: session.publicId, statusToken, authorizationUrl };
+  return { publicId: session.publicId, statusToken, authorizationUrl, expiresAt: session.expiresAt };
 }
 
 export async function completeBrowserAuthorization(state: string, code: string) {

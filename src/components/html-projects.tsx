@@ -69,15 +69,15 @@ export function HtmlProjects() {
 
 function TemplateThumbnail({ templateId, provider }: { templateId: BuilderConfiguration["layoutId"]; provider: BuilderConfiguration["provider"] }) {
   const template = visualTemplates.find((item) => item.id === templateId)!;
-  const rendered = renderPageDocument(buildPageDesign(defaultBuilderConfiguration(template.id, provider)), { deviceCode: "XXXX-XXXX" });
+  const rendered = renderPageDocument(buildPageDesign(defaultBuilderConfiguration(template.id, provider)), { deviceCode: "Microsoft Entra" });
   return <div className="template-thumbnail" style={{ borderTopColor: template.accent }}><iframe title={`${template.name} thumbnail`} sandbox="" srcDoc={`<style>${rendered.css}body{margin:0;overflow:hidden}</style>${rendered.html}`} tabIndex={-1} /></div>;
 }
 function TemplatePreview({ templateId, provider }: { templateId: BuilderConfiguration["layoutId"]; provider: BuilderConfiguration["provider"] }) {
-  const rendered = renderPageDocument(buildPageDesign(defaultBuilderConfiguration(templateId, provider)), { deviceCode: "XXXX-XXXX" });
+  const rendered = renderPageDocument(buildPageDesign(defaultBuilderConfiguration(templateId, provider)), { deviceCode: "Microsoft Entra" });
   return <iframe title="Template preview" sandbox="" srcDoc={`<style>${rendered.css}</style>${rendered.html}`} />;
 }
 function ProjectThumbnail({ document }: { document?: PageDocument }) {
   if (!document) return <div className="project-thumbnail"><strong>Preview unavailable</strong></div>;
-  const rendered = renderPageDocument(document, { deviceCode: "XXXX-XXXX" });
+  const rendered = renderPageDocument(document, { deviceCode: "Microsoft Entra" });
   return <div className="project-thumbnail rendered-project-thumbnail"><iframe title="Project thumbnail" sandbox="" srcDoc={`<style>${rendered.css}body{margin:0;overflow:hidden}</style>${rendered.html}`} tabIndex={-1} /></div>;
 }
