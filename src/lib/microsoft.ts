@@ -367,10 +367,11 @@ async function graphFetchWithToken<T>(
     const code = body?.error?.code as string | undefined;
     const message = body?.error?.message ?? "Microsoft Graph request failed";
     if (config().NODE_ENV === "development") {
+      const requestUrl = new URL(url);
       console.warn("[microsoft] Graph request failed", {
         target: "Microsoft Graph",
-        hostname: url.hostname,
-        path: url.pathname,
+        hostname: requestUrl.hostname,
+        path: requestUrl.pathname,
         status: response.status,
         code,
       });
