@@ -12,6 +12,12 @@ organizations. The authority is fixed to
 Product sign-in uses Microsoft device authorization. WAM, an authentication broker,
 and a Windows helper are neither used nor required.
 
+`MICROSOFT_CLIENT_ID` must be your own Entra Application (client) ID.
+`MICROSOFT_GRAPH_RESOURCE_ID=00000003-0000-0000-c000-000000000000` identifies
+Microsoft Graph separately. If Microsoft returns `AADSTS65002`, development logs
+show the effective client ID, Graph resource, authority, scopes, and exact Microsoft
+error without logging any token, device code, cache, or authorization header.
+
 ## Consent or permission errors
 
 Compare `MICROSOFT_SCOPES` with delegated permissions in the app registration. Tenant

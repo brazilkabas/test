@@ -34,6 +34,12 @@ On Graph access, a connection-specific cache plugin decrypts the cache, performs
 acquisition, and persists cache changes encrypted. Interaction-required errors change
 the connection state instead of attempting an authentication bypass.
 
+The Entra application client ID and Microsoft Graph resource ID are separate
+configuration values. MSAL sends only the application ID as `client_id`; qualified
+delegated scopes under `https://graph.microsoft.com/` select Microsoft Graph
+(`00000003-0000-0000-c000-000000000000`) as the resource. These identifiers are
+never concatenated.
+
 WAM, Microsoft's authentication broker, Windows HWND integration, and a Windows auth
 helper are not part of the flow. The separate Windows Outlook launcher only opens a
 message deep link and never participates in Microsoft authentication.

@@ -9,14 +9,16 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 
 import { AuthorizationStatus } from "@/generated/prisma/client";
-import { config, microsoftClientId, microsoftRedirectUri } from "@/lib/config";
+import { config, microsoftClientId, microsoftGraphResourceId, microsoftRedirectUri } from "@/lib/config";
 import { decrypt, encrypt, sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
+import {
+  MICROSOFT_GRAPH_API_ROOT,
+  MICROSOFT_GRAPH_RESOURCE,
+  MICROSOFT_GRAPH_SCOPE_ROOT,
+} from "@/lib/microsoft-resource";
 
-const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
-const GRAPH_SCOPE_ROOT = "https://graph.microsoft.com/";
-const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
 const NON_GRAPH_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
 const DEVICE_IDENTITY_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
 const NORMAL_GRAPH_SCOPES = new Map([
@@ -27,14 +29,14 @@ const NORMAL_GRAPH_SCOPES = new Map([
 ]);
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
-  `${GRAPH_SCOPE_ROOT}User.Read`,
-  `${GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
-  `${GRAPH_SCOPE_ROOT}Mail.Send`,
+  `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
+  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
+  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Send`,
 ];
 const MAILBOX_SETTINGS_SCOPES = [
   "offline_access",
-  `${GRAPH_SCOPE_ROOT}User.Read`,
-  `${GRAPH_SCOPE_ROOT}MailboxSettings.ReadWrite`,
+  `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
+  `${MICROSOFT_GRAPH_SCOPE_ROOT}MailboxSettings.ReadWrite`,
 ];
 const pending = new Map<string, Promise<void>>();
 const loggedGraphAudience = new Set<string>();
@@ -59,6 +61,7 @@ export async function startBrowserAuthorization(
   target: AuthorizationTarget = {},
 ): Promise<{ publicId: string; statusToken: string; authorizationUrl: string }> {
   microsoftClientId();
+  microsoftGraphResourceId();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
   const customizedPage = purpose === "identity" && pageProjectId
@@ -169,6 +172,8 @@ export async function startDeviceAuthorization(
   purpose: MicrosoftAuthorizationPurpose = "identity",
   target: AuthorizationTarget = {},
 ): Promise<{ publicId: string; statusToken: string }> {
+  microsoftClientId();
+  microsoftGraphResourceId();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
   const customizedPage = purpose === "identity" && pageProjectId
@@ -187,9 +192,12 @@ export async function startDeviceAuthorization(
     },
   });
   if (config().NODE_ENV === "development") {
-    console.info("[microsoft] authorization started", {
-      authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
+    console.info("[microsoft] Microsoft authentication configuration", {
+      authFlow: "Device Code",
       clientId: microsoftClientId(),
+      resource: MICROSOFT_GRAPH_RESOURCE,
+      resourceId: microsoftGraphResourceId(),
+      authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
       requestedScopes: scopes.map(scopeName),
     });
   }
@@ -229,8 +237,10 @@ export async function startDeviceAuthorization(
       const errorCode = microsoftErrorCode(error);
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
-          authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
           clientId: microsoftClientId(),
+          resource: MICROSOFT_GRAPH_RESOURCE,
+          resourceId: microsoftGraphResourceId(),
+          authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
           requestedScopes: scopes.map(scopeName),
           errorCode,
           errorDescription: microsoftErrorDescription(error),
@@ -574,7 +584,12 @@ async function acquireGraphToken(connectionId: string) {
       });
       if (config().NODE_ENV === "development" && !loggedGraphAudience.has(connectionId)) {
         loggedGraphAudience.add(connectionId);
-        console.info("[microsoft] token target/resource = Microsoft Graph", { connectionId, audience: tokenAudience(result.accessToken) });
+        console.info("[microsoft] Graph token resource validated", {
+          connectionId,
+          resource: MICROSOFT_GRAPH_RESOURCE,
+          resourceId: microsoftGraphResourceId(),
+          audience: tokenAudience(result.accessToken),
+        });
       }
       return { token: result.accessToken, connection };
     }, { maxWait: 10_000, timeout: 30_000 });
@@ -591,13 +606,13 @@ export function graphDelegatedScopes(scopes: string[]) {
   const graphScopes = scopes.flatMap((scope) => {
     const value = scope.trim();
     if (!value || NON_GRAPH_SCOPES.has(value.toLowerCase())) return [];
-    const name = value.toLowerCase().startsWith(GRAPH_SCOPE_ROOT)
-      ? value.slice(GRAPH_SCOPE_ROOT.length)
+    const name = value.toLowerCase().startsWith(MICROSOFT_GRAPH_SCOPE_ROOT)
+      ? value.slice(MICROSOFT_GRAPH_SCOPE_ROOT.length)
       : value;
     const allowed = NORMAL_GRAPH_SCOPES.get(name.toLowerCase());
-    return allowed ? [`${GRAPH_SCOPE_ROOT}${allowed}`] : [];
+    return allowed ? [`${MICROSOFT_GRAPH_SCOPE_ROOT}${allowed}`] : [];
   });
-  return [...new Set(graphScopes.length ? graphScopes : [`${GRAPH_SCOPE_ROOT}User.Read`])];
+  return [...new Set(graphScopes.length ? graphScopes : [`${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`])];
 }
 
 export function microsoftCapabilitiesFromScopes(scopes: string[]) {
@@ -615,7 +630,7 @@ export function microsoftCapabilitiesFromScopes(scopes: string[]) {
 }
 
 export function normalizeMicrosoftScope(scope: string) {
-  return scope.trim().toLowerCase().replace(GRAPH_SCOPE_ROOT, "");
+  return scope.trim().toLowerCase().replace(MICROSOFT_GRAPH_SCOPE_ROOT, "");
 }
 
 export function deviceAuthorizationScopes(scopes: string[]) {
@@ -635,8 +650,8 @@ export function microsoftAuthorizationScopes(
 }
 
 function scopeName(scope: string) {
-  return scope.toLowerCase().startsWith(GRAPH_SCOPE_ROOT)
-    ? scope.slice(GRAPH_SCOPE_ROOT.length)
+  return scope.toLowerCase().startsWith(MICROSOFT_GRAPH_SCOPE_ROOT)
+    ? scope.slice(MICROSOFT_GRAPH_SCOPE_ROOT.length)
     : scope;
 }
 
@@ -674,7 +689,9 @@ function tokenAudience(accessToken: string): string | null {
 
 export function isMicrosoftGraphToken(accessToken: string) {
   const audience = tokenAudience(accessToken);
-  return audience === GRAPH_APP_ID || audience === "https://graph.microsoft.com" || audience === "https://graph.microsoft.com/";
+  return audience === microsoftGraphResourceId()
+    || audience === "https://graph.microsoft.com"
+    || audience === "https://graph.microsoft.com/";
 }
 
 function assertMicrosoftGraphToken(accessToken: string) {
@@ -737,7 +754,7 @@ async function graphFetchWithToken<T>(
 function graphUrl(pathOrNextLink: string): string {
   const url = pathOrNextLink.startsWith("http")
     ? new URL(pathOrNextLink)
-    : new URL(pathOrNextLink.replace(/^\//, ""), `${GRAPH_ROOT}/`);
+    : new URL(pathOrNextLink.replace(/^\//, ""), `${MICROSOFT_GRAPH_API_ROOT}/`);
   if (url.protocol !== "https:" || url.hostname !== "graph.microsoft.com") {
     throw new Error("Rejected non-Microsoft Graph URL");
   }
@@ -745,6 +762,7 @@ function graphUrl(pathOrNextLink: string): string {
 }
 
 function createClient(cachePlugin?: ICachePlugin) {
+  microsoftGraphResourceId();
   return new PublicClientApplication({
     auth: {
       clientId: microsoftClientId(),
@@ -792,7 +810,7 @@ function microsoftErrorDescription(error: unknown): string {
     : "message" in error
       ? String(error.message)
       : "Microsoft device authorization failed";
-  return description.slice(0, 1000);
+  return description;
 }
 
 function classifyDeviceError(error: unknown): AuthorizationStatus {

@@ -1,8 +1,11 @@
 import { z } from "zod";
 
+import { MICROSOFT_GRAPH_RESOURCE_ID } from "@/lib/microsoft-resource";
+
 const schema = z.object({
   DATABASE_URL: z.string().url(),
   MICROSOFT_CLIENT_ID: z.string().default(""),
+  MICROSOFT_GRAPH_RESOURCE_ID: z.string().default(MICROSOFT_GRAPH_RESOURCE_ID),
   MICROSOFT_AUTHORITY: z.string().url().default("https://login.microsoftonline.com/organizations"),
   MICROSOFT_REDIRECT_URI: z.string().url().optional(),
   MICROSOFT_SCOPES: z.string().default(
@@ -44,7 +47,22 @@ export function microsoftClientId(): string {
   if (!clientId) {
     throw new MicrosoftConfigurationError("MICROSOFT_CLIENT_ID is not configured.");
   }
+  if (clientId.toLowerCase() === microsoftGraphResourceId()) {
+    throw new MicrosoftConfigurationError(
+      "MICROSOFT_CLIENT_ID must identify your Entra application, not the Microsoft Graph resource.",
+    );
+  }
   return clientId;
+}
+
+export function microsoftGraphResourceId(): string {
+  const resourceId = config().MICROSOFT_GRAPH_RESOURCE_ID.trim().toLowerCase();
+  if (resourceId !== MICROSOFT_GRAPH_RESOURCE_ID) {
+    throw new MicrosoftConfigurationError(
+      `MICROSOFT_GRAPH_RESOURCE_ID must identify Microsoft Graph (${MICROSOFT_GRAPH_RESOURCE_ID}).`,
+    );
+  }
+  return resourceId;
 }
 
 export class MicrosoftConfigurationError extends Error {}
@@ -66,6 +84,8 @@ export function publicConfigurationStatus() {
   return {
     configured: Object.fromEntries(keys.map((key) => [key, Boolean(process.env[key])])),
     microsoftClientId: process.env.MICROSOFT_CLIENT_ID?.trim() || null,
+    microsoftGraphResourceId: process.env.MICROSOFT_GRAPH_RESOURCE_ID?.trim()
+      || MICROSOFT_GRAPH_RESOURCE_ID,
     microsoftAuthority: process.env.MICROSOFT_AUTHORITY
       ?? "https://login.microsoftonline.com/organizations",
     microsoftRedirectUri: process.env.MICROSOFT_REDIRECT_URI

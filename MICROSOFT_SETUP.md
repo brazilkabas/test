@@ -4,9 +4,15 @@ Create or use a multitenant Microsoft Entra app registration. Set:
 
 ```text
 MICROSOFT_CLIENT_ID=<application/client ID>
+MICROSOFT_GRAPH_RESOURCE_ID=00000003-0000-0000-c000-000000000000
 MICROSOFT_AUTHORITY=https://login.microsoftonline.com/organizations
 MICROSOFT_SCOPES=openid,profile,email,offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite
 ```
+
+`MICROSOFT_CLIENT_ID` is your Entra app registration. The separate resource ID
+identifies Microsoft Graph and must never be used as, appended to, or substituted
+for the application client ID. OAuth v2 selects Graph by qualifying delegated
+permissions as `https://graph.microsoft.com/<scope>`.
 
 Do not configure a home-tenant GUID as the authority. After authentication,
 the tenant ID returned by Microsoft is still stored with the connection so accounts

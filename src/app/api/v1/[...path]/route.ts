@@ -11,7 +11,7 @@ import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePer
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
 import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
-import { config, MicrosoftConfigurationError, microsoftRedirectUri } from "@/lib/config";
+import { config, MicrosoftConfigurationError, microsoftGraphResourceId, microsoftRedirectUri } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
@@ -19,6 +19,7 @@ import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, normalizeMicrosoftScope, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
+import { MICROSOFT_GRAPH_RESOURCE } from "@/lib/microsoft-resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -297,6 +298,8 @@ async function route(request: NextRequest, path: string[]) {
       microsoft: {
         authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
         clientIdConfigured: Boolean(config().MICROSOFT_CLIENT_ID.trim()),
+        resource: MICROSOFT_GRAPH_RESOURCE,
+        resourceId: microsoftGraphResourceId(),
         redirectUri: microsoftRedirectUri(),
         scopes: config().microsoftScopes,
       },
