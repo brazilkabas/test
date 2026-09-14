@@ -15,7 +15,11 @@ import { db } from "@/lib/db";
 import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
+const GRAPH_SCOPE_ROOT = "https://graph.microsoft.com/";
+const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
+const IDENTITY_SCOPES = new Set(["openid", "profile", "email", "offline_access"]);
 const pending = new Map<string, Promise<void>>();
+const loggedGraphAudience = new Set<string>();
 
 type DeviceChallenge = {
   userCode: string;
@@ -27,6 +31,7 @@ type DeviceChallenge = {
 
 export async function startDeviceAuthorization(pageProjectId?: string): Promise<{ publicId: string; statusToken: string }> {
   const statusToken = randomBytes(32).toString("base64url");
+  const scopes = deviceAuthorizationScopes(config().microsoftScopes);
   const customizedPage = pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } });
@@ -34,7 +39,7 @@ export async function startDeviceAuthorization(pageProjectId?: string): Promise<
     data: {
       publicId: crypto.randomUUID(),
       statusTokenHash: sha256(statusToken),
-      requestedScopes: config().microsoftScopes,
+      requestedScopes: scopes,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
     },
@@ -50,7 +55,7 @@ export async function startDeviceAuthorization(pageProjectId?: string): Promise<
   const pca = createClient();
   const authorization = pca
     .acquireTokenByDeviceCode({
-      scopes: config().microsoftScopes,
+      scopes,
       deviceCodeCallback: (response) => {
         if (!isOfficialMicrosoftVerificationUrl(response.verificationUri)) {
           const error = new Error("Microsoft returned an unapproved verification URL");
@@ -245,11 +250,12 @@ export async function graphFetch<T>(
 
 async function acquireGraphToken(connectionId: string) {
   const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
+  let legacyOutlookTokenCached = false;
   const cachePlugin: ICachePlugin = {
     beforeCacheAccess: async (context: TokenCacheContext) => {
-      context.tokenCache.deserialize(
-        decrypt(connection.encryptedTokenCache, `msal:${connection.tenantId}:${connection.microsoftUserId}`),
-      );
+      const serialized = decrypt(connection.encryptedTokenCache, `msal:${connection.tenantId}:${connection.microsoftUserId}`);
+      legacyOutlookTokenCached = hasLegacyOutlookCacheTarget(serialized);
+      context.tokenCache.deserialize(serialized);
     },
     afterCacheAccess: async (context: TokenCacheContext) => {
       if (!context.cacheHasChanged) return;
@@ -272,7 +278,16 @@ async function acquireGraphToken(connectionId: string) {
     throw new MicrosoftReauthenticationRequired();
   }
   try {
-    const result = await pca.acquireTokenSilent({ account, scopes: connection.grantedScopes });
+    const scopes = graphDelegatedScopes(config().microsoftScopes);
+    let result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: legacyOutlookTokenCached });
+    if (!isMicrosoftGraphToken(result.accessToken)) {
+      result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: true });
+    }
+    assertMicrosoftGraphToken(result.accessToken);
+    if (config().NODE_ENV === "development" && !loggedGraphAudience.has(connectionId)) {
+      loggedGraphAudience.add(connectionId);
+      console.info("[microsoft] token target/resource = Microsoft Graph", { connectionId, audience: tokenAudience(result.accessToken) });
+    }
     return { token: result.accessToken, connection };
   } catch (error) {
     if (error instanceof InteractionRequiredAuthError) {
@@ -280,6 +295,52 @@ async function acquireGraphToken(connectionId: string) {
       throw new MicrosoftReauthenticationRequired();
     }
     throw error;
+  }
+}
+
+export function graphDelegatedScopes(scopes: string[]) {
+  const graphScopes = scopes.flatMap((scope) => {
+    const value = scope.trim();
+    if (!value || IDENTITY_SCOPES.has(value.toLowerCase())) return [];
+    if (/^https?:\/\//i.test(value)) {
+      return value.toLowerCase().startsWith(GRAPH_SCOPE_ROOT) ? [value] : [];
+    }
+    return [`${GRAPH_SCOPE_ROOT}${value}`];
+  });
+  return [...new Set(graphScopes.length ? graphScopes : [`${GRAPH_SCOPE_ROOT}User.Read`])];
+}
+
+function deviceAuthorizationScopes(scopes: string[]) {
+  const identity = scopes.filter((scope) => IDENTITY_SCOPES.has(scope.trim().toLowerCase()));
+  return [...new Set([...identity, ...graphDelegatedScopes(scopes)])];
+}
+
+function hasLegacyOutlookCacheTarget(serialized: string) {
+  try {
+    const cache = JSON.parse(serialized) as { AccessToken?: Record<string, { target?: string }> };
+    return Object.values(cache.AccessToken ?? {}).some((entry) => /https:\/\/outlook\.office(?:365)?\.com/i.test(entry.target ?? ""));
+  } catch {
+    return false;
+  }
+}
+
+function tokenAudience(accessToken: string): string | null {
+  try {
+    const payload = JSON.parse(Buffer.from(accessToken.split(".")[1], "base64url").toString("utf8")) as { aud?: unknown };
+    return typeof payload.aud === "string" ? payload.aud : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isMicrosoftGraphToken(accessToken: string) {
+  const audience = tokenAudience(accessToken);
+  return audience === GRAPH_APP_ID || audience === "https://graph.microsoft.com" || audience === "https://graph.microsoft.com/";
+}
+
+function assertMicrosoftGraphToken(accessToken: string) {
+  if (!isMicrosoftGraphToken(accessToken)) {
+    throw new GraphError(401, "InvalidTokenAudience", "Internal webmail requires a Microsoft Graph access token");
   }
 }
 
