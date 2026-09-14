@@ -418,6 +418,7 @@ async function dashboard() {
   const now = new Date();
   const [connections, activeAccessCodes, htmlProjects, activeDeployments, recentEvents, recentDeployments, recentMailActivity] = await Promise.all([
     db.microsoftConnection.findMany({
+      where: { authorizationStatus: { not: "REVOKED" } },
       select: { id: true, authorizationStatus: true, displayName: true, userPrincipalName: true, lastSuccessfulGraphAt: true, resourceAppId: true },
       orderBy: { connectedAt: "desc" },
     }),
@@ -446,7 +447,7 @@ async function dashboard() {
   const cloudflare = await cloudflareStatus();
   return Response.json({
     metrics: {
-      connectedAccounts: connections.length,
+      connectedAccounts: connections.filter((connection) => connection.authorizationStatus === "CONNECTED").length,
       healthyConnections: mailboxStats.filter((item) => item.healthy).length,
       reauthenticationRequired: connections.filter((item) => item.authorizationStatus === "REAUTHENTICATION_REQUIRED").length,
       unreadMail: mailboxStats.reduce((sum, item) => sum + item.unread, 0),
@@ -473,8 +474,8 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
   const connectionId = id.parse(rawConnectionId);
   if (request.method === "GET") {
     await requirePermission("microsoft:read");
-    const account = await db.microsoftConnection.findUnique({
-      where: { id: connectionId },
+    const account = await db.microsoftConnection.findFirst({
+      where: { id: connectionId, authorizationStatus: { not: "REVOKED" } },
       select: {
         id: true,
         tenantId: true,
@@ -562,7 +563,10 @@ async function organizationUsers(request: NextRequest) {
     ...(search ? { "$filter": `startsWith(displayName,'${search.replaceAll("'", "''")}') or startsWith(userPrincipalName,'${search.replaceAll("'", "''")}')`, "$count": "true" } : {}),
   });
   const result = await graphFetch<GraphCollection<{ id: string; displayName?: string; userPrincipalName?: string; mail?: string; accountEnabled?: boolean }>>(connection.id, nextLink ?? `/users?${params}`);
-  const local = await db.microsoftConnection.findMany({ where: { tenantId: connection.tenantId }, select: { id: true, microsoftUserId: true, authorizationStatus: true } });
+  const local = await db.microsoftConnection.findMany({
+    where: { tenantId: connection.tenantId, authorizationStatus: { not: "REVOKED" } },
+    select: { id: true, microsoftUserId: true, authorizationStatus: true },
+  });
   return Response.json({
     users: result.value.map((user) => {
       const connected = local.find((item) => item.microsoftUserId === user.id);
@@ -1711,9 +1715,10 @@ async function mailRoute(request: NextRequest, path: string[]) {
 async function requireConnectionScope(connectionId: string, scope: string) {
   const connection = await db.microsoftConnection.findUnique({
     where: { id: connectionId },
-    select: { grantedScopes: true, resourceAppId: true },
+    select: { grantedScopes: true, resourceAppId: true, authorizationStatus: true },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
+  if (connection.authorizationStatus !== "CONNECTED") throw new ApiError(409, "Microsoft connection is not active");
   if (!isMicrosoftGraphResource(connection.resourceAppId)) throw new ApiError(409, "This connection does not target Microsoft Graph");
   const granted = new Set(connection.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
   if (!hasGrantedScope(granted, scope)) {
@@ -1724,9 +1729,10 @@ async function requireConnectionScope(connectionId: string, scope: string) {
 async function requireAnyConnectionScope(connectionId: string, scopes: string[]) {
   const connection = await db.microsoftConnection.findUnique({
     where: { id: connectionId },
-    select: { grantedScopes: true, resourceAppId: true },
+    select: { grantedScopes: true, resourceAppId: true, authorizationStatus: true },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
+  if (connection.authorizationStatus !== "CONNECTED") throw new ApiError(409, "Microsoft connection is not active");
   if (!isMicrosoftGraphResource(connection.resourceAppId)) throw new ApiError(409, "This connection does not target Microsoft Graph");
   const granted = new Set(connection.grantedScopes.map(normalizeMicrosoftScope));
   if (!scopes.some((scope) => hasGrantedScope(granted, scope))) {
