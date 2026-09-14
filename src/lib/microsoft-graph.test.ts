@@ -5,6 +5,7 @@ import {
   graphDelegatedScopes,
   isMicrosoftGraphToken,
   microsoftAuthorizationScopes,
+  microsoftCapabilitiesFromScopes,
   microsoftErrorCode,
   microsoftProfileEmail,
 } from "@/lib/microsoft";
@@ -106,6 +107,22 @@ describe("Microsoft Graph token targeting", () => {
       errorCode: "invalid_grant",
       errorMessage: "AADSTS65002: Consent must be configured via preauthorization",
     })).toBe("AADSTS65002");
+  });
+
+  it("maps bare and qualified granted scopes into safe capabilities", () => {
+    expect(microsoftCapabilitiesFromScopes([
+      "https://graph.microsoft.com/User.Read",
+      "Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
+      "MailboxSettings.Read",
+    ])).toMatchObject({
+      canReadProfile: true,
+      canReadMail: true,
+      canModifyMail: true,
+      canSendMail: true,
+      canReadMailboxSettings: true,
+      canModifyMailboxSettings: false,
+    });
   });
 });
 

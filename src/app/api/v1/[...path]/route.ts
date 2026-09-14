@@ -17,7 +17,7 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftReauthenticationRequired, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
@@ -117,12 +117,14 @@ async function route(request: NextRequest, path: string[]) {
       purpose: z.enum(["identity", "mailbox", "mailbox-settings"]).default("identity"),
       connectionId: z.string().optional(),
     }).parse(await request.json().catch(() => ({})));
-    if (purpose !== "identity") {
-      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for incremental consent");
+    if (purpose !== "identity" && !connectionId) {
+      throw new ApiError(400, "A Microsoft connection is required for incremental consent");
+    }
+    if (connectionId) {
       const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
     }
-    const result = await startBrowserAuthorization(pageProjectId, purpose);
+    const result = await startBrowserAuthorization(pageProjectId, purpose, { connectionId });
     if (replacementSessionId) {
       await db.microsoftAuthorizationSession.updateMany({
         where: { publicId: replacementSessionId, status: "PENDING" },
@@ -153,12 +155,14 @@ async function route(request: NextRequest, path: string[]) {
       purpose: z.enum(["identity", "mailbox", "mailbox-settings"]).default("identity"),
       connectionId: z.string().optional(),
     }).parse(await request.json().catch(() => ({})));
-    if (purpose !== "identity") {
-      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for incremental consent");
+    if (purpose !== "identity" && !connectionId) {
+      throw new ApiError(400, "A Microsoft connection is required for incremental consent");
+    }
+    if (connectionId) {
       const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
     }
-    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose);
+    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose, { connectionId });
     const presentation = await authorizationStatus(publicId, statusToken);
     if (replacementSessionId && presentation?.userCode) {
       await db.microsoftAuthorizationSession.updateMany({ where: { publicId: replacementSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
@@ -217,10 +221,11 @@ async function route(request: NextRequest, path: string[]) {
       && !previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
     const incrementalMailbox = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
     const pageProjectId = previous.pageProject?.id;
-    if (!pageProjectId && !incrementalSettings && !incrementalMailbox) throw new ApiError(404, "Authorization session cannot be restarted");
+    if (!pageProjectId && !previous.connectionId && !incrementalSettings && !incrementalMailbox) throw new ApiError(404, "Authorization session cannot be restarted");
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
       pageProjectId,
       incrementalSettings ? "mailbox-settings" : incrementalMailbox ? "mailbox" : "identity",
+      { connectionId: previous.connectionId ?? undefined },
     );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
     const origin = request.headers.get("origin");
@@ -257,7 +262,12 @@ async function route(request: NextRequest, path: string[]) {
         lastSuccessfulGraphAt: true,
       },
     });
-    return Response.json({ accounts });
+    return Response.json({
+      accounts: accounts.map((account) => ({
+        ...account,
+        capabilities: microsoftCapabilitiesFromScopes(account.grantedScopes),
+      })),
+    });
   }
   if (key === "GET /microsoft/users") return organizationUsers(request);
   if (path[0] === "microsoft" && path[1] === "accounts" && path[2]) {
@@ -455,7 +465,7 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
         ...account,
         tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
         mailboxAvailability: account.authorizationStatus === "CONNECTED" ? "AVAILABLE" : "UNAVAILABLE",
-        capabilities: capabilitiesFromScopes(account.grantedScopes),
+        capabilities: microsoftCapabilitiesFromScopes(account.grantedScopes),
       },
     });
   }
@@ -468,6 +478,7 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
       data: {
         authorizationStatus: "REVOKED",
         encryptedTokenCache: encrypt("{}", `msal:${connection.tenantId}:${connection.microsoftUserId}`),
+        accessTokenExpiresAt: null,
       },
     });
     await audit({ actorId: actor.id, connectionId, action: "microsoft.connection.disconnected", targetType: "MicrosoftConnection", targetId: connectionId, result: "SUCCESS" });
@@ -594,18 +605,6 @@ async function updateUserRoles(request: NextRequest, rawUserId: string) {
   });
   await audit({ actorId: actor.id, action: "security.user.roles.updated", targetType: "User", targetId: userId, result: "SUCCESS", metadata: { roles: roles.join(",") } });
   return Response.json({ roles });
-}
-
-function capabilitiesFromScopes(scopes: string[]) {
-  const normalized = new Set(scopes.map((scope) => scope.toLowerCase()));
-  return {
-    readMail: normalized.has("mail.read") || normalized.has("mail.readwrite"),
-    writeMail: normalized.has("mail.readwrite"),
-    sendMail: normalized.has("mail.send"),
-    mailboxSettings: normalized.has("mailboxsettings.read") || normalized.has("mailboxsettings.readwrite"),
-    directory: normalized.has("user.readbasic.all") || normalized.has("user.read.all"),
-    sharedMail: normalized.has("mail.readwrite.shared") || normalized.has("mail.send.shared"),
-  };
 }
 
 async function microsoftDiagnostics(request: NextRequest, rawConnectionId: string) {

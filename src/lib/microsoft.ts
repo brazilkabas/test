@@ -41,6 +41,10 @@ const loggedGraphAudience = new Set<string>();
 
 export type MicrosoftAuthorizationPurpose = "identity" | "mailbox" | "mailbox-settings";
 
+type AuthorizationTarget = {
+  connectionId?: string;
+};
+
 type DeviceChallenge = {
   userCode: string;
   verificationUri: string;
@@ -52,6 +56,7 @@ type DeviceChallenge = {
 export async function startBrowserAuthorization(
   pageProjectId?: string,
   purpose: MicrosoftAuthorizationPurpose = "identity",
+  target: AuthorizationTarget = {},
 ): Promise<{ publicId: string; statusToken: string; authorizationUrl: string }> {
   microsoftClientId();
   const statusToken = randomBytes(32).toString("base64url");
@@ -68,6 +73,7 @@ export async function startBrowserAuthorization(
       requestedScopes: scopes,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
+      connectionId: target.connectionId,
     },
   });
   const codeVerifier = randomBytes(64).toString("base64url");
@@ -161,6 +167,7 @@ function assertMicrosoftAuthorizationUrl(value: string) {
 export async function startDeviceAuthorization(
   pageProjectId?: string,
   purpose: MicrosoftAuthorizationPurpose = "identity",
+  target: AuthorizationTarget = {},
 ): Promise<{ publicId: string; statusToken: string }> {
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
@@ -176,6 +183,7 @@ export async function startDeviceAuthorization(
       requestedScopes: scopes,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
+      connectionId: target.connectionId,
     },
   });
   if (config().NODE_ENV === "development") {
@@ -315,64 +323,146 @@ async function completeAuthorization(
   pca: PublicClientApplication,
   result: AuthenticationResult,
 ) {
-  const pendingSession = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
+  const pendingSession = await db.microsoftAuthorizationSession.findUnique({
+    where: { id: authorizationSessionId },
+    select: {
+      status: true,
+      expiresAt: true,
+      connection: {
+        select: {
+          id: true,
+          tenantId: true,
+          microsoftUserId: true,
+        },
+      },
+    },
+  });
   if (!pendingSession || pendingSession.status !== AuthorizationStatus.PENDING || pendingSession.expiresAt <= new Date()) return;
-  const profile = await graphFetchWithToken<{
+  let profile: {
     id: string;
     displayName?: string;
     userPrincipalName?: string;
     mail?: string;
     otherMails?: string[];
-  }>(result.accessToken, "/me?$select=id,displayName,userPrincipalName,mail,otherMails");
+  };
+  try {
+    profile = await graphFetchWithToken(
+      result.accessToken,
+      "/me?$select=id,displayName,userPrincipalName,mail,otherMails",
+    );
+  } catch (error) {
+    await db.auditEvent.create({
+      data: {
+        action: "microsoft.graph.verification_failed",
+        targetType: "MicrosoftAuthorizationSession",
+        targetId: authorizationSessionId,
+        requestId: crypto.randomUUID(),
+        result: "FAILURE",
+        metadata: {
+          microsoftCode: error instanceof GraphError ? error.code : undefined,
+          httpStatus: error instanceof GraphError ? error.status : undefined,
+        },
+      },
+    });
+    throw error;
+  }
+  if (
+    pendingSession.connection
+    && (
+      pendingSession.connection.tenantId !== result.tenantId
+      || pendingSession.connection.microsoftUserId !== profile.id
+    )
+  ) {
+    throw new MicrosoftAccountMismatch();
+  }
   const email = microsoftProfileEmail(
     profile,
     result.idTokenClaims as Record<string, unknown> | undefined,
   );
   const stillPending = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
   if (!stillPending || stillPending.status !== AuthorizationStatus.PENDING || stillPending.expiresAt <= new Date()) return;
+  const cachedAccounts = await pca.getTokenCache().getAllAccounts();
+  const authenticatedAccount = result.account
+    ?? cachedAccounts.find((account) => (
+      account.tenantId === result.tenantId
+      && account.localAccountId === profile.id
+    ));
+  if (!authenticatedAccount) throw new Error("Microsoft token cache did not contain the authenticated account");
   const encryptedTokenCache = encrypt(
     pca.getTokenCache().serialize(),
     `msal:${result.tenantId}:${profile.id}`,
   );
-  const existingConnection = await db.microsoftConnection.findUnique({
-    where: { tenantId_microsoftUserId: { tenantId: result.tenantId, microsoftUserId: profile.id } },
-    select: { grantedScopes: true },
-  });
-  const grantedScopes = [...new Set([...(existingConnection?.grantedScopes ?? []), ...result.scopes])];
-
-  const connection = await db.microsoftConnection.upsert({
-    where: {
-      tenantId_microsoftUserId: {
+  const now = new Date();
+  const connection = await db.$transaction(async (transaction) => {
+    const existingConnection = await transaction.microsoftConnection.findUnique({
+      where: { tenantId_microsoftUserId: { tenantId: result.tenantId, microsoftUserId: profile.id } },
+      select: { id: true, grantedScopes: true },
+    });
+    const grantedScopes = [...new Set([
+      ...(existingConnection?.grantedScopes ?? []),
+      ...result.scopes.map(scopeName),
+    ])];
+    const savedConnection = await transaction.microsoftConnection.upsert({
+      where: {
+        tenantId_microsoftUserId: {
+          tenantId: result.tenantId,
+          microsoftUserId: profile.id,
+        },
+      },
+      create: {
         tenantId: result.tenantId,
         microsoftUserId: profile.id,
+        microsoftHomeAccountId: authenticatedAccount.homeAccountId,
+        displayName: profile.displayName,
+        userPrincipalName: profile.userPrincipalName,
+        email,
+        encryptedTokenCache,
+        accessTokenExpiresAt: result.expiresOn,
+        grantedScopes,
+        connectedAt: now,
+        lastSuccessfulGraphAt: now,
+        authorizationStatus: AuthorizationStatus.CONNECTED,
       },
-    },
-    create: {
-      tenantId: result.tenantId,
-      microsoftUserId: profile.id,
-      displayName: profile.displayName,
-      userPrincipalName: profile.userPrincipalName,
-      email,
-      encryptedTokenCache,
-      grantedScopes,
-      lastSuccessfulGraphAt: new Date(),
-      authorizationStatus: AuthorizationStatus.CONNECTED,
-    },
-    update: {
-      displayName: profile.displayName,
-      userPrincipalName: profile.userPrincipalName,
-      email,
-      encryptedTokenCache,
-      grantedScopes,
-      connectedAt: new Date(),
-      lastSuccessfulGraphAt: new Date(),
-      authorizationStatus: AuthorizationStatus.CONNECTED,
-    },
-  });
-
-  await db.microsoftAuthorizationSession.update({
-    where: { id: authorizationSessionId },
-    data: { status: AuthorizationStatus.CONNECTED, connectionId: connection.id },
+      update: {
+        microsoftHomeAccountId: authenticatedAccount.homeAccountId,
+        displayName: profile.displayName,
+        userPrincipalName: profile.userPrincipalName,
+        email,
+        encryptedTokenCache,
+        accessTokenExpiresAt: result.expiresOn,
+        grantedScopes,
+        connectedAt: now,
+        lastSuccessfulGraphAt: now,
+        authorizationStatus: AuthorizationStatus.CONNECTED,
+      },
+    });
+    await transaction.microsoftAuthorizationSession.update({
+      where: { id: authorizationSessionId },
+      data: { status: AuthorizationStatus.CONNECTED, connectionId: savedConnection.id },
+    });
+    await transaction.auditEvent.createMany({
+      data: [
+        {
+          connectionId: savedConnection.id,
+          action: existingConnection ? "microsoft.connection.reauthenticated" : "microsoft.connection.connected",
+          targetType: "MicrosoftConnection",
+          targetId: savedConnection.id,
+          requestId: crypto.randomUUID(),
+          result: "SUCCESS",
+          metadata: { tenantId: result.tenantId, microsoftUserId: profile.id },
+        },
+        {
+          connectionId: savedConnection.id,
+          action: "microsoft.graph.verification_succeeded",
+          targetType: "MicrosoftConnection",
+          targetId: savedConnection.id,
+          requestId: crypto.randomUUID(),
+          result: "SUCCESS",
+          metadata: { endpoint: "/me" },
+        },
+      ],
+    });
+    return savedConnection;
   });
   if (config().NODE_ENV === "development") {
     console.info("[microsoft] authorization completed", {
@@ -382,17 +472,6 @@ async function completeAuthorization(
       tenantId: result.tenantId,
     });
   }
-  await db.auditEvent.create({
-    data: {
-      connectionId: connection.id,
-      action: "microsoft.connection.created",
-      targetType: "MicrosoftConnection",
-      targetId: connection.id,
-      requestId: crypto.randomUUID(),
-      result: "SUCCESS",
-      metadata: { tenantId: result.tenantId, microsoftUserId: profile.id },
-    },
-  });
 }
 
 export async function graphFetch<T>(
@@ -410,9 +489,17 @@ export async function graphFetch<T>(
     return result;
   } catch (error) {
     if (error instanceof GraphError && (error.status === 401 || error.code === "InvalidAuthenticationToken")) {
-      await db.microsoftConnection.update({
-        where: { id: connectionId },
-        data: { authorizationStatus: AuthorizationStatus.REAUTHENTICATION_REQUIRED },
+      await markReauthentication(connectionId);
+      await db.auditEvent.create({
+        data: {
+          connectionId,
+          action: "microsoft.graph.authentication_failed",
+          targetType: "MicrosoftConnection",
+          targetId: connectionId,
+          requestId: crypto.randomUUID(),
+          result: "FAILURE",
+          metadata: { microsoftCode: error.code, httpStatus: error.status },
+        },
       });
     }
     throw error;
@@ -421,6 +508,9 @@ export async function graphFetch<T>(
 
 async function acquireGraphToken(connectionId: string) {
   const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
+  if (connection.authorizationStatus !== AuthorizationStatus.CONNECTED) {
+    throw new MicrosoftReauthenticationRequired();
+  }
   let legacyOutlookTokenCached = false;
   const cachePlugin: ICachePlugin = {
     beforeCacheAccess: async (context: TokenCacheContext) => {
@@ -443,7 +533,11 @@ async function acquireGraphToken(connectionId: string) {
   };
   const pca = createClient(cachePlugin);
   const accounts = await pca.getTokenCache().getAllAccounts();
-  const account = accounts.find((item: AccountInfo) => item.localAccountId === connection.microsoftUserId);
+  const account = accounts.find((item: AccountInfo) => (
+    connection.microsoftHomeAccountId
+      ? item.homeAccountId === connection.microsoftHomeAccountId
+      : item.localAccountId === connection.microsoftUserId && item.tenantId === connection.tenantId
+  ));
   if (!account) {
     await markReauthentication(connectionId);
     throw new MicrosoftReauthenticationRequired();
@@ -455,6 +549,10 @@ async function acquireGraphToken(connectionId: string) {
       result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: true });
     }
     assertMicrosoftGraphToken(result.accessToken);
+    await db.microsoftConnection.update({
+      where: { id: connectionId },
+      data: { accessTokenExpiresAt: result.expiresOn },
+    });
     if (config().NODE_ENV === "development" && !loggedGraphAudience.has(connectionId)) {
       loggedGraphAudience.add(connectionId);
       console.info("[microsoft] token target/resource = Microsoft Graph", { connectionId, audience: tokenAudience(result.accessToken) });
@@ -480,6 +578,22 @@ export function graphDelegatedScopes(scopes: string[]) {
     return allowed ? [`${GRAPH_SCOPE_ROOT}${allowed}`] : [];
   });
   return [...new Set(graphScopes.length ? graphScopes : [`${GRAPH_SCOPE_ROOT}User.Read`])];
+}
+
+export function microsoftCapabilitiesFromScopes(scopes: string[]) {
+  const normalized = new Set(scopes.map((scope) => (
+    scope.toLowerCase().replace(GRAPH_SCOPE_ROOT, "")
+  )));
+  return {
+    canReadProfile: normalized.has("user.read"),
+    canReadMail: normalized.has("mail.read") || normalized.has("mail.readwrite"),
+    canModifyMail: normalized.has("mail.readwrite"),
+    canSendMail: normalized.has("mail.send"),
+    canReadMailboxSettings: normalized.has("mailboxsettings.read") || normalized.has("mailboxsettings.readwrite"),
+    canModifyMailboxSettings: normalized.has("mailboxsettings.readwrite"),
+    canReadDirectory: normalized.has("user.readbasic.all") || normalized.has("user.read.all"),
+    canUseSharedMail: normalized.has("mail.readwrite.shared") || normalized.has("mail.send.shared"),
+  };
 }
 
 export function deviceAuthorizationScopes(scopes: string[]) {
@@ -620,10 +734,25 @@ function createClient(cachePlugin?: ICachePlugin) {
 }
 
 async function markReauthentication(connectionId: string) {
-  await db.microsoftConnection.update({
-    where: { id: connectionId },
+  const changed = await db.microsoftConnection.updateMany({
+    where: {
+      id: connectionId,
+      authorizationStatus: AuthorizationStatus.CONNECTED,
+    },
     data: { authorizationStatus: AuthorizationStatus.REAUTHENTICATION_REQUIRED },
   });
+  if (changed.count) {
+    await db.auditEvent.create({
+      data: {
+        connectionId,
+        action: "microsoft.connection.reauthentication_required",
+        targetType: "MicrosoftConnection",
+        targetId: connectionId,
+        requestId: crypto.randomUUID(),
+        result: "FAILURE",
+      },
+    });
+  }
 }
 
 export function microsoftErrorCode(error: unknown): string {
@@ -657,6 +786,14 @@ export class GraphError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+class MicrosoftAccountMismatch extends Error {
+  readonly errorCode = "account_mismatch";
+
+  constructor() {
+    super("The Microsoft identity does not match the connected account being updated.");
   }
 }
 

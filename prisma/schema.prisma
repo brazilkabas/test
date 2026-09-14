@@ -134,10 +134,12 @@ model MicrosoftConnection {
   id                       String                @id @default(cuid())
   tenantId                 String
   microsoftUserId          String
+  microsoftHomeAccountId   String?
   displayName              String?
   userPrincipalName        String?
   email                    String?
   connectedAt              DateTime              @default(now())
+  accessTokenExpiresAt     DateTime?
   lastSuccessfulGraphAt    DateTime?
   authorizationStatus      AuthorizationStatus   @default(CONNECTED)
   encryptedTokenCache      Bytes
@@ -155,6 +157,7 @@ model MicrosoftConnection {
   auditEvents              AuditEvent[]
 
   @@unique([tenantId, microsoftUserId])
+  @@index([microsoftHomeAccountId])
   @@index([ownerId, authorizationStatus])
 }
 
