@@ -25,8 +25,21 @@ const NORMAL_GRAPH_SCOPES = new Map([
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
+const NORMAL_MAILBOX_SCOPES = [
+  "offline_access",
+  `${GRAPH_SCOPE_ROOT}User.Read`,
+  `${GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
+  `${GRAPH_SCOPE_ROOT}Mail.Send`,
+];
+const MAILBOX_SETTINGS_SCOPES = [
+  "offline_access",
+  `${GRAPH_SCOPE_ROOT}User.Read`,
+  `${GRAPH_SCOPE_ROOT}MailboxSettings.ReadWrite`,
+];
 const pending = new Map<string, Promise<void>>();
 const loggedGraphAudience = new Set<string>();
+
+export type MicrosoftAuthorizationPurpose = "mailbox" | "mailbox-settings";
 
 type DeviceChallenge = {
   userCode: string;
@@ -36,12 +49,17 @@ type DeviceChallenge = {
   message: string;
 };
 
-export async function startDeviceAuthorization(pageProjectId?: string): Promise<{ publicId: string; statusToken: string }> {
+export async function startDeviceAuthorization(
+  pageProjectId?: string,
+  purpose: MicrosoftAuthorizationPurpose = "mailbox",
+): Promise<{ publicId: string; statusToken: string }> {
   const statusToken = randomBytes(32).toString("base64url");
-  const scopes = deviceAuthorizationScopes(config().microsoftScopes);
-  const customizedPage = pageProjectId
+  const scopes = microsoftAuthorizationScopes(purpose);
+  const customizedPage = purpose === "mailbox" && pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
-    : await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } });
+    : purpose === "mailbox"
+      ? await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } })
+      : null;
   const session = await db.microsoftAuthorizationSession.create({
     data: {
       publicId: crypto.randomUUID(),
@@ -51,6 +69,12 @@ export async function startDeviceAuthorization(pageProjectId?: string): Promise<
       pageProjectId: customizedPage?.id,
     },
   });
+  if (config().NODE_ENV === "development") {
+    console.info("[microsoft] authorization started", {
+      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      requestedScopes: scopes.map(scopeName),
+    });
+  }
 
   let challengeReady!: (challenge: DeviceChallenge) => void;
   let challengeFailed!: (error: unknown) => void;
@@ -84,11 +108,19 @@ export async function startDeviceAuthorization(pageProjectId?: string): Promise<
     })
     .catch(async (error: unknown) => {
       challengeFailed(error);
+      const errorCode = microsoftErrorCode(error);
+      if (config().NODE_ENV === "development") {
+        console.warn("[microsoft] authorization failed", {
+          authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+          requestedScopes: scopes.map(scopeName),
+          errorCode,
+        });
+      }
       await db.microsoftAuthorizationSession.updateMany({
         where: { id: session.id, status: AuthorizationStatus.PENDING },
         data: {
           status: classifyDeviceError(error),
-          errorCode: microsoftErrorCode(error),
+          errorCode,
         },
       });
     })
@@ -130,6 +162,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
     where: { publicId },
     select: {
       statusTokenHash: true,
+      requestedScopes: true,
       publicId: true,
       userCode: true,
       verificationUri: true,
@@ -150,6 +183,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       data: { status: AuthorizationStatus.EXPIRED },
       select: {
         publicId: true,
+        requestedScopes: true,
         userCode: true,
         verificationUri: true,
         message: true,
@@ -183,6 +217,11 @@ async function completeAuthorization(
     pca.getTokenCache().serialize(),
     `msal:${result.tenantId}:${profile.id}`,
   );
+  const existingConnection = await db.microsoftConnection.findUnique({
+    where: { tenantId_microsoftUserId: { tenantId: result.tenantId, microsoftUserId: profile.id } },
+    select: { grantedScopes: true },
+  });
+  const grantedScopes = [...new Set([...(existingConnection?.grantedScopes ?? []), ...result.scopes])];
 
   const connection = await db.microsoftConnection.upsert({
     where: {
@@ -198,7 +237,7 @@ async function completeAuthorization(
       userPrincipalName: profile.userPrincipalName,
       email: profile.mail,
       encryptedTokenCache,
-      grantedScopes: result.scopes,
+      grantedScopes,
       lastSuccessfulGraphAt: new Date(),
       authorizationStatus: AuthorizationStatus.CONNECTED,
     },
@@ -207,7 +246,7 @@ async function completeAuthorization(
       userPrincipalName: profile.userPrincipalName,
       email: profile.mail,
       encryptedTokenCache,
-      grantedScopes: result.scopes,
+      grantedScopes,
       connectedAt: new Date(),
       lastSuccessfulGraphAt: new Date(),
       authorizationStatus: AuthorizationStatus.CONNECTED,
@@ -218,6 +257,13 @@ async function completeAuthorization(
     where: { id: authorizationSessionId },
     data: { status: AuthorizationStatus.CONNECTED, connectionId: connection.id },
   });
+  if (config().NODE_ENV === "development") {
+    console.info("[microsoft] authorization completed", {
+      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      requestedScopes: result.scopes.map(scopeName),
+      tenantId: result.tenantId,
+    });
+  }
   await db.auditEvent.create({
     data: {
       connectionId: connection.id,
@@ -285,7 +331,7 @@ async function acquireGraphToken(connectionId: string) {
     throw new MicrosoftReauthenticationRequired();
   }
   try {
-    const scopes = graphDelegatedScopes(config().microsoftScopes);
+    const scopes = graphDelegatedScopes(connection.grantedScopes);
     let result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: legacyOutlookTokenCached });
     if (!isMicrosoftGraphToken(result.accessToken)) {
       result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: true });
@@ -323,6 +369,18 @@ export function deviceAuthorizationScopes(scopes: string[]) {
     .map((scope) => scope.trim().toLowerCase())
     .filter((scope) => DEVICE_IDENTITY_SCOPES.has(scope));
   return [...new Set([...identity, ...graphDelegatedScopes(scopes)])];
+}
+
+export function microsoftAuthorizationScopes(purpose: MicrosoftAuthorizationPurpose) {
+  return purpose === "mailbox-settings"
+    ? [...MAILBOX_SETTINGS_SCOPES]
+    : [...NORMAL_MAILBOX_SCOPES];
+}
+
+function scopeName(scope: string) {
+  return scope.toLowerCase().startsWith(GRAPH_SCOPE_ROOT)
+    ? scope.slice(GRAPH_SCOPE_ROOT.length)
+    : scope;
 }
 
 function hasLegacyOutlookCacheTarget(serialized: string) {
@@ -434,9 +492,11 @@ async function markReauthentication(connectionId: string) {
 }
 
 function microsoftErrorCode(error: unknown): string {
-  return typeof error === "object" && error && "errorCode" in error
-    ? String(error.errorCode)
-    : "device_authorization_failed";
+  if (typeof error !== "object" || !error) return "device_authorization_failed";
+  const message = "errorMessage" in error ? String(error.errorMessage) : "message" in error ? String(error.message) : "";
+  const aadCode = message.match(/\bAADSTS(?:90094|90095|900941)\b/i)?.[0];
+  if (aadCode) return aadCode.toUpperCase();
+  return "errorCode" in error ? String(error.errorCode) : "device_authorization_failed";
 }
 
 function classifyDeviceError(error: unknown): AuthorizationStatus {

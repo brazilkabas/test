@@ -25,13 +25,14 @@ application unless a later confidential-client flow explicitly requires one.
 The initial milestone uses:
 
 - `User.Read` — signed-in profile;
-- `Mail.ReadWrite` — messages, attachments, folders, and user Inbox rules;
+- `Mail.ReadWrite` — messages, attachments, folders, and drafts;
 - `Mail.Send` — send and reply;
-- `MailboxSettings.ReadWrite` — mailbox settings;
 - `offline_access` — MSAL renewal.
 
-Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) should be added only
-when the shared-mailbox milestone is enabled. Directory permissions such as
+`MailboxSettings.ReadWrite` is requested separately only when a user opens and enables
+mailbox-settings or Inbox-rule editing. Shared permissions (`Mail.ReadWrite.Shared`,
+`Mail.Send.Shared`) are not requested because shared-mailbox workflows are not enabled.
+Directory permissions such as
 `User.ReadBasic.All` or `User.Read.All` are not needed for milestone one and may
 require administrator consent under tenant policy. Microsoft can also require admin
 consent for otherwise delegated permissions depending on tenant configuration.

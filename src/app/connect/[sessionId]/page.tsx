@@ -10,6 +10,7 @@ type Authorization = {
   userCode: string | null;
   verificationUri: string | null;
   message: string | null;
+  requestedScopes: string[];
   status: string;
   expiresAt: string;
   connectionId: string | null;
@@ -59,9 +60,15 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   }
 
   useEffect(() => {
-    if (authorization?.status === "EXPIRED") void restart();
+    if (authorization?.status === "EXPIRED" && !isMailboxSettingsAuthorization(authorization.requestedScopes)) void restart();
   }, [authorization?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (authorization?.status === "FAILED" && isAdminApprovalRequired(authorization.errorCode)) {
+    return <main className="center-page"><div className="card auth-card stack">
+      <h1>Administrator approval required</h1>
+      <p className="muted">Your Microsoft 365 organization requires an administrator to approve this app’s requested permissions. The application will not retry or request broader permissions automatically.</p>
+    </div></main>;
+  }
   const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
   if (authorization && customDocumentResult.success) {
     const destination = authorization.verificationUri ?? "#";
@@ -87,6 +94,12 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
 
   if (error) return <main className="center-page"><div className="card auth-card error">{error}</div></main>;
   if (!authorization) return <main className="center-page"><div className="card auth-card">Loading Microsoft authorization…</div></main>;
+  if (authorization.status === "EXPIRED" && isMailboxSettingsAuthorization(authorization.requestedScopes)) {
+    return <main className="center-page"><div className="card auth-card stack">
+      <h1>Microsoft verification expired</h1>
+      <p className="muted">Return to mailbox settings and start the optional permission request again.</p>
+    </div></main>;
+  }
   if (["EXPIRED", "FAILED", "CANCELLED"].includes(authorization.status)) {
     return (
       <main className="center-page">
@@ -123,4 +136,13 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       </div>
     </main>
   );
+}
+
+function isAdminApprovalRequired(errorCode: string | null) {
+  return Boolean(errorCode && /^AADSTS(?:90094|90095|900941)$/i.test(errorCode));
+}
+
+function isMailboxSettingsAuthorization(scopes: string[]) {
+  return scopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
+    && !scopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
 }

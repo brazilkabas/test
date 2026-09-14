@@ -96,8 +96,19 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "GET /dashboard") return dashboard();
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
-    const { pageProjectId, deploymentId, replacementSessionId } = z.object({ pageProjectId: z.string().optional(), deploymentId: z.string().optional(), replacementSessionId: z.string().optional() }).parse(await request.json().catch(() => ({})));
-    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId);
+    const { pageProjectId, deploymentId, replacementSessionId, purpose, connectionId } = z.object({
+      pageProjectId: z.string().optional(),
+      deploymentId: z.string().optional(),
+      replacementSessionId: z.string().optional(),
+      purpose: z.enum(["mailbox", "mailbox-settings"]).default("mailbox"),
+      connectionId: z.string().optional(),
+    }).parse(await request.json().catch(() => ({})));
+    if (purpose === "mailbox-settings") {
+      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for mailbox-settings consent");
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
+      if (!connection) throw new ApiError(404, "Microsoft connection not found");
+    }
+    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose);
     const presentation = await authorizationStatus(publicId, statusToken);
     if (replacementSessionId && presentation?.userCode) {
       await db.microsoftAuthorizationSession.updateMany({ where: { publicId: replacementSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
@@ -108,6 +119,7 @@ async function route(request: NextRequest, path: string[]) {
       targetType: "MicrosoftAuthorizationSession",
       targetId: publicId,
       result: "SUCCESS",
+      metadata: { purpose, ...(connectionId ? { connectionId } : {}) },
     });
     const connectUrl = `/connect/${publicId}?token=${encodeURIComponent(statusToken)}`;
     let publishedConnectUrl: string | undefined;
@@ -149,9 +161,15 @@ async function route(request: NextRequest, path: string[]) {
     const publicId = id.parse(path[2]);
     const oldToken = z.string().min(40).parse(request.nextUrl.searchParams.get("token"));
     const previous = await authorizationStatus(publicId, oldToken);
-    if (!previous?.pageProject?.id) throw new ApiError(404, "Authorization session not found");
+    if (!previous) throw new ApiError(404, "Authorization session not found");
     if (!["EXPIRED", "FAILED", "CANCELLED"].includes(previous.status)) throw new ApiError(409, "Authorization can only be restarted after it ends");
-    const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(previous.pageProject.id);
+    const incrementalSettings = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
+      && !previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
+    if (!previous.pageProject?.id && !incrementalSettings) throw new ApiError(404, "Authorization session cannot be restarted");
+    const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
+      previous.pageProject?.id,
+      incrementalSettings ? "mailbox-settings" : "mailbox",
+    );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
     const origin = request.headers.get("origin");
     let publishedConnectUrl: string | undefined;
@@ -1307,6 +1325,9 @@ async function mailRoute(request: NextRequest, path: string[]) {
   const actor = await requirePermission(request.method === "GET" ? "mail:read" : "mail:write");
   const tail = path.slice(2);
   const query = request.nextUrl.searchParams;
+  if (tail[0] === "settings" || tail[0] === "rules") {
+    await requireConnectionScope(connectionId, "MailboxSettings.ReadWrite");
+  }
 
   if (request.method === "GET" && tail[0] === "folders") {
     const [data, defaults] = await Promise.all([
@@ -1560,6 +1581,18 @@ async function mailRoute(request: NextRequest, path: string[]) {
     return request.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json({ rule });
   }
   throw new ApiError(404, "Mail route not found");
+}
+
+async function requireConnectionScope(connectionId: string, scope: string) {
+  const connection = await db.microsoftConnection.findUnique({
+    where: { id: connectionId },
+    select: { grantedScopes: true },
+  });
+  if (!connection) throw new ApiError(404, "Microsoft connection not found");
+  const granted = new Set(connection.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
+  if (!granted.has(scope.toLowerCase())) {
+    throw new ApiError(403, `${scope} permission is required. Enable this feature to request incremental Microsoft consent.`);
+  }
 }
 
 const ruleSchema = z.object({

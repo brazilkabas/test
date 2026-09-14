@@ -1,9 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import { api } from "@/components/api";
 import { ConfirmDialog, EmptyState, Modal, Skeleton, StatusBadge, useToast } from "@/components/design-system";
+import { MailboxSettingsConsent } from "@/components/mailbox-settings-consent";
 
 type Rule = { id: string; displayName: string; sequence: number; isEnabled: boolean; isReadOnly?: boolean; conditions: Record<string, unknown>; actions: Record<string, unknown>; exceptions?: Record<string, unknown> };
 
@@ -11,15 +12,32 @@ export function MailRulesAdmin({ connectionId }: { connectionId: string }) {
   const { notify } = useToast();
   const [rules, setRules] = useState<Rule[]>([]);
   const [loading, setLoading] = useState(true);
+  const [permissionReady, setPermissionReady] = useState<boolean | null>(null);
   const [editing, setEditing] = useState<Rule | "new" | null>(null);
   const [deleting, setDeleting] = useState<Rule | null>(null);
 
-  async function load() {
+  const load = useCallback(async () => {
     try { setRules((await api<{ rules: Rule[] }>(`/mail/${connectionId}/rules`)).rules); }
     catch (error) { notify({ title: "Rules unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
     finally { setLoading(false); }
-  }
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connectionId, notify]);
+  useEffect(() => {
+    void api<{ account: { grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
+      .then(({ account }) => {
+        const granted = account.grantedScopes.map((scope) => scope.toLowerCase().replace("https://graph.microsoft.com/", ""));
+        const ready = granted.includes("mailboxsettings.readwrite");
+        setPermissionReady(ready);
+        if (ready) void load();
+        else setLoading(false);
+      })
+      .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
+  }, [connectionId, load, notify]);
+  const onPermissionGranted = useCallback(() => {
+    setPermissionReady(true);
+    setLoading(true);
+    void load();
+    notify({ title: "Inbox rules enabled", tone: "success" });
+  }, [load, notify]);
 
   async function toggle(rule: Rule) {
     try {
@@ -53,6 +71,8 @@ export function MailRulesAdmin({ connectionId }: { connectionId: string }) {
     catch (error) { notify({ title: "Rule delete failed", message: error instanceof Error ? error.message : undefined, tone: "error" }); }
   }
 
+  if (permissionReady === null) return <section className="panel panel-body"><Skeleton lines={6} /></section>;
+  if (!permissionReady) return <MailboxSettingsConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
   return <>
     <div className="page-header"><div><h1>Inbox rules</h1><p className="muted">User mailbox rules exposed by Microsoft Graph. These are not Exchange transport rules.</p></div><button onClick={() => setEditing("new")}>+ Create rule</button></div>
     <section className="panel">{loading ? <div className="panel-body"><Skeleton lines={6} /></div> : !rules.length ? <EmptyState icon="⇢" title="No Inbox rules" description="Create a supported user Inbox rule for this mailbox." action={<button onClick={() => setEditing("new")}>Create rule</button>} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Priority</th><th>Name</th><th>Status</th><th>Conditions</th><th>Actions</th><th /></tr></thead><tbody>{rules.map((rule) => <tr key={rule.id}><td>{rule.sequence}</td><td><strong>{rule.displayName}</strong>{rule.isReadOnly && <><br /><small className="muted">Read-only in Graph</small></>}</td><td><StatusBadge status={rule.isEnabled ? "Enabled" : "Disabled"} /></td><td>{summary(rule.conditions)}</td><td>{summary(rule.actions)}</td><td><div className="row"><button className="secondary button-sm" disabled={rule.isReadOnly} onClick={() => void toggle(rule)}>{rule.isEnabled ? "Disable" : "Enable"}</button><button className="secondary button-sm" disabled={rule.isReadOnly} onClick={() => setEditing(rule)}>Edit</button><button className="secondary button-sm error" disabled={rule.isReadOnly} onClick={() => setDeleting(rule)}>Delete</button></div></td></tr>)}</tbody></table></div>}</section>

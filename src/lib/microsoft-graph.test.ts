@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { deviceAuthorizationScopes, graphDelegatedScopes, isMicrosoftGraphToken } from "@/lib/microsoft";
+import {
+  deviceAuthorizationScopes,
+  graphDelegatedScopes,
+  isMicrosoftGraphToken,
+  microsoftAuthorizationScopes,
+} from "@/lib/microsoft";
 
 describe("Microsoft Graph token targeting", () => {
   it("qualifies Graph scopes and rejects legacy Outlook resource scopes", () => {
@@ -12,10 +17,25 @@ describe("Microsoft Graph token targeting", () => {
       "https://graph.microsoft.com/Mail.Send",
       "https://outlook.office365.com/Mail.Read",
       "User.Read.All",
+      "https://graph.microsoft.com/.default",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.ReadWrite",
       "https://graph.microsoft.com/Mail.Send",
+    ]);
+  });
+
+  it("keeps mailbox settings out of normal mailbox authorization", () => {
+    expect(microsoftAuthorizationScopes("mailbox")).toEqual([
+      "offline_access",
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
+    ]);
+    expect(microsoftAuthorizationScopes("mailbox-settings")).toEqual([
+      "offline_access",
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/MailboxSettings.ReadWrite",
     ]);
   });
 
