@@ -112,7 +112,7 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
           <label>Type DELETE to confirm.<input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} autoComplete="off" /></label>
           <div className="row" style={{ justifyContent: "flex-end" }}>
             <button type="button" className="secondary" disabled={deleting} onClick={() => setDisconnect(null)}>Cancel</button>
-            <button type="button" className="error" disabled={deleteConfirmation !== "DELETE" || deleting} onClick={() => void confirmDisconnect()}>{deleting ? "Deleting…" : "Delete access"}</button>
+            <button type="button" className="destructive-button" disabled={deleteConfirmation !== "DELETE" || deleting} onClick={() => void confirmDisconnect()}>{deleting ? "Deleting…" : "Delete access"}</button>
           </div>
         </div>
       </Modal>
