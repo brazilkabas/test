@@ -323,11 +323,21 @@ async function completeAuthorization(
   pca: PublicClientApplication,
   result: AuthenticationResult,
 ) {
+  const claimed = await db.microsoftAuthorizationSession.updateMany({
+    where: {
+      id: authorizationSessionId,
+      status: { in: [AuthorizationStatus.PENDING, AuthorizationStatus.EXPIRED] },
+      errorCode: null,
+    },
+    data: {
+      status: AuthorizationStatus.PENDING,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+    },
+  });
+  if (!claimed.count) return;
   const pendingSession = await db.microsoftAuthorizationSession.findUnique({
     where: { id: authorizationSessionId },
     select: {
-      status: true,
-      expiresAt: true,
       connection: {
         select: {
           id: true,
@@ -337,7 +347,7 @@ async function completeAuthorization(
       },
     },
   });
-  if (!pendingSession || pendingSession.status !== AuthorizationStatus.PENDING || pendingSession.expiresAt <= new Date()) return;
+  if (!pendingSession) return;
   let profile: {
     id: string;
     displayName?: string;
@@ -366,6 +376,7 @@ async function completeAuthorization(
     });
     throw error;
   }
+  if (!profile.id?.trim()) throw new Error("Microsoft Graph returned no user object ID");
   if (
     pendingSession.connection
     && (
@@ -379,8 +390,6 @@ async function completeAuthorization(
     profile,
     result.idTokenClaims as Record<string, unknown> | undefined,
   );
-  const stillPending = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
-  if (!stillPending || stillPending.status !== AuthorizationStatus.PENDING || stillPending.expiresAt <= new Date()) return;
   const cachedAccounts = await pca.getTokenCache().getAllAccounts();
   const authenticatedAccount = result.account
     ?? cachedAccounts.find((account) => (
@@ -388,6 +397,12 @@ async function completeAuthorization(
       && account.localAccountId === profile.id
     ));
   if (!authenticatedAccount) throw new Error("Microsoft token cache did not contain the authenticated account");
+  if (
+    authenticatedAccount.tenantId !== result.tenantId
+    || authenticatedAccount.localAccountId !== profile.id
+  ) {
+    throw new MicrosoftAccountMismatch();
+  }
   const encryptedTokenCache = encrypt(
     pca.getTokenCache().serialize(),
     `msal:${result.tenantId}:${profile.id}`,
@@ -436,10 +451,15 @@ async function completeAuthorization(
         authorizationStatus: AuthorizationStatus.CONNECTED,
       },
     });
-    await transaction.microsoftAuthorizationSession.update({
-      where: { id: authorizationSessionId },
+    const completed = await transaction.microsoftAuthorizationSession.updateMany({
+      where: {
+        id: authorizationSessionId,
+        status: AuthorizationStatus.PENDING,
+        errorCode: null,
+      },
       data: { status: AuthorizationStatus.CONNECTED, connectionId: savedConnection.id },
     });
+    if (!completed.count) throw new MicrosoftAuthorizationCancelled();
     await transaction.auditEvent.createMany({
       data: [
         {
@@ -507,59 +527,59 @@ export async function graphFetch<T>(
 }
 
 async function acquireGraphToken(connectionId: string) {
-  const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
-  if (connection.authorizationStatus !== AuthorizationStatus.CONNECTED) {
-    throw new MicrosoftReauthenticationRequired();
-  }
-  let legacyOutlookTokenCached = false;
-  const cachePlugin: ICachePlugin = {
-    beforeCacheAccess: async (context: TokenCacheContext) => {
-      const serialized = decrypt(connection.encryptedTokenCache, `msal:${connection.tenantId}:${connection.microsoftUserId}`);
-      legacyOutlookTokenCached = hasLegacyOutlookCacheTarget(serialized);
-      context.tokenCache.deserialize(serialized);
-    },
-    afterCacheAccess: async (context: TokenCacheContext) => {
-      if (!context.cacheHasChanged) return;
-      await db.microsoftConnection.update({
-        where: { id: connectionId },
-        data: {
-          encryptedTokenCache: encrypt(
-            context.tokenCache.serialize(),
-            `msal:${connection.tenantId}:${connection.microsoftUserId}`,
-          ),
-        },
-      });
-    },
-  };
-  const pca = createClient(cachePlugin);
-  const accounts = await pca.getTokenCache().getAllAccounts();
-  const account = accounts.find((item: AccountInfo) => (
-    connection.microsoftHomeAccountId
-      ? item.homeAccountId === connection.microsoftHomeAccountId
-      : item.localAccountId === connection.microsoftUserId && item.tenantId === connection.tenantId
-  ));
-  if (!account) {
-    await markReauthentication(connectionId);
-    throw new MicrosoftReauthenticationRequired();
-  }
   try {
-    const scopes = graphDelegatedScopes(connection.grantedScopes);
-    let result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: legacyOutlookTokenCached });
-    if (!isMicrosoftGraphToken(result.accessToken)) {
-      result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: true });
-    }
-    assertMicrosoftGraphToken(result.accessToken);
-    await db.microsoftConnection.update({
-      where: { id: connectionId },
-      data: { accessTokenExpiresAt: result.expiresOn },
-    });
-    if (config().NODE_ENV === "development" && !loggedGraphAudience.has(connectionId)) {
-      loggedGraphAudience.add(connectionId);
-      console.info("[microsoft] token target/resource = Microsoft Graph", { connectionId, audience: tokenAudience(result.accessToken) });
-    }
-    return { token: result.accessToken, connection };
+    return await db.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${connectionId}))`;
+      const connection = await transaction.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
+      if (connection.authorizationStatus !== AuthorizationStatus.CONNECTED) {
+        throw new MicrosoftReauthenticationRequired();
+      }
+      let legacyOutlookTokenCached = false;
+      const cachePlugin: ICachePlugin = {
+        beforeCacheAccess: async (context: TokenCacheContext) => {
+          const serialized = decrypt(connection.encryptedTokenCache, `msal:${connection.tenantId}:${connection.microsoftUserId}`);
+          legacyOutlookTokenCached = hasLegacyOutlookCacheTarget(serialized);
+          context.tokenCache.deserialize(serialized);
+        },
+        afterCacheAccess: async (context: TokenCacheContext) => {
+          if (!context.cacheHasChanged) return;
+          await transaction.microsoftConnection.update({
+            where: { id: connectionId },
+            data: {
+              encryptedTokenCache: encrypt(
+                context.tokenCache.serialize(),
+                `msal:${connection.tenantId}:${connection.microsoftUserId}`,
+              ),
+            },
+          });
+        },
+      };
+      const pca = createClient(cachePlugin);
+      const accounts = await pca.getTokenCache().getAllAccounts();
+      const account = accounts.find((item: AccountInfo) => (
+        connection.microsoftHomeAccountId
+          ? item.homeAccountId === connection.microsoftHomeAccountId
+          : item.localAccountId === connection.microsoftUserId && item.tenantId === connection.tenantId
+      ));
+      if (!account) throw new MicrosoftReauthenticationRequired();
+      const scopes = graphDelegatedScopes(connection.grantedScopes);
+      let result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: legacyOutlookTokenCached });
+      if (!isMicrosoftGraphToken(result.accessToken)) {
+        result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: true });
+      }
+      assertMicrosoftGraphToken(result.accessToken);
+      await transaction.microsoftConnection.update({
+        where: { id: connectionId },
+        data: { accessTokenExpiresAt: result.expiresOn },
+      });
+      if (config().NODE_ENV === "development" && !loggedGraphAudience.has(connectionId)) {
+        loggedGraphAudience.add(connectionId);
+        console.info("[microsoft] token target/resource = Microsoft Graph", { connectionId, audience: tokenAudience(result.accessToken) });
+      }
+      return { token: result.accessToken, connection };
+    }, { maxWait: 10_000, timeout: 30_000 });
   } catch (error) {
-    if (error instanceof InteractionRequiredAuthError) {
+    if (error instanceof InteractionRequiredAuthError || error instanceof MicrosoftReauthenticationRequired) {
       await markReauthentication(connectionId);
       throw new MicrosoftReauthenticationRequired();
     }
@@ -581,9 +601,7 @@ export function graphDelegatedScopes(scopes: string[]) {
 }
 
 export function microsoftCapabilitiesFromScopes(scopes: string[]) {
-  const normalized = new Set(scopes.map((scope) => (
-    scope.toLowerCase().replace(GRAPH_SCOPE_ROOT, "")
-  )));
+  const normalized = new Set(scopes.map(normalizeMicrosoftScope));
   return {
     canReadProfile: normalized.has("user.read"),
     canReadMail: normalized.has("mail.read") || normalized.has("mail.readwrite"),
@@ -594,6 +612,10 @@ export function microsoftCapabilitiesFromScopes(scopes: string[]) {
     canReadDirectory: normalized.has("user.readbasic.all") || normalized.has("user.read.all"),
     canUseSharedMail: normalized.has("mail.readwrite.shared") || normalized.has("mail.send.shared"),
   };
+}
+
+export function normalizeMicrosoftScope(scope: string) {
+  return scope.trim().toLowerCase().replace(GRAPH_SCOPE_ROOT, "");
 }
 
 export function deviceAuthorizationScopes(scopes: string[]) {
@@ -794,6 +816,14 @@ class MicrosoftAccountMismatch extends Error {
 
   constructor() {
     super("The Microsoft identity does not match the connected account being updated.");
+  }
+}
+
+class MicrosoftAuthorizationCancelled extends Error {
+  readonly errorCode = "authorization_cancelled";
+
+  constructor() {
+    super("Microsoft authorization was cancelled before account storage completed.");
   }
 }
 

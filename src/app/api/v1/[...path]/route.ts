@@ -17,7 +17,7 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftReauthenticationRequired, normalizeMicrosoftScope, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
@@ -471,15 +471,22 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
   }
   if (request.method === "DELETE") {
     const actor = await requirePermission("microsoft:manage");
-    const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId } });
-    if (!connection) throw new ApiError(404, "Microsoft account not found");
-    await db.microsoftConnection.update({
-      where: { id: connectionId },
-      data: {
-        authorizationStatus: "REVOKED",
-        encryptedTokenCache: encrypt("{}", `msal:${connection.tenantId}:${connection.microsoftUserId}`),
-        accessTokenExpiresAt: null,
-      },
+    await db.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${connectionId}))`;
+      const connection = await transaction.microsoftConnection.findUnique({ where: { id: connectionId } });
+      if (!connection) throw new ApiError(404, "Microsoft account not found");
+      await transaction.microsoftAuthorizationSession.updateMany({
+        where: { connectionId, status: "PENDING" },
+        data: { status: "CANCELLED", errorCode: "ACCOUNT_DISCONNECTED" },
+      });
+      await transaction.microsoftConnection.update({
+        where: { id: connectionId },
+        data: {
+          authorizationStatus: "REVOKED",
+          encryptedTokenCache: encrypt("{}", `msal:${connection.tenantId}:${connection.microsoftUserId}`),
+          accessTokenExpiresAt: null,
+        },
+      });
     });
     await audit({ actorId: actor.id, connectionId, action: "microsoft.connection.disconnected", targetType: "MicrosoftConnection", targetId: connectionId, result: "SUCCESS" });
     return new Response(null, { status: 204 });
@@ -491,9 +498,9 @@ async function organizationUsers(request: NextRequest) {
   await requirePermission("microsoft:read");
   const requestedId = request.nextUrl.searchParams.get("connectionId");
   const connections = await db.microsoftConnection.findMany({ where: { authorizationStatus: "CONNECTED" } });
-  const connection = requestedId ? connections.find((item) => item.id === requestedId) : connections.find((item) => item.grantedScopes.some((scope) => ["user.readbasic.all", "user.read.all"].includes(scope.toLowerCase())));
+  const connection = requestedId ? connections.find((item) => item.id === requestedId) : connections.find((item) => item.grantedScopes.some((scope) => ["user.readbasic.all", "user.read.all"].includes(normalizeMicrosoftScope(scope))));
   if (!connection) throw new ApiError(403, "Directory listing requires a connected account with User.ReadBasic.All or User.Read.All");
-  const broad = connection.grantedScopes.some((scope) => scope.toLowerCase() === "user.read.all");
+  const broad = connection.grantedScopes.some((scope) => normalizeMicrosoftScope(scope) === "user.read.all");
   const nextLink = request.nextUrl.searchParams.get("nextLink");
   const search = request.nextUrl.searchParams.get("search")?.replaceAll('"', "").slice(0, 100);
   const params = new URLSearchParams({
@@ -634,7 +641,7 @@ async function microsoftDiagnostics(request: NextRequest, rawConnectionId: strin
     { id: "settings", label: "Mailbox settings", path: "/me/mailboxSettings?$select=timeZone,language", requiredScope: "MailboxSettings.ReadWrite" },
     { id: "rules", label: "Inbox rules", path: "/me/mailFolders/inbox/messageRules", requiredScope: "MailboxSettings.ReadWrite" },
   ];
-  const granted = new Set(connection.grantedScopes.map((scope) => scope.toLowerCase()));
+  const granted = new Set(connection.grantedScopes.map(normalizeMicrosoftScope));
   const results = [];
   for (const check of checks) {
     if (!granted.has(check.requiredScope.toLowerCase())) {
