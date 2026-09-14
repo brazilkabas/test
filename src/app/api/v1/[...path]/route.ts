@@ -165,21 +165,22 @@ async function route(request: NextRequest, path: string[]) {
     if (!["EXPIRED", "FAILED", "CANCELLED"].includes(previous.status)) throw new ApiError(409, "Authorization can only be restarted after it ends");
     const incrementalSettings = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
       && !previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
-    if (!previous.pageProject?.id && !incrementalSettings) throw new ApiError(404, "Authorization session cannot be restarted");
+    const pageProjectId = previous.pageProject?.id;
+    if (!pageProjectId && !incrementalSettings) throw new ApiError(404, "Authorization session cannot be restarted");
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
-      previous.pageProject?.id,
+      pageProjectId,
       incrementalSettings ? "mailbox-settings" : "mailbox",
     );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
     const origin = request.headers.get("origin");
     let publishedConnectUrl: string | undefined;
     const headers: Record<string, string> = {};
-    if (origin) {
+    if (origin && pageProjectId) {
       try {
         const hostname = new URL(origin).hostname;
-        const deployment = await db.cloudflareDeployment.findFirst({ where: { hostname, projectId: previous.pageProject.id, status: "ACTIVE" }, select: { id: true } });
+        const deployment = await db.cloudflareDeployment.findFirst({ where: { hostname, projectId: pageProjectId, status: "ACTIVE" }, select: { id: true } });
         if (deployment) {
-          publishedConnectUrl = await publishMicrosoftSessionPage({ pageProjectId: previous.pageProject.id, deploymentId: deployment.id, publicId: nextPublicId, statusToken });
+          publishedConnectUrl = await publishMicrosoftSessionPage({ pageProjectId, deploymentId: deployment.id, publicId: nextPublicId, statusToken });
           headers["Access-Control-Allow-Origin"] = origin;
           headers.Vary = "Origin";
         }
