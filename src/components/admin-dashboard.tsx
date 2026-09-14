@@ -27,8 +27,8 @@ export function AdminDashboard() {
   async function startConnection() {
     setBusy(true); setError("");
     try {
-      const result = await api<{ connectUrl: string }>("/microsoft/device/start", { method: "POST", body: "{}" });
-      window.location.assign(result.connectUrl);
+      const result = await api<{ authorizationUrl: string }>("/microsoft/auth/start", { method: "POST", body: "{}" });
+      window.location.assign(result.authorizationUrl);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to start authorization");
       notify({ title: "Connection could not start", message: caught instanceof Error ? caught.message : undefined, tone: "error" });
@@ -57,7 +57,7 @@ export function AdminDashboard() {
     <div className="dashboard-sections">
       <section className="panel dashboard-connections">
         <header className="panel-header"><div><h2>Recent Microsoft connections</h2><small>Connected employee identities</small></div><Link href="/admin/accounts">View all</Link></header>
-        {!data ? <div className="panel-body"><Skeleton lines={4} /></div> : data.connections.length === 0 ? <EmptyState icon="◎" title="No Microsoft accounts" description="Start the official Microsoft device-code flow to connect an employee mailbox." action={<button onClick={() => void startConnection()}>Connect account</button>} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Employee</th><th>Status</th><th>Last Graph activity</th><th /></tr></thead><tbody>{data.connections.map((account) => <tr key={account.id}><td><div className="identity-cell"><span className="avatar">{(account.displayName ?? account.userPrincipalName ?? "?")[0]}</span><span><strong>{account.displayName ?? "Unnamed account"}</strong><small>{account.userPrincipalName}</small></span></div></td><td><StatusBadge status={account.authorizationStatus} /></td><td>{account.lastSuccessfulGraphAt ? new Date(account.lastSuccessfulGraphAt).toLocaleString() : "No activity yet"}</td><td><Link className="table-action" href={`/mail/${account.id}`}>Open mail</Link></td></tr>)}</tbody></table></div>}
+        {!data ? <div className="panel-body"><Skeleton lines={4} /></div> : data.connections.length === 0 ? <EmptyState icon="◎" title="No Microsoft accounts" description="Connect an employee with Microsoft Entra in the browser." action={<button onClick={() => void startConnection()}>Connect account</button>} /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Employee</th><th>Status</th><th>Last Graph activity</th><th /></tr></thead><tbody>{data.connections.map((account) => <tr key={account.id}><td><div className="identity-cell"><span className="avatar">{(account.displayName ?? account.userPrincipalName ?? "?")[0]}</span><span><strong>{account.displayName ?? "Unnamed account"}</strong><small>{account.userPrincipalName}</small></span></div></td><td><StatusBadge status={account.authorizationStatus} /></td><td>{account.lastSuccessfulGraphAt ? new Date(account.lastSuccessfulGraphAt).toLocaleString() : "No activity yet"}</td><td><Link className="table-action" href={`/mail/${account.id}`}>Open mail</Link></td></tr>)}</tbody></table></div>}
       </section>
       <HealthPanel health={data?.health} />
       <ActivityPanel title="Recent mail activity" events={data?.recentMailActivity} empty="No mail operations recorded yet." />

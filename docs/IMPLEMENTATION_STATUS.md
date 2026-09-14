@@ -73,10 +73,10 @@ marked until exercised with a real tenant, Cloudflare zone, or Windows machine.
 
 | Requirement | Status | Locally Tested | Microsoft/Windows Live Tested | Requires Configuration | Known limitations |
 |---|---|---:|---:|---:|---|
-| Official MSAL device authorization | Complete / live required | Build + browser | Genuine code issued; sign-in not completed | Entra tenant/client | Live builder mode successfully issued and displayed a real Microsoft user code with countdown. Completion still requires interactive tenant sign-in. Backend acquisition remains process-local. |
+| Official MSAL browser authorization | Complete / live required | Unit/build | Sign-in not completed | Entra client + redirect URI | Authorization code with PKCE is the primary cross-platform flow. Microsoft handles sign-in, MFA, Conditional Access, consent, and account selection. Device code remains an explicit headless/restricted-browser fallback. |
 | Encrypted MSAL cache | Complete / live required | AES-GCM unit | No | Encryption key + Entra | Silent refresh and interaction-required state need tenant validation. |
 | Token-protected status polling | Complete | Build | No | No | Independent 256-bit status bearer; only its hash is persisted. |
-| Project-themed live connect page | Complete / live required | Render/browser | No | Entra | Real code, Copy, official Microsoft destination, waiting/success/expired/failed/restart and success redirect paths exist. |
+| Browser auth callback and redirect | Complete / live required | Build | No | Entra | OAuth state and encrypted PKCE verifier are validated server-side; successful callbacks redirect without a completion interstitial. |
 | Headless Windows launcher | Complete implementation / live required | Go tests + cross-build | No | Windows | No normal UI; GUI-subsystem executable handles protocol and exits. Development binary is unsigned. |
 | Protocol install/uninstall | Complete implementation / live required | Unit/code review | No | Windows registry | PowerShell and CMD wrappers plus launcher `--install`/`--uninstall`. |
 | Launch-ID security | Complete | Unit/build | No | Microsoft message | Cryptographic, 60-second, single-use, message-bound and audited. Protocol contains only the launch ID. |

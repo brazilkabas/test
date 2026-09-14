@@ -45,9 +45,14 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     if (authorization?.status !== "CONNECTED") return;
     const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
     const behavior = parsed.success ? parsed.data.settings.builder : undefined;
-    if (!behavior?.redirectUrl || !isSafeRedirectUrl(behavior.redirectUrl)) return;
     try { popup.current?.close(); } catch {}
-    window.location.replace(behavior.redirectUrl);
+    if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
+      window.location.replace(behavior.redirectUrl);
+      return;
+    }
+    window.location.replace(authorization.connectionId
+      ? `/profiles/${encodeURIComponent(authorization.connectionId)}`
+      : "/admin/accounts");
   }, [authorization]);
 
   async function restart() {

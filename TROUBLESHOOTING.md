@@ -1,16 +1,22 @@
 # Troubleshooting
 
-## Device code does not appear
+## Microsoft browser sign-in does not start
 
-Confirm the client ID, public-client flow enablement, outbound access to
-`login.microsoftonline.com`, and that the app registration supports multiple
-organizations. Device-code authentication uses the fixed `organizations` authority.
-Pending authorization is process-local until Microsoft
-completes it; restarting the server requires a new device code.
+If `MICROSOFT_CLIENT_ID` is blank, the API returns
+`MICROSOFT_CLIENT_ID is not configured.` Add your Entra Application (client) ID and
+restart the server. Confirm `MICROSOFT_REDIRECT_URI` exactly matches a Web redirect URI
+in the registration, outbound access to `login.microsoftonline.com` is available, and
+the registration supports multiple organizations. The authority is fixed to
+`https://login.microsoftonline.com/organizations`.
+
+Normal browser sign-in uses authorization code with PKCE. WAM, an authentication
+broker, and a Windows helper are neither used nor required. Device code is available
+only as an optional fallback for headless or restricted-browser environments.
 
 ## Consent or permission errors
 
-Compare `MICROSOFT_SCOPES` with delegated permissions on the app registration. Tenant
+Initial sign-in requests only `openid`, `profile`, `email`, and `User.Read`. Mail and
+mailbox-settings permissions are requested when those features are enabled. Tenant
 policy may require administrator consent. Do not add broad permissions merely to make
 an error disappear.
 
@@ -18,7 +24,7 @@ an error disappear.
 
 MSAL could not silently acquire an approved token, commonly after revocation,
 Conditional Access changes, consent changes, or `invalid_grant`. Start a new official
-device authorization. The application does not bypass interaction requirements.
+browser authorization. The application does not bypass interaction requirements.
 
 ## Mailbox or shared mailbox denied
 

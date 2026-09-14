@@ -6,13 +6,13 @@ import {
   type ICachePlugin,
   type TokenCacheContext,
 } from "@azure/msal-node";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { AuthorizationStatus } from "@/generated/prisma/client";
-import { config } from "@/lib/config";
+import { config, microsoftClientId, microsoftRedirectUri } from "@/lib/config";
 import { decrypt, encrypt, sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
-import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
+import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const GRAPH_SCOPE_ROOT = "https://graph.microsoft.com/";
@@ -29,10 +29,7 @@ const IDENTITY_AUTHORIZATION_SCOPES = [
   "openid",
   "profile",
   "email",
-  "offline_access",
   `${GRAPH_SCOPE_ROOT}User.Read`,
-  `${GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
-  `${GRAPH_SCOPE_ROOT}Mail.Send`,
 ];
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
@@ -58,6 +55,115 @@ type DeviceChallenge = {
   message: string;
 };
 
+export async function startBrowserAuthorization(
+  pageProjectId?: string,
+  purpose: MicrosoftAuthorizationPurpose = "identity",
+): Promise<{ publicId: string; statusToken: string; authorizationUrl: string }> {
+  microsoftClientId();
+  const statusToken = randomBytes(32).toString("base64url");
+  const scopes = microsoftAuthorizationScopes(purpose);
+  const customizedPage = purpose === "identity" && pageProjectId
+    ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
+    : purpose === "identity"
+      ? await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } })
+      : null;
+  const session = await db.microsoftAuthorizationSession.create({
+    data: {
+      publicId: crypto.randomUUID(),
+      statusTokenHash: sha256(statusToken),
+      requestedScopes: scopes,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      pageProjectId: customizedPage?.id,
+    },
+  });
+  const codeVerifier = randomBytes(64).toString("base64url");
+  const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
+  await db.microsoftAuthorizationSession.update({
+    where: { id: session.id },
+    data: { encryptedCodeVerifier: encrypt(codeVerifier, `pkce:${session.id}`) },
+  });
+  const authorizationUrl = await createClient().getAuthCodeUrl({
+    scopes,
+    redirectUri: microsoftRedirectUri(),
+    codeChallenge,
+    codeChallengeMethod: "S256",
+    state: `${session.publicId}.${statusToken}`,
+    prompt: "select_account",
+  });
+  assertMicrosoftAuthorizationUrl(authorizationUrl);
+  return { publicId: session.publicId, statusToken, authorizationUrl };
+}
+
+export async function completeBrowserAuthorization(state: string, code: string) {
+  const separator = state.indexOf(".");
+  if (separator < 1) throw new Error("Invalid Microsoft authorization state");
+  const publicId = state.slice(0, separator);
+  const statusToken = state.slice(separator + 1);
+  const session = await db.microsoftAuthorizationSession.findUnique({
+    where: { publicId },
+    select: {
+      id: true,
+      status: true,
+      statusTokenHash: true,
+      encryptedCodeVerifier: true,
+      requestedScopes: true,
+      expiresAt: true,
+    },
+  });
+  if (
+    !session
+    || !session.statusTokenHash
+    || sha256(statusToken) !== session.statusTokenHash
+    || !session.encryptedCodeVerifier
+    || session.status !== AuthorizationStatus.PENDING
+    || session.expiresAt <= new Date()
+  ) {
+    throw new Error("Invalid or expired Microsoft authorization state");
+  }
+  const pca = createClient();
+  try {
+    const result = await pca.acquireTokenByCode({
+      code,
+      scopes: session.requestedScopes,
+      redirectUri: microsoftRedirectUri(),
+      codeVerifier: decrypt(session.encryptedCodeVerifier, `pkce:${session.id}`),
+    });
+    if (!result) throw new Error("Microsoft returned no authentication result");
+    await completeAuthorization(session.id, pca, result);
+    return { publicId, statusToken };
+  } catch (error) {
+    await db.microsoftAuthorizationSession.updateMany({
+      where: { id: session.id, status: AuthorizationStatus.PENDING },
+      data: { status: AuthorizationStatus.FAILED, errorCode: microsoftErrorCode(error) },
+    });
+    throw error;
+  }
+}
+
+export async function failBrowserAuthorization(state: string, errorCode: string) {
+  const separator = state.indexOf(".");
+  if (separator < 1) return null;
+  const publicId = state.slice(0, separator);
+  const statusToken = state.slice(separator + 1);
+  const session = await db.microsoftAuthorizationSession.findUnique({
+    where: { publicId },
+    select: { id: true, statusTokenHash: true },
+  });
+  if (!session?.statusTokenHash || sha256(statusToken) !== session.statusTokenHash) return null;
+  await db.microsoftAuthorizationSession.updateMany({
+    where: { id: session.id, status: AuthorizationStatus.PENDING },
+    data: { status: AuthorizationStatus.FAILED, errorCode: errorCode.slice(0, 200) },
+  });
+  return { publicId, statusToken };
+}
+
+function assertMicrosoftAuthorizationUrl(value: string) {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.hostname !== "login.microsoftonline.com") {
+    throw new Error("Microsoft returned an unapproved authorization URL");
+  }
+}
+
 export async function startDeviceAuthorization(
   pageProjectId?: string,
   purpose: MicrosoftAuthorizationPurpose = "identity",
@@ -80,8 +186,8 @@ export async function startDeviceAuthorization(
   });
   if (config().NODE_ENV === "development") {
     console.info("[microsoft] authorization started", {
-      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
-      clientId: config().MICROSOFT_CLIENT_ID,
+      authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
+      clientId: microsoftClientId(),
       requestedScopes: scopes.map(scopeName),
     });
   }
@@ -121,8 +227,8 @@ export async function startDeviceAuthorization(
       const errorCode = microsoftErrorCode(error);
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
-          authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
-          clientId: config().MICROSOFT_CLIENT_ID,
+          authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
+          clientId: microsoftClientId(),
           requestedScopes: scopes.map(scopeName),
           errorCode,
           errorDescription: microsoftErrorDescription(error),
@@ -271,8 +377,8 @@ async function completeAuthorization(
   });
   if (config().NODE_ENV === "development") {
     console.info("[microsoft] authorization completed", {
-      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
-      clientId: config().MICROSOFT_CLIENT_ID,
+      authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
+      clientId: microsoftClientId(),
       requestedScopes: result.scopes.map(scopeName),
       tenantId: result.tenantId,
     });
@@ -489,8 +595,8 @@ function graphUrl(pathOrNextLink: string): string {
 function createClient(cachePlugin?: ICachePlugin) {
   return new PublicClientApplication({
     auth: {
-      clientId: config().MICROSOFT_CLIENT_ID,
-      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      clientId: microsoftClientId(),
+      authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
     },
     cache: cachePlugin ? { cachePlugin } : undefined,
     system: { loggerOptions: { piiLoggingEnabled: false } },

@@ -162,6 +162,7 @@ model MicrosoftAuthorizationSession {
   id                    String              @id @default(cuid())
   publicId              String              @unique
   statusTokenHash       String?
+  encryptedCodeVerifier Bytes?
   requestedScopes       String[]
   status                AuthorizationStatus @default(PENDING)
   userCode              String?

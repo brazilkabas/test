@@ -1,7 +1,7 @@
 # Company Control
 
 Secure internal Microsoft 365 administration platform. The first milestone provides a
-Microsoft device-code connection flow, encrypted MSAL token cache, Graph-backed mail
+Microsoft Entra authorization-code + PKCE connection flow, encrypted MSAL token cache, Graph-backed mail
 operations, mailbox settings and Inbox rules, an internal dashboard, and audit logging.
 
 ## Quick start
@@ -17,8 +17,9 @@ operations, mailbox settings and Inbox rules, an internal dashboard, and audit l
 4. Start the application: `npm run dev`.
 5. Open `http://localhost:3000`.
 
-The first local administrator is bootstrapped from `BOOTSTRAP_ADMIN_EMAIL`. Device
-authorization always takes place on Microsoft's official verification site.
+The first local administrator is bootstrapped from `BOOTSTRAP_ADMIN_EMAIL`. Microsoft
+sign-in, MFA, Conditional Access, account selection, and consent take place only on
+Microsoft's authorization site.
 
 ## Verification
 

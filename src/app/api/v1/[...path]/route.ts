@@ -11,14 +11,14 @@ import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePer
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
 import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
-import { config } from "@/lib/config";
+import { config, MicrosoftConfigurationError, microsoftRedirectUri } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
-import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
+import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftReauthenticationRequired, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
+import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,6 +82,21 @@ async function route(request: NextRequest, path: string[]) {
 
   if (key === "POST /auth/login") return login(request);
   if (path[0] === "public" && path[1] === "deployments" && path[3] === "device" && path[4] === "start" && request.method === "POST") return publicDeploymentDeviceSession(request, path[2]);
+  if (key === "GET /microsoft/callback") {
+    const state = request.nextUrl.searchParams.get("state") ?? "";
+    const microsoftError = request.nextUrl.searchParams.get("error");
+    const result = microsoftError
+      ? await failBrowserAuthorization(state, microsoftError)
+      : await completeBrowserAuthorization(
+          state,
+          z.string().min(1).parse(request.nextUrl.searchParams.get("code")),
+        );
+    if (!result) throw new ApiError(400, "Invalid Microsoft authorization state");
+    return Response.redirect(new URL(
+      `/connect/${encodeURIComponent(result.publicId)}?token=${encodeURIComponent(result.statusToken)}`,
+      config().APP_BASE_URL,
+    ));
+  }
   if (key === "GET /auth/me") {
     const user = await currentUser();
     return Response.json({ user: user ? safeUser(user) : null });
@@ -94,6 +109,41 @@ async function route(request: NextRequest, path: string[]) {
   }
   if (path[0] === "brand-assets") return brandAssetRoute(request, path);
   if (key === "GET /dashboard") return dashboard();
+  if (key === "POST /microsoft/auth/start") {
+    const actor = await requirePermission("microsoft:manage");
+    const { pageProjectId, replacementSessionId, purpose, connectionId } = z.object({
+      pageProjectId: z.string().optional(),
+      replacementSessionId: z.string().optional(),
+      purpose: z.enum(["identity", "mailbox", "mailbox-settings"]).default("identity"),
+      connectionId: z.string().optional(),
+    }).parse(await request.json().catch(() => ({})));
+    if (purpose !== "identity") {
+      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for incremental consent");
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
+      if (!connection) throw new ApiError(404, "Microsoft connection not found");
+    }
+    const result = await startBrowserAuthorization(pageProjectId, purpose);
+    if (replacementSessionId) {
+      await db.microsoftAuthorizationSession.updateMany({
+        where: { publicId: replacementSessionId, status: "PENDING" },
+        data: { status: "EXPIRED", errorCode: "REPLACED" },
+      });
+    }
+    await audit({
+      actorId: actor.id,
+      action: "microsoft.authorization.started",
+      targetType: "MicrosoftAuthorizationSession",
+      targetId: result.publicId,
+      result: "SUCCESS",
+      metadata: { purpose, method: "authorization_code_pkce", ...(connectionId ? { connectionId } : {}) },
+    });
+    return Response.json({
+      sessionId: result.publicId,
+      statusToken: result.statusToken,
+      authorizationUrl: result.authorizationUrl,
+      connectUrl: `/connect/${result.publicId}?token=${encodeURIComponent(result.statusToken)}`,
+    }, { status: 201 });
+  }
   if (key === "POST /microsoft/device/start") {
     const actor = await requirePermission("microsoft:manage");
     const { pageProjectId, deploymentId, replacementSessionId, purpose, connectionId } = z.object({
@@ -235,8 +285,9 @@ async function route(request: NextRequest, path: string[]) {
     return Response.json({
       database: "healthy",
       microsoft: {
-        authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
-        clientId: config().MICROSOFT_CLIENT_ID,
+        authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
+        clientIdConfigured: Boolean(config().MICROSOFT_CLIENT_ID.trim()),
+        redirectUri: microsoftRedirectUri(),
         scopes: config().microsoftScopes,
       },
       version: process.env.npm_package_version ?? "0.1.0",
@@ -1730,6 +1781,7 @@ function validIpRange(range: string): boolean {
 
 function handle(error: unknown) {
   if (error instanceof z.ZodError) return Response.json({ error: "Invalid request", details: error.issues }, { status: 400 });
+  if (error instanceof MicrosoftConfigurationError) return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof GraphError) {
     return Response.json({ error: error.message, microsoftCode: error.code }, { status: error.status });
   }
