@@ -26,7 +26,7 @@ export function MailboxAccessConsent(props: { connectionId: string; accountLabel
     {...props}
     purpose="mailbox"
     title="Connect mailbox"
-    description="Authorize read-only Microsoft Graph access for this existing connected account. Your current account connection remains unchanged."
+    description="Authorize read-only mailbox access for this existing connected account. Your current account connection remains unchanged."
     buttonLabel="Connect mailbox"
     adminApprovalDescription="mailbox access"
   />;
@@ -106,7 +106,10 @@ function MicrosoftFeatureConsent({
       setSession({ sessionId: result.sessionId, statusToken: result.statusToken });
     } catch (caught) {
       try { popup.current.close(); } catch {}
-      setError(caught instanceof Error ? caught.message : "Unable to start Microsoft authorization");
+      const message = caught instanceof Error ? caught.message : "Unable to start Microsoft authorization";
+      setError(message.includes("MICROSOFT_GRAPH_MAIL_CLIENT_ID")
+        ? "Mailbox connection is not configured. Contact an administrator."
+        : message);
     }
   }
 

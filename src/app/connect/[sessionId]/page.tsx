@@ -74,7 +74,10 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       else throw new Error("Microsoft mailbox authorization did not return a connection page");
     }).catch((caught) => {
       continuingMailbox.current = false;
-      setError(caught instanceof Error ? caught.message : "Unable to continue Microsoft mailbox authorization");
+      const message = caught instanceof Error ? caught.message : "Unable to continue Microsoft mailbox authorization";
+      setError(message.includes("MICROSOFT_GRAPH_MAIL_CLIENT_ID")
+        ? "Your Microsoft account is connected, but mailbox setup is not configured. Contact an administrator."
+        : message);
     });
   }, [authorization, sessionId, token]);
 
