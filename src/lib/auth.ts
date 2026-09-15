@@ -132,7 +132,18 @@ async function currentSessionRecord() {
     where: { tokenHash: sha256(token) },
     include: {
       user: { include: { roles: { include: { role: true } } } },
-      microsoftConnection: true,
+      microsoftConnection: {
+        select: {
+          id: true,
+          tenantId: true,
+          microsoftUserId: true,
+          displayName: true,
+          userPrincipalName: true,
+          email: true,
+          authorizationStatus: true,
+          grantedScopes: true,
+        },
+      },
     },
   });
   if (!session || session.revokedAt || session.expiresAt <= new Date()) return null;
