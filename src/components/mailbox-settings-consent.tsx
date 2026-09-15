@@ -8,6 +8,7 @@ type AuthorizationStatus = {
   status: string;
   connectionId: string | null;
   errorCode: string | null;
+  errorDescription: string | null;
 };
 
 export function MailboxSettingsConsent(props: { connectionId: string; onGranted: () => void }) {
@@ -74,8 +75,9 @@ function MicrosoftFeatureConsent({
           setError(authorization.status === "EXPIRED"
             ? "Microsoft verification expired. Start the optional permission request again."
             : isAdminApprovalRequired(authorization.errorCode)
-            ? `Your Microsoft 365 organization requires an administrator to approve ${adminApprovalDescription}.`
-            : "Microsoft authorization was not completed. Retry without changing the requested permissions.");
+            ? `Your Microsoft 365 organization requires an administrator to approve ${adminApprovalDescription}. ${authorization.errorDescription ?? ""}`.trim()
+            : authorization.errorDescription
+              ?? "Microsoft authorization was not completed. Retry without changing the requested permissions.");
         }
       }).catch(() => undefined);
     }, 3000);

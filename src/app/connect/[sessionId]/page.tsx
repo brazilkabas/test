@@ -15,6 +15,7 @@ type Authorization = {
   expiresAt: string;
   connectionId: string | null;
   errorCode: string | null;
+  errorDescription: string | null;
   pageProject?: { versions: Array<{ document: PageDocument | null }> } | null;
 };
 
@@ -67,6 +68,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     return <main className="center-page"><div className="card auth-card stack">
       <h1>Administrator approval required</h1>
       <p className="muted">Your Microsoft 365 organization requires an administrator to approve this app’s requested permissions. The application will not retry or request broader permissions automatically.</p>
+      {authorization.errorDescription && <p className="error">{authorization.errorDescription}</p>}
     </div></main>;
   }
   const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
@@ -105,7 +107,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       <main className="center-page">
         <div className="card auth-card stack">
           <h1>Microsoft verification</h1>
-          <p className="muted">Waiting for Microsoft…</p>
+          <p className="muted">{authorization.errorDescription ?? "Waiting for Microsoft…"}</p>
         </div>
       </main>
     );

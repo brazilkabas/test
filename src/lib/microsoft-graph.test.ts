@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertMicrosoftConnectionIdentity,
   deviceAuthorizationScopes,
   graphDelegatedScopes,
   isMicrosoftGraphToken,
   microsoftAuthorizationScopes,
+  tokenDelegatedScopes,
 } from "@/lib/microsoft";
 
 describe("Microsoft Graph token targeting", () => {
@@ -34,9 +36,7 @@ describe("Microsoft Graph token targeting", () => {
     ]);
     expect(microsoftAuthorizationScopes("mailbox")).toEqual([
       "offline_access",
-      "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
     expect(microsoftAuthorizationScopes("mailbox-settings")).toEqual([
       "offline_access",
@@ -70,9 +70,32 @@ describe("Microsoft Graph token targeting", () => {
     expect(isMicrosoftGraphToken(jwt("https://graph.microsoft.com"))).toBe(true);
     expect(isMicrosoftGraphToken(jwt("https://outlook.office365.com"))).toBe(false);
   });
+
+  it("reads delegated token scopes without accepting roles or other claims", () => {
+    expect([...tokenDelegatedScopes(jwt(
+      "https://graph.microsoft.com",
+      "User.Read Mail.Read",
+    ))]).toEqual(["user.read", "mail.read"]);
+    expect([...tokenDelegatedScopes(jwt("https://graph.microsoft.com"))]).toEqual([]);
+  });
+
+  it("rejects incremental authorization for a different Microsoft identity", () => {
+    expect(() => assertMicrosoftConnectionIdentity(
+      { tenantId: "tenant-a", microsoftUserId: "user-a" },
+      { tenantId: "tenant-a", microsoftUserId: "user-a" },
+    )).not.toThrow();
+    expect(() => assertMicrosoftConnectionIdentity(
+      { tenantId: "tenant-a", microsoftUserId: "user-a" },
+      { tenantId: "tenant-b", microsoftUserId: "user-a" },
+    )).toThrow("different account");
+    expect(() => assertMicrosoftConnectionIdentity(
+      { tenantId: "tenant-a", microsoftUserId: "user-a" },
+      { tenantId: "tenant-a", microsoftUserId: "user-b" },
+    )).toThrow("different account");
+  });
 });
 
-function jwt(aud: string) {
+function jwt(aud: string, scp?: string) {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${encode({ alg: "none" })}.${encode({ aud })}.signature`;
+  return `${encode({ alg: "none" })}.${encode({ aud, ...(scp ? { scp } : {}) })}.signature`;
 }

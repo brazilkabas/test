@@ -105,10 +105,13 @@ async function route(request: NextRequest, path: string[]) {
     }).parse(await request.json().catch(() => ({})));
     if (purpose !== "identity") {
       if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for incremental consent");
-      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
-      if (!connection) throw new ApiError(404, "Microsoft connection not found");
+      await requireSessionMicrosoftConnection(connectionId);
     }
-    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose);
+    const { publicId, statusToken } = await startDeviceAuthorization(
+      pageProjectId,
+      purpose,
+      connectionId,
+    );
     const presentation = await authorizationStatus(publicId, statusToken);
     if (replacementSessionId && presentation?.userCode) {
       await db.microsoftAuthorizationSession.updateMany({ where: { publicId: replacementSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
@@ -166,14 +169,21 @@ async function route(request: NextRequest, path: string[]) {
     const previous = await authorizationStatus(publicId, oldToken);
     if (!previous) throw new ApiError(404, "Authorization session not found");
     if (!["EXPIRED", "FAILED", "CANCELLED"].includes(previous.status)) throw new ApiError(409, "Authorization can only be restarted after it ends");
+    const previousContext = await db.microsoftAuthorizationSession.findUnique({
+      where: { publicId },
+      select: { expectedConnectionId: true },
+    });
     const incrementalSettings = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
       && !previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
-    const incrementalMailbox = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
+    const incrementalMailbox = previous.requestedScopes.some((scope) =>
+      ["/mail.read", "/mail.readwrite"].some((suffix) => scope.toLowerCase().endsWith(suffix)),
+    );
     const pageProjectId = previous.pageProject?.id;
     if (!pageProjectId && !incrementalSettings && !incrementalMailbox) throw new ApiError(404, "Authorization session cannot be restarted");
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
       pageProjectId,
       incrementalSettings ? "mailbox-settings" : incrementalMailbox ? "mailbox" : "identity",
+      previousContext?.expectedConnectionId ?? undefined,
     );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
     const origin = request.headers.get("origin");
@@ -428,6 +438,11 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
       data: {
         authorizationStatus: "REVOKED",
         encryptedTokenCache: encrypt("{}", `msal:${connection.tenantId}:${connection.microsoftUserId}`),
+        mailboxAvailable: false,
+        canReadMail: false,
+        canReadMailFolders: false,
+        accessTokenExpiresAt: null,
+        mailboxCheckedAt: new Date(),
       },
     });
     await audit({ actorId: actor.id, connectionId, action: "microsoft.connection.disconnected", targetType: "MicrosoftConnection", targetId: connectionId, result: "SUCCESS" });
@@ -593,7 +608,7 @@ async function microsoftDiagnostics(request: NextRequest, rawConnectionId: strin
   const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
   const checks: Array<{ id: string; label: string; path: string; requiredScope: string }> = [
     { id: "profile", label: "Microsoft /me profile", path: "/me?$select=id,displayName,userPrincipalName", requiredScope: "User.Read" },
-    { id: "inbox", label: "Inbox listing", path: "/me/mailFolders/inbox/messages?$top=1&$select=id,subject", requiredScope: "Mail.ReadWrite" },
+    { id: "inbox", label: "Inbox listing", path: "/me/mailFolders/inbox/messages?$top=1&$select=id,subject", requiredScope: "Mail.Read" },
     { id: "settings", label: "Mailbox settings", path: "/me/mailboxSettings?$select=timeZone,language", requiredScope: "MailboxSettings.ReadWrite" },
     { id: "rules", label: "Inbox rules", path: "/me/mailFolders/inbox/messageRules", requiredScope: "MailboxSettings.ReadWrite" },
   ];
@@ -1344,7 +1359,10 @@ async function mailRoute(request: NextRequest, path: string[]) {
   if (tail[0] === "settings" || tail[0] === "rules") {
     await requireConnectionScope(connectionId, "MailboxSettings.ReadWrite");
   } else {
-    await requireConnectionScope(connectionId, "Mail.ReadWrite");
+    await requireConnectionScope(
+      connectionId,
+      request.method === "GET" ? ["Mail.Read", "Mail.ReadWrite"] : "Mail.ReadWrite",
+    );
     const sendsMail = tail[0] === "send"
       || (tail[0] === "messages" && ["reply", "reply-all", "forward"].includes(tail[2] ?? ""));
     if (sendsMail) await requireConnectionScope(connectionId, "Mail.Send");
@@ -1604,15 +1622,16 @@ async function mailRoute(request: NextRequest, path: string[]) {
   throw new ApiError(404, "Mail route not found");
 }
 
-async function requireConnectionScope(connectionId: string, scope: string) {
+async function requireConnectionScope(connectionId: string, scope: string | string[]) {
   const connection = await db.microsoftConnection.findUnique({
     where: { id: connectionId },
     select: { grantedScopes: true },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
   const granted = new Set(connection.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
-  if (!granted.has(scope.toLowerCase())) {
-    throw new ApiError(403, `${scope} permission is required. Enable this feature to request incremental Microsoft consent.`);
+  const accepted = (Array.isArray(scope) ? scope : [scope]).map((value) => value.toLowerCase());
+  if (!accepted.some((value) => granted.has(value))) {
+    throw new ApiError(403, `${accepted.join(" or ")} permission is required. Enable this feature to request incremental Microsoft consent.`);
   }
 }
 

@@ -21,15 +21,14 @@ const NON_GRAPH_SCOPES = new Set(["openid", "profile", "email", "offline_access"
 const DEVICE_IDENTITY_SCOPES = new Set(["offline_access"]);
 const NORMAL_GRAPH_SCOPES = new Map([
   ["user.read", "User.Read"],
+  ["mail.read", "Mail.Read"],
   ["mail.readwrite", "Mail.ReadWrite"],
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
-  `${GRAPH_SCOPE_ROOT}User.Read`,
-  `${GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
-  `${GRAPH_SCOPE_ROOT}Mail.Send`,
+  `${GRAPH_SCOPE_ROOT}Mail.Read`,
 ];
 const MAILBOX_SETTINGS_SCOPES = [
   "offline_access",
@@ -52,8 +51,29 @@ type DeviceChallenge = {
 export async function startDeviceAuthorization(
   pageProjectId?: string,
   purpose: MicrosoftAuthorizationPurpose = "identity",
+  expectedConnectionId?: string,
 ): Promise<{ publicId: string; statusToken: string }> {
   microsoftClientId();
+  if (purpose !== "identity" && !expectedConnectionId) {
+    throw new MicrosoftConfigurationError(
+      "Incremental Microsoft authorization requires the existing connection ID",
+    );
+  }
+  const expectedConnection = expectedConnectionId
+    ? await db.microsoftConnection.findUnique({
+        where: { id: expectedConnectionId },
+        select: {
+          tenantId: true,
+          microsoftUserId: true,
+          encryptedTokenCache: true,
+        },
+      })
+    : null;
+  if (expectedConnectionId && !expectedConnection) {
+    throw new MicrosoftConfigurationError(
+      "The Microsoft connection selected for incremental authorization no longer exists",
+    );
+  }
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
   const customizedPage = purpose === "identity" && pageProjectId
@@ -68,6 +88,7 @@ export async function startDeviceAuthorization(
       requestedScopes: scopes,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
+      expectedConnectionId,
     },
   });
   if (config().NODE_ENV === "development") {
@@ -85,7 +106,19 @@ export async function startDeviceAuthorization(
     challengeFailed = reject;
   });
 
-  const pca = createClient();
+  const pca = createClient(expectedConnection
+    ? {
+        beforeCacheAccess: async (context: TokenCacheContext) => {
+          context.tokenCache.deserialize(decrypt(
+            expectedConnection.encryptedTokenCache,
+            `msal:${expectedConnection.tenantId}:${expectedConnection.microsoftUserId}`,
+          ));
+        },
+        // Do not persist a changed cache until account, audience, scope, and
+        // live mailbox probes have all succeeded in completeAuthorization.
+        afterCacheAccess: async () => undefined,
+      }
+    : undefined);
   const authorization = pca
     .acquireTokenByDeviceCode({
       scopes,
@@ -125,6 +158,7 @@ export async function startDeviceAuthorization(
         data: {
           status: classifyDeviceError(error),
           errorCode,
+          errorDescription: microsoftErrorDescription(error),
         },
       });
     })
@@ -175,6 +209,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       expiresAt: true,
       connectionId: true,
       errorCode: true,
+      errorDescription: true,
       pageProject: { select: { id: true, versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
     },
   });
@@ -195,6 +230,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
         expiresAt: true,
         connectionId: true,
         errorCode: true,
+        errorDescription: true,
         pageProject: { select: { id: true, versions: { orderBy: { version: "desc" }, take: 1, select: { document: true } } } },
       },
     });
@@ -209,18 +245,60 @@ async function completeAuthorization(
 ) {
   const pendingSession = await db.microsoftAuthorizationSession.findUnique({
     where: { id: authorizationSessionId },
-    select: { status: true, expiresAt: true, requestedScopes: true },
+    select: {
+      status: true,
+      expiresAt: true,
+      requestedScopes: true,
+      expectedConnectionId: true,
+    },
   });
   if (!pendingSession || pendingSession.status !== AuthorizationStatus.PENDING || pendingSession.expiresAt <= new Date()) return;
   const graphAuthorization = pendingSession.requestedScopes.some((scope) =>
     scope.toLowerCase().startsWith(GRAPH_SCOPE_ROOT),
   );
+  const mailboxAuthorization = pendingSession.requestedScopes.some(
+    (scope) => scopeName(scope).toLowerCase() === "mail.read",
+  );
   if (graphAuthorization) {
     assertMicrosoftGraphToken(result.accessToken);
+    if (mailboxAuthorization && !tokenDelegatedScopes(result.accessToken).has("mail.read")) {
+      throw new GraphError(
+        403,
+        "MissingMailReadScope",
+        "Microsoft returned a Graph token without the delegated Mail.Read scope.",
+      );
+    }
   } else {
     assertConfiguredResourceToken(result.accessToken);
   }
   const profile = profileFromAuthenticationResult(result);
+  const expectedConnection = pendingSession.expectedConnectionId
+    ? await db.microsoftConnection.findUnique({
+        where: { id: pendingSession.expectedConnectionId },
+        select: { id: true, tenantId: true, microsoftUserId: true },
+      })
+    : null;
+  if (pendingSession.expectedConnectionId && !expectedConnection) {
+    throw new MicrosoftAccountMismatchError(
+      "The Microsoft connection selected for incremental authorization no longer exists.",
+    );
+  }
+  if (expectedConnection) {
+    assertMicrosoftConnectionIdentity(expectedConnection, {
+      tenantId: result.tenantId,
+      microsoftUserId: profile.id,
+    });
+  }
+  if (mailboxAuthorization) {
+    await graphFetchWithToken<{ value: Array<{ id: string }> }>(
+      result.accessToken,
+      "/me/mailFolders?$top=1&$select=id",
+    );
+    await graphFetchWithToken<{ value: Array<{ id: string }> }>(
+      result.accessToken,
+      "/me/mailFolders/inbox/messages?$top=10&$select=id",
+    );
+  }
   const stillPending = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
   if (!stillPending || stillPending.status !== AuthorizationStatus.PENDING || stillPending.expiresAt <= new Date()) return;
   const encryptedTokenCache = encrypt(
@@ -231,7 +309,20 @@ async function completeAuthorization(
     where: { tenantId_microsoftUserId: { tenantId: result.tenantId, microsoftUserId: profile.id } },
     select: { grantedScopes: true },
   });
-  const grantedScopes = [...new Set([...(existingConnection?.grantedScopes ?? []), ...result.scopes])];
+  const grantedScopes = [...new Set([
+    ...(existingConnection?.grantedScopes ?? []),
+    ...result.scopes,
+    ...(mailboxAuthorization ? ["Mail.Read"] : []),
+  ])];
+  const mailboxReadiness = mailboxAuthorization
+    ? {
+        mailboxAvailable: true,
+        canReadMail: true,
+        canReadMailFolders: true,
+        mailboxCheckedAt: new Date(),
+        accessTokenExpiresAt: result.expiresOn ?? null,
+      }
+    : {};
 
   const connection = await db.microsoftConnection.upsert({
     where: {
@@ -249,6 +340,7 @@ async function completeAuthorization(
       encryptedTokenCache,
       grantedScopes,
       authorizationStatus: AuthorizationStatus.CONNECTED,
+      ...mailboxReadiness,
     },
     update: {
       displayName: profile.displayName,
@@ -258,6 +350,7 @@ async function completeAuthorization(
       grantedScopes,
       connectedAt: new Date(),
       authorizationStatus: AuthorizationStatus.CONNECTED,
+      ...mailboxReadiness,
     },
   });
 
@@ -301,10 +394,7 @@ export async function graphFetch<T>(
     return result;
   } catch (error) {
     if (error instanceof GraphError && (error.status === 401 || error.code === "InvalidAuthenticationToken")) {
-      await db.microsoftConnection.update({
-        where: { id: connectionId },
-        data: { authorizationStatus: AuthorizationStatus.REAUTHENTICATION_REQUIRED },
-      });
+      await markReauthentication(connectionId);
     }
     throw error;
   }
@@ -321,8 +411,26 @@ export async function probeMailboxReadiness(connectionId: string): Promise<{
       connectionId,
       "/me/mailFolders?$top=1&$select=id",
     );
+    await db.microsoftConnection.update({
+      where: { id: connectionId },
+      data: {
+        mailboxAvailable: true,
+        canReadMail: true,
+        canReadMailFolders: true,
+        mailboxCheckedAt: new Date(),
+      },
+    });
     return { mailboxAvailable: true, mailboxStatus: "READY" };
   } catch (error) {
+    await db.microsoftConnection.update({
+      where: { id: connectionId },
+      data: {
+        mailboxAvailable: false,
+        canReadMail: false,
+        canReadMailFolders: false,
+        mailboxCheckedAt: new Date(),
+      },
+    });
     if (
       error instanceof MicrosoftReauthenticationRequired
       || (error instanceof GraphError
@@ -373,6 +481,10 @@ async function acquireGraphToken(connectionId: string) {
       result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: true });
     }
     assertMicrosoftGraphToken(result.accessToken);
+    await db.microsoftConnection.update({
+      where: { id: connectionId },
+      data: { accessTokenExpiresAt: result.expiresOn ?? null },
+    });
     if (config().NODE_ENV === "development" && !loggedGraphAudience.has(connectionId)) {
       loggedGraphAudience.add(connectionId);
       console.info("[microsoft] token target/resource = Microsoft Graph", { connectionId, audience: tokenAudience(result.accessToken) });
@@ -440,6 +552,18 @@ function tokenAudience(accessToken: string): string | null {
   }
 }
 
+export function tokenDelegatedScopes(accessToken: string) {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(accessToken.split(".")[1], "base64url").toString("utf8"),
+    ) as { scp?: unknown };
+    if (typeof payload.scp !== "string") return new Set<string>();
+    return new Set(payload.scp.split(/\s+/).filter(Boolean).map((scope) => scope.toLowerCase()));
+  } catch {
+    return new Set<string>();
+  }
+}
+
 export function isMicrosoftGraphToken(accessToken: string) {
   const audience = tokenAudience(accessToken);
   return audience === GRAPH_APP_ID || audience === "https://graph.microsoft.com" || audience === "https://graph.microsoft.com/";
@@ -484,6 +608,20 @@ function profileFromAuthenticationResult(result: AuthenticationResult) {
     userPrincipalName,
     mail: email,
   };
+}
+
+export function assertMicrosoftConnectionIdentity(
+  expected: { tenantId: string; microsoftUserId: string },
+  authorized: { tenantId: string; microsoftUserId: string },
+) {
+  if (
+    expected.tenantId !== authorized.tenantId
+    || expected.microsoftUserId !== authorized.microsoftUserId
+  ) {
+    throw new MicrosoftAccountMismatchError(
+      "Microsoft authorized a different account. Sign in with the account already connected to this website session.",
+    );
+  }
 }
 
 async function graphFetchWithToken<T>(
@@ -596,16 +734,24 @@ function microsoftResourceConfiguration() {
 async function markReauthentication(connectionId: string) {
   await db.microsoftConnection.update({
     where: { id: connectionId },
-    data: { authorizationStatus: AuthorizationStatus.REAUTHENTICATION_REQUIRED },
+    data: {
+      authorizationStatus: AuthorizationStatus.REAUTHENTICATION_REQUIRED,
+      mailboxAvailable: false,
+      canReadMail: false,
+      canReadMailFolders: false,
+      mailboxCheckedAt: new Date(),
+    },
   });
 }
 
 function microsoftErrorCode(error: unknown): string {
   if (typeof error !== "object" || !error) return "device_authorization_failed";
   const message = "errorMessage" in error ? String(error.errorMessage) : "message" in error ? String(error.message) : "";
-  const aadCode = message.match(/\bAADSTS(?:90094|90095|900941)\b/i)?.[0];
+  const aadCode = message.match(/\bAADSTS\d+\b/i)?.[0];
   if (aadCode) return aadCode.toUpperCase();
-  return "errorCode" in error ? String(error.errorCode) : "device_authorization_failed";
+  if ("errorCode" in error) return String(error.errorCode);
+  if ("code" in error) return String(error.code);
+  return "device_authorization_failed";
 }
 
 function microsoftErrorDescription(error: unknown): string {
@@ -641,3 +787,7 @@ export class MicrosoftReauthenticationRequired extends Error {
 }
 
 export class MicrosoftConfigurationError extends Error {}
+
+export class MicrosoftAccountMismatchError extends Error {
+  readonly code = "MICROSOFT_ACCOUNT_MISMATCH";
+}

@@ -144,6 +144,11 @@ model MicrosoftConnection {
   email                    String?
   connectedAt              DateTime              @default(now())
   lastSuccessfulGraphAt    DateTime?
+  accessTokenExpiresAt     DateTime?
+  mailboxAvailable         Boolean               @default(false)
+  canReadMail              Boolean               @default(false)
+  canReadMailFolders       Boolean               @default(false)
+  mailboxCheckedAt         DateTime?
   authorizationStatus      AuthorizationStatus   @default(CONNECTED)
   encryptedTokenCache      Bytes
   tokenCacheKeyVersion     Int                   @default(1)
@@ -177,7 +182,9 @@ model MicrosoftAuthorizationSession {
   intervalSeconds       Int?
   expiresAt             DateTime
   errorCode             String?
+  errorDescription      String?
   connectionId          String?
+  expectedConnectionId  String?
   pageProjectId         String?
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
@@ -185,6 +192,7 @@ model MicrosoftAuthorizationSession {
   pageProject           HtmlProject?          @relation(fields: [pageProjectId], references: [id])
 
   @@index([status, expiresAt])
+  @@index([expectedConnectionId])
 }
 
 model Mailbox {
