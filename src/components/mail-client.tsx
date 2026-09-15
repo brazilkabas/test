@@ -210,8 +210,9 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   async function startMailboxAuthorization() {
     setMailAuthorizationStarting(true);
     try {
-      const result = await api<{ connectUrl: string }>(`/microsoft/accounts/${connectionId}/mail-auth/start`, {
+      const result = await api<{ connectUrl: string }>("/microsoft/device/start", {
         method: "POST",
+        body: JSON.stringify({ connectionId }),
       });
       window.location.assign(result.connectUrl);
     } catch (error) {
@@ -238,7 +239,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
         title={authorizationState === "PENDING" ? "Mailbox authorization waiting" : "Mailbox authorization incomplete"}
         description={mailAuthorizationDescription(accountLabel, authorizationState, errorCode)}
         action={<button disabled={mailAuthorizationStarting} onClick={() => void startMailboxAuthorization()}>
-          {mailAuthorizationStarting ? "Starting…" : authorizationState === "PENDING" ? "Restart mailbox authorization" : "Authorize mailbox"}
+          {mailAuthorizationStarting ? "Starting…" : "Reauthorize Microsoft account"}
         </button>}
       />
       <div className="panel-body stack" style={{ maxWidth: 680, margin: "0 auto" }}>

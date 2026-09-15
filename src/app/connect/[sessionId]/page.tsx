@@ -11,7 +11,6 @@ type Authorization = {
   verificationUri: string | null;
   message: string | null;
   requestedScopes: string[];
-  authorizationProfile: "PRIMARY" | "GRAPH_MAIL";
   status: string;
   expiresAt: string;
   connectionId: string | null;
@@ -25,7 +24,6 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   const [authorization, setAuthorization] = useState<Authorization | null>(null);
   const [error, setError] = useState("");
   const replacing = useRef(false);
-  const continuingMailbox = useRef(false);
   const popup = useRef<Window | null>(null);
 
   const load = useCallback(async () => {
@@ -45,39 +43,17 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
 
   useEffect(() => {
     if (authorization?.status !== "CONNECTED") return;
-    const finishConnection = () => {
-      const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
-      const behavior = parsed.success ? parsed.data.settings.builder : undefined;
-      try { popup.current?.close(); } catch {}
-      if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
-        window.location.replace(behavior.redirectUrl);
-        return;
-      }
-      window.location.replace(authorization.connectionId
-        ? `/mail/${encodeURIComponent(authorization.connectionId)}`
-        : "/admin/accounts");
-    };
-    if (authorization.authorizationProfile === "GRAPH_MAIL" || !authorization.connectionId) {
-      finishConnection();
+    const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
+    const behavior = parsed.success ? parsed.data.settings.builder : undefined;
+    try { popup.current?.close(); } catch {}
+    if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
+      window.location.replace(behavior.redirectUrl);
       return;
     }
-    if (continuingMailbox.current) return;
-    continuingMailbox.current = true;
-    void fetch(
-      `/api/v1/microsoft/device/${encodeURIComponent(sessionId)}/mail-continue?token=${encodeURIComponent(token)}`,
-      { method: "POST" },
-    ).then(async (response) => {
-      const result = await response.json() as { connected?: boolean; connectUrl?: string; error?: string };
-      if (!response.ok) throw new Error(result.error ?? "Unable to continue Microsoft mailbox authorization");
-      if (result.connected) finishConnection();
-      else if (result.connectUrl) window.location.replace(result.connectUrl);
-      else throw new Error("Microsoft mailbox authorization did not return a connection page");
-    }).catch((caught) => {
-      continuingMailbox.current = false;
-      const message = caught instanceof Error ? caught.message : "Unable to continue Microsoft mailbox authorization";
-      setError(message);
-    });
-  }, [authorization, sessionId, token]);
+    window.location.replace(authorization.connectionId
+      ? `/mail/${encodeURIComponent(authorization.connectionId)}`
+      : "/admin/accounts");
+  }, [authorization]);
 
   async function restart() {
     if (replacing.current) return;

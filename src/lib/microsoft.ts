@@ -643,7 +643,7 @@ export async function acquireMicrosoftGraphMailToken(connectionId: string) {
         !isMicrosoftGraphResource(connection.resourceAppId)
         || connection.clientId !== authConfig.clientId
       ) {
-        throw new MicrosoftGraphMailAuthorizationRequired();
+        throw new MicrosoftMailboxAuthorizationRequired();
       }
       const cachePlugin: ICachePlugin = {
         beforeCacheAccess: async (context: TokenCacheContext) => {
@@ -1046,8 +1046,8 @@ export class MicrosoftReauthenticationRequired extends Error {
   }
 }
 
-export class MicrosoftGraphMailAuthorizationRequired extends Error {
+export class MicrosoftMailboxAuthorizationRequired extends Error {
   constructor() {
-    super("Connect mailbox to authorize Microsoft Graph mail access.");
+    super("Reauthorize this Microsoft account with the configured Entra application to enable Mail.");
   }
 }

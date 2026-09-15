@@ -47,7 +47,6 @@ describe("Microsoft client configuration", () => {
     vi.stubEnv("MICROSOFT_CLIENT_ID", "client-application");
     vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "legacy-resource");
     vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "legacy-resource/.default");
-    vi.stubEnv("MICROSOFT_GRAPH_MAIL_CLIENT_ID", "legacy-second-client");
     const { microsoftAuthConfig } = await import("@/lib/config");
 
     expect(microsoftAuthConfig().requestedScopes).toEqual([
