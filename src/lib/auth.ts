@@ -12,7 +12,7 @@ const SESSION_SECONDS = 8 * 60 * 60;
 
 export const rolePermissions: Record<AccessRole, string[]> = {
   SUPER_ADMIN: ["*"],
-  MICROSOFT_ADMIN: ["microsoft:manage", "mail:read", "mail:write", "audit:read"],
+  MICROSOFT_ADMIN: ["microsoft:manage", "mail:read", "mail:write", "audit:read", "ai:chat"],
   MAIL_OPERATOR: ["mail:read", "mail:write", "mail:send"],
   MAIL_VIEWER: ["mail:read"],
   DEPLOYMENT_ADMIN: ["deployment:*"],

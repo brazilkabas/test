@@ -7,6 +7,7 @@ import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
 import { AccessRole } from "@/generated/prisma/client";
+import { AiApiError, aiApiStatus, deleteAiApiConfiguration, saveAiApiCurl, sendAiChat } from "@/lib/ai-api";
 import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession, rolePermissions } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
@@ -24,6 +25,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
+const aiAttempts = new Map<string, { count: number; resetAt: number }>();
 const id = z.string().min(1).max(256);
 const messageBody = z.object({
   subject: z.string().min(1).max(998),
@@ -306,12 +308,80 @@ async function route(request: NextRequest, path: string[]) {
   if (path[0] === "access-codes" && path[1] && request.method === "DELETE") return revokeAccessCode(path[1]);
   if (path[0] === "diagnostics" && path[1]) return microsoftDiagnostics(request, path[1]);
   if (path[0] === "html-projects") return htmlProjectRoute(request, path);
+  if (path[0] === "ai") return aiRoute(request, path);
   if (path[0] === "cloudflare") return cloudflareRoute(request, path);
   if (path[0] === "outlook-launch") return outlookLaunchRoute(request, path);
   if (path[0] === "exchange") return exchangeRoute(request);
 
   if (path[0] === "mail" && path[1]) return mailRoute(request, path);
   throw new ApiError(404, "API route not found");
+}
+
+async function aiRoute(request: NextRequest, path: string[]) {
+  if (path[1] === "configuration") {
+    if (request.method === "GET") {
+      await requirePermission("ai:chat");
+      return Response.json(await aiApiStatus());
+    }
+    const actor = await requirePermission("*");
+    if (request.method === "POST") {
+      const { curl } = z.object({ curl: z.string().min(1).max(50_000) }).parse(await request.json());
+      const status = await saveAiApiCurl(curl);
+      await audit({
+        actorId: actor.id,
+        action: "ai.configuration.saved",
+        targetType: "Integration",
+        targetId: "custom-ai-chat",
+        result: "SUCCESS",
+        metadata: { hostname: status.hostname, model: status.model },
+      });
+      return Response.json(status);
+    }
+    if (request.method === "DELETE") {
+      await deleteAiApiConfiguration();
+      await audit({
+        actorId: actor.id,
+        action: "ai.configuration.deleted",
+        targetType: "Integration",
+        targetId: "custom-ai-chat",
+        result: "SUCCESS",
+      });
+      return new Response(null, { status: 204 });
+    }
+  }
+  if (path[1] === "chat" && request.method === "POST") {
+    const actor = await requirePermission("ai:chat");
+    enforceAiRateLimit(`${actor.id}:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local"}`);
+    const { messages } = z.object({
+      messages: z.array(z.object({
+        role: z.enum(["system", "user", "assistant"]),
+        content: z.string().min(1).max(20_000),
+      })).min(1).max(50),
+    }).parse(await request.json());
+    try {
+      const result = await sendAiChat(messages);
+      await audit({
+        actorId: actor.id,
+        action: "ai.chat.completed",
+        targetType: "Integration",
+        targetId: "custom-ai-chat",
+        result: "SUCCESS",
+        metadata: { model: result.model, messageCount: messages.length },
+      });
+      return Response.json(result);
+    } catch (error) {
+      await audit({
+        actorId: actor.id,
+        action: "ai.chat.failed",
+        targetType: "Integration",
+        targetId: "custom-ai-chat",
+        result: "FAILURE",
+        metadata: { messageCount: messages.length },
+      });
+      throw error;
+    }
+  }
+  throw new ApiError(404, "AI API route not found");
 }
 
 async function login(request: NextRequest) {
@@ -1758,6 +1828,17 @@ function enforceRateLimit(key: string) {
   if (state.count > 10) throw new ApiError(429, "Too many access-code attempts");
 }
 
+function enforceAiRateLimit(key: string) {
+  const now = Date.now();
+  const state = aiAttempts.get(key);
+  if (!state || state.resetAt <= now) {
+    aiAttempts.set(key, { count: 1, resetAt: now + 60_000 });
+    return;
+  }
+  state.count += 1;
+  if (state.count > 30) throw new ApiError(429, "Too many AI requests; try again in a minute");
+}
+
 function ipMatchesRange(ip: string, range: string | null): boolean {
   if (!range) return true;
   if (!range.includes("/")) return isIP(ip) !== 0 && ip === range;
@@ -1789,6 +1870,7 @@ function handle(error: unknown) {
   if (error instanceof CloudflareError) {
     return Response.json({ error: error.message }, { status: error.status });
   }
+  if (error instanceof AiApiError) return Response.json({ error: error.message }, { status: error.status });
   if (error instanceof ExchangeConfigurationError) return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof ExchangeOperationError) return Response.json({ error: "Exchange Online operation failed", details: error.message }, { status: 502 });
   return apiError(error);
