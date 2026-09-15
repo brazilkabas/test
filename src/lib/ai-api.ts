@@ -143,7 +143,6 @@ export async function aiApiStatus(): Promise<AiApiStatus> {
 
 export async function saveAiApiCurl(raw: string): Promise<AiApiStatus> {
   const parsed = parseCurlRequest(raw);
-  await assertPublicEndpoint(new URL(parsed.url));
   const model = typeof parsed.body.model === "string" ? parsed.body.model : null;
   const encrypted = encrypt(JSON.stringify(parsed), SECRET_CONTEXT);
 
