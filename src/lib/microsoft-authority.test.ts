@@ -7,7 +7,7 @@ describe("Microsoft multitenant authority", () => {
     expect(normalizeMicrosoftAuthority(
       "https://login.microsoftonline.com/organizations",
     )).toBe(
-      "https://login.microsoftonline.com/organizations/",
+      "https://login.microsoftonline.com/organizations",
     );
   });
 });
