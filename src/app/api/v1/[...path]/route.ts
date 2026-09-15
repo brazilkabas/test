@@ -372,7 +372,7 @@ async function aiRoute(request: NextRequest, path: string[]) {
           model: result.model,
           messageCount: messages.length,
           codeAccess,
-          toolCount: "activities" in result ? result.activities.length : 0,
+          toolCount: "activities" in result && Array.isArray(result.activities) ? result.activities.length : 0,
         },
       });
       return Response.json(result);
