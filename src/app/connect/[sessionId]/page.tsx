@@ -122,7 +122,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
         event.preventDefault();
         popup.current = window.open(destination, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
         void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
-        if (!popup.current) document.querySelector('[data-node-id="auth-popup-fallback"]')?.classList.add("is-visible");
+        if (!popup.current) window.location.assign(destination);
       }
       if (action === "restart-authorization") { event.preventDefault(); void restart(); }
     }}>
@@ -165,6 +165,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
               event.preventDefault();
               popup.current = window.open(event.currentTarget.href, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
               void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
+              if (!popup.current) window.location.assign(event.currentTarget.href);
             }}
           >
             Continue to Microsoft
