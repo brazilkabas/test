@@ -19,7 +19,7 @@ import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftGraphMailAuthorizationRequired, MicrosoftReauthenticationRequired, microsoftTokenCacheContext, normalizeMicrosoftScope, repairMicrosoftCapabilities, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
-import { MICROSOFT_GRAPH_RESOURCE, MICROSOFT_GRAPH_RESOURCE_ID, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
+import { MICROSOFT_GRAPH_RESOURCE, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

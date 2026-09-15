@@ -11,7 +11,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { AuthorizationStatus } from "@/generated/prisma/client";
 import {
   config,
-  MicrosoftConfigurationError,
   microsoftAuthConfig,
   microsoftClientId,
   microsoftRedirectUri,
