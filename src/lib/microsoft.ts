@@ -259,8 +259,21 @@ async function completeAuthorization(
   const mailboxAuthorization = pendingSession.requestedScopes.some(
     (scope) => scopeName(scope).toLowerCase() === "mail.read",
   );
+  const profile = profileFromAuthenticationResult(result);
   if (graphAuthorization) {
     assertMicrosoftGraphToken(result.accessToken);
+    const tokenIdentity = microsoftIdentityFromAccessToken(result.accessToken);
+    if (!tokenIdentity) {
+      throw new GraphError(
+        401,
+        "InvalidTokenIdentity",
+        "Microsoft Graph token did not contain tenant and object identity claims.",
+      );
+    }
+    assertMicrosoftConnectionIdentity(
+      { tenantId: result.tenantId, microsoftUserId: profile.id },
+      tokenIdentity,
+    );
     if (mailboxAuthorization && !tokenDelegatedScopes(result.accessToken).has("mail.read")) {
       throw new GraphError(
         403,
@@ -271,7 +284,6 @@ async function completeAuthorization(
   } else {
     assertConfiguredResourceToken(result.accessToken);
   }
-  const profile = profileFromAuthenticationResult(result);
   const expectedConnection = pendingSession.expectedConnectionId
     ? await db.microsoftConnection.findUnique({
         where: { id: pendingSession.expectedConnectionId },
@@ -564,6 +576,18 @@ export function tokenDelegatedScopes(accessToken: string) {
   }
 }
 
+export function microsoftIdentityFromAccessToken(accessToken: string) {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(accessToken.split(".")[1], "base64url").toString("utf8"),
+    ) as { tid?: unknown; oid?: unknown };
+    if (typeof payload.tid !== "string" || typeof payload.oid !== "string") return null;
+    return { tenantId: payload.tid, microsoftUserId: payload.oid };
+  } catch {
+    return null;
+  }
+}
+
 export function isMicrosoftGraphToken(accessToken: string) {
   const audience = tokenAudience(accessToken);
   return audience === GRAPH_APP_ID || audience === "https://graph.microsoft.com" || audience === "https://graph.microsoft.com/";
@@ -615,8 +639,8 @@ export function assertMicrosoftConnectionIdentity(
   authorized: { tenantId: string; microsoftUserId: string },
 ) {
   if (
-    expected.tenantId !== authorized.tenantId
-    || expected.microsoftUserId !== authorized.microsoftUserId
+    expected.tenantId.toLowerCase() !== authorized.tenantId.toLowerCase()
+    || expected.microsoftUserId.toLowerCase() !== authorized.microsoftUserId.toLowerCase()
   ) {
     throw new MicrosoftAccountMismatchError(
       "Microsoft authorized a different account. Sign in with the account already connected to this website session.",

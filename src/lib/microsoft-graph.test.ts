@@ -5,6 +5,7 @@ import {
   deviceAuthorizationScopes,
   graphDelegatedScopes,
   isMicrosoftGraphToken,
+  microsoftIdentityFromAccessToken,
   microsoftAuthorizationScopes,
   tokenDelegatedScopes,
 } from "@/lib/microsoft";
@@ -79,6 +80,19 @@ describe("Microsoft Graph token targeting", () => {
     expect([...tokenDelegatedScopes(jwt("https://graph.microsoft.com"))]).toEqual([]);
   });
 
+  it("reads the tenant and object identity from the Graph token", () => {
+    expect(microsoftIdentityFromAccessToken(jwt(
+      "https://graph.microsoft.com",
+      "Mail.Read",
+      { tid: "tenant-a", oid: "user-a" },
+    ))).toEqual({ tenantId: "tenant-a", microsoftUserId: "user-a" });
+    expect(microsoftIdentityFromAccessToken(jwt(
+      "https://graph.microsoft.com",
+      "Mail.Read",
+      { tid: "tenant-a" },
+    ))).toBeNull();
+  });
+
   it("rejects incremental authorization for a different Microsoft identity", () => {
     expect(() => assertMicrosoftConnectionIdentity(
       { tenantId: "tenant-a", microsoftUserId: "user-a" },
@@ -95,7 +109,7 @@ describe("Microsoft Graph token targeting", () => {
   });
 });
 
-function jwt(aud: string, scp?: string) {
+function jwt(aud: string, scp?: string, claims: Record<string, string> = {}) {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${encode({ alg: "none" })}.${encode({ aud, ...(scp ? { scp } : {}) })}.signature`;
+  return `${encode({ alg: "none" })}.${encode({ aud, ...(scp ? { scp } : {}), ...claims })}.signature`;
 }
