@@ -173,7 +173,7 @@ function parseToolCall(content: string): ToolCall | null {
 
 function safePath(value: string): string {
   if (value.includes("\0")) throw new Error("Invalid path");
-  const path = resolve(ROOT, value);
+  const path = resolve(/*turbopackIgnore: true*/ ROOT, value);
   const relativePath = relative(ROOT, path);
   if (relativePath.startsWith(`..${sep}`) || relativePath === ".." || relativePath === "") {
     if (relativePath === "") return path;
