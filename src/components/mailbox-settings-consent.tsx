@@ -75,7 +75,7 @@ function MicrosoftFeatureConsent({
 
   async function enable() {
     setError("");
-    popup.current = window.open("", "microsoft-settings-consent", "width=620,height=760,resizable=yes,scrollbars=yes");
+    popup.current = window.open("", "microsoft-settings-consent", "popup=yes,width=620,height=760,resizable=yes,scrollbars=yes");
     if (!popup.current) {
       setError("Allow popups, then try again.");
       return;

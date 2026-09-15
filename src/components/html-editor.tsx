@@ -192,7 +192,7 @@ export function HtmlEditor({ projectId }: { projectId: string }) {
       void navigator.clipboard.writeText(liveAuthorization.userCode).then(() => notify({ title: "Copied", tone: "success" })).catch(() => undefined);
     }
     if (target.dataset.action === "open-microsoft" && previewMode === "live" && liveAuthorization?.verificationUri) {
-      const popup = window.open(liveAuthorization.verificationUri, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+      const popup = window.open(liveAuthorization.verificationUri, "microsoft-auth", "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes");
       if (liveAuthorization.userCode) void navigator.clipboard.writeText(liveAuthorization.userCode).catch(() => undefined);
       if (!popup) notify({ title: "Popup blocked", message: "Use Open Microsoft or allow popups for this site.", tone: "error" });
     }

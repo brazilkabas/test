@@ -120,7 +120,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       if (action === "open-microsoft") {
         if (target.dataset.nodeId === "auth-popup-fallback") return;
         event.preventDefault();
-        popup.current = window.open(destination, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+        popup.current = window.open(destination, "microsoft-auth", "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes");
         void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
         if (!popup.current) window.location.assign(destination);
       }
@@ -163,7 +163,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
             href={authorization.verificationUri ?? "#"}
             onClick={(event) => {
               event.preventDefault();
-              popup.current = window.open(event.currentTarget.href, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+              popup.current = window.open(event.currentTarget.href, "microsoft-auth", "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes");
               void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
               if (!popup.current) window.location.assign(event.currentTarget.href);
             }}
