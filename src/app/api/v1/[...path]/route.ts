@@ -415,7 +415,7 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
         ...account,
         tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
         ...mailbox,
-        capabilities: capabilitiesFromScopes(account.grantedScopes),
+        capabilities: capabilitiesFromScopes(account.grantedScopes, mailbox.mailboxAvailable),
       },
     });
   }
@@ -556,12 +556,14 @@ async function updateUserRoles(request: NextRequest, rawUserId: string) {
   return Response.json({ roles });
 }
 
-function capabilitiesFromScopes(scopes: string[]) {
-  const normalized = new Set(scopes.map((scope) => scope.toLowerCase()));
+function capabilitiesFromScopes(scopes: string[], mailboxAvailable: boolean) {
+  const normalized = new Set(scopes.map((scope) =>
+    scope.toLowerCase().replace("https://graph.microsoft.com/", ""),
+  ));
   return {
-    readMail: normalized.has("mail.read") || normalized.has("mail.readwrite"),
-    writeMail: normalized.has("mail.readwrite"),
-    sendMail: normalized.has("mail.send"),
+    readMail: mailboxAvailable,
+    writeMail: mailboxAvailable && normalized.has("mail.readwrite"),
+    sendMail: mailboxAvailable && normalized.has("mail.send"),
     mailboxSettings: normalized.has("mailboxsettings.read") || normalized.has("mailboxsettings.readwrite"),
     directory: normalized.has("user.readbasic.all") || normalized.has("user.read.all"),
     sharedMail: normalized.has("mail.readwrite.shared") || normalized.has("mail.send.shared"),
