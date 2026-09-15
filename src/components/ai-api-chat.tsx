@@ -12,6 +12,7 @@ type Status = {
   endpoint: string | null;
   hostname: string | null;
   model: string | null;
+  credentialLocation: string | null;
   updatedAt: string | null;
 };
 
@@ -38,8 +39,11 @@ export function AiApiChat() {
   const [prompt, setPrompt] = useState("");
   const [curl, setCurl] = useState("");
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [keyOpen, setKeyOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savingKey, setSavingKey] = useState(false);
   const [sending, setSending] = useState(false);
   const [codeAccess, setCodeAccess] = useState(true);
   const [activities, setActivities] = useState<CodeActivity[]>([]);
@@ -116,7 +120,7 @@ export function AiApiChat() {
   async function removeConfiguration() {
     try {
       await api("/ai/configuration", { method: "DELETE" });
-      setStatus({ configured: false, enabled: false, endpoint: null, hostname: null, model: null, updatedAt: null });
+      setStatus({ configured: false, enabled: false, endpoint: null, hostname: null, model: null, credentialLocation: null, updatedAt: null });
       setMessages([]);
       setActivities([]);
       setConfirmDelete(false);
@@ -124,6 +128,25 @@ export function AiApiChat() {
       notify({ title: "AI API configuration removed", tone: "success" });
     } catch (caught) {
       notify({ title: "Configuration not removed", message: caught instanceof Error ? caught.message : undefined, tone: "error" });
+    }
+  }
+
+  async function saveApiKey(event: FormEvent) {
+    event.preventDefault();
+    setSavingKey(true);
+    try {
+      const next = await api<Status>("/ai/configuration/key", {
+        method: "POST",
+        body: JSON.stringify({ apiKey }),
+      });
+      setStatus(next);
+      setApiKey("");
+      setKeyOpen(false);
+      notify({ title: "API key updated", message: "The replacement key was encrypted and saved.", tone: "success" });
+    } catch (caught) {
+      notify({ title: "API key not updated", message: caught instanceof Error ? caught.message : undefined, tone: "error" });
+    } finally {
+      setSavingKey(false);
     }
   }
 
@@ -139,6 +162,7 @@ export function AiApiChat() {
       <div className="page-actions">
         {status && <StatusBadge status={status.configured ? "API connected" : "Configuration required"} />}
         {messages.length > 0 && <button className="secondary" onClick={() => { setMessages([]); setActivities([]); }}><RotateCcw size={15} />New chat</button>}
+        {status?.configured && <button className="secondary" onClick={() => setKeyOpen(true)}><KeyRound size={15} />Edit API key</button>}
         <button className="secondary" onClick={() => setConfigurationOpen(true)}><Settings2 size={15} />Configure API</button>
       </div>
     </div>
@@ -223,6 +247,24 @@ export function AiApiChat() {
           />
         </label>
         <p className="muted ai-config-help">Use a POST request with an HTTPS URL and JSON body. OpenAI-compatible <code>messages</code>, Anthropic <code>messages</code>, Gemini <code>contents</code>, and prompt/input APIs are supported.</p>
+      </form>
+    </Modal>
+
+    <Modal
+      open={keyOpen}
+      title="Edit API key"
+      onClose={() => { setKeyOpen(false); setApiKey(""); }}
+      footer={<>
+        <button className="secondary" onClick={() => { setKeyOpen(false); setApiKey(""); }}>Cancel</button>
+        <button form="ai-key-form" disabled={savingKey || !apiKey}>{savingKey ? "Encrypting…" : "Update API key"}</button>
+      </>}
+    >
+      <form id="ai-key-form" className="stack" onSubmit={saveApiKey}>
+        <div className="success-callout ai-security-callout"><ShieldCheck size={16} /><span><strong>The existing key is never displayed.</strong> Your replacement is encrypted immediately and inserted into the saved request.</span></div>
+        <label>New API key
+          <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="new-password" required />
+        </label>
+        <p className="muted ai-config-help">Credential location: <strong>{status?.credentialLocation ?? "Automatically detected from the saved curl"}</strong></p>
       </form>
     </Modal>
 

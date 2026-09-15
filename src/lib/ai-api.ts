@@ -15,7 +15,7 @@ export type AiMessage = {
   content: string;
 };
 
-type StoredRequest = {
+export type StoredRequest = {
   url: string;
   method: "POST";
   headers: Record<string, string>;
@@ -28,6 +28,7 @@ export type AiApiStatus = {
   endpoint: string | null;
   hostname: string | null;
   model: string | null;
+  credentialLocation: string | null;
   updatedAt: string | null;
 };
 
@@ -130,13 +131,19 @@ export function parseCurlRequest(raw: string): StoredRequest {
 
 export async function aiApiStatus(): Promise<AiApiStatus> {
   const integration = await db.integration.findUnique({ where: { provider: PROVIDER } });
-  const configuration = integration?.configuration as { endpoint?: string; hostname?: string; model?: string | null } | null;
+  const configuration = integration?.configuration as {
+    endpoint?: string;
+    hostname?: string;
+    model?: string | null;
+    credentialLocation?: string | null;
+  } | null;
   return {
     configured: Boolean(integration?.secretReferenceId),
     enabled: integration?.enabled ?? false,
     endpoint: configuration?.endpoint ?? null,
     hostname: configuration?.hostname ?? null,
     model: configuration?.model ?? null,
+    credentialLocation: configuration?.credentialLocation ?? null,
     updatedAt: integration?.updatedAt.toISOString() ?? null,
   };
 }
@@ -144,6 +151,7 @@ export async function aiApiStatus(): Promise<AiApiStatus> {
 export async function saveAiApiCurl(raw: string): Promise<AiApiStatus> {
   const parsed = parseCurlRequest(raw);
   const model = typeof parsed.body.model === "string" ? parsed.body.model : null;
+  const credentialLocation = findCredentialLocation(parsed);
   const encrypted = encrypt(JSON.stringify(parsed), SECRET_CONTEXT);
 
   await db.$transaction(async (tx) => {
@@ -158,15 +166,47 @@ export async function saveAiApiCurl(raw: string): Promise<AiApiStatus> {
         provider: PROVIDER,
         enabled: true,
         secretReferenceId: secret.id,
-        configuration: { endpoint: parsed.url, hostname: new URL(parsed.url).hostname, model },
+        configuration: { endpoint: parsed.url, hostname: new URL(parsed.url).hostname, model, credentialLocation },
       },
       update: {
         enabled: true,
         secretReferenceId: secret.id,
-        configuration: { endpoint: parsed.url, hostname: new URL(parsed.url).hostname, model },
+        configuration: { endpoint: parsed.url, hostname: new URL(parsed.url).hostname, model, credentialLocation },
       },
     });
   });
+  return aiApiStatus();
+}
+
+export async function updateAiApiKey(apiKey: string): Promise<AiApiStatus> {
+  const integration = await db.integration.findUnique({ where: { provider: PROVIDER } });
+  if (!integration?.secretReferenceId) {
+    throw new AiApiError(404, "Configure an AI API curl command before editing its key");
+  }
+  const secret = await db.encryptedSecretReference.findUnique({ where: { id: integration.secretReferenceId } });
+  if (!secret) throw new AiApiError(404, "The saved AI API credential is unavailable");
+
+  let request: StoredRequest;
+  try {
+    request = JSON.parse(decrypt(secret.ciphertext, SECRET_CONTEXT)) as StoredRequest;
+  } catch {
+    throw new AiApiError(500, "The saved AI API configuration could not be decrypted");
+  }
+  const credentialLocation = replaceCredential(request, apiKey);
+  const current = integration.configuration as Record<string, unknown> | null;
+  await db.$transaction([
+    db.encryptedSecretReference.update({
+      where: { id: secret.id },
+      data: {
+        ciphertext: encrypt(JSON.stringify(request), SECRET_CONTEXT),
+        keyVersion: { increment: 1 },
+      },
+    }),
+    db.integration.update({
+      where: { id: integration.id },
+      data: { configuration: { ...(current ?? {}), credentialLocation } },
+    }),
+  ]);
   return aiApiStatus();
 }
 
@@ -355,6 +395,50 @@ function requiredFlagValue(tokens: string[], index: number, flag: string): strin
   const value = tokens[index];
   if (value === undefined) throw new AiApiError(400, `${flag} requires a value`);
   return value;
+}
+
+export function replaceCredential(request: StoredRequest, apiKey: string): string {
+  const header = Object.keys(request.headers).find((name) => isCredentialHeader(name));
+  if (header) {
+    const current = request.headers[header];
+    const scheme = current.match(/^(Bearer|Basic|Token)\s+/i)?.[0] ?? "";
+    request.headers[header] = `${scheme}${apiKey}`;
+    return `${header} header`;
+  }
+
+  const url = new URL(request.url);
+  const queryKey = [...url.searchParams.keys()].find((name) => isCredentialName(name));
+  if (queryKey) {
+    url.searchParams.set(queryKey, apiKey);
+    request.url = url.toString();
+    return `${queryKey} query parameter`;
+  }
+
+  const bodyKey = Object.keys(request.body).find((name) => isCredentialName(name));
+  if (bodyKey) {
+    request.body[bodyKey] = apiKey;
+    return `${bodyKey} body field`;
+  }
+  throw new AiApiError(422, "No API-key header, query parameter, or body field was found in the saved curl request");
+}
+
+function findCredentialLocation(request: StoredRequest): string | null {
+  const header = Object.keys(request.headers).find((name) => isCredentialHeader(name));
+  if (header) return `${header} header`;
+  const url = new URL(request.url);
+  const queryKey = [...url.searchParams.keys()].find((name) => isCredentialName(name));
+  if (queryKey) return `${queryKey} query parameter`;
+  const bodyKey = Object.keys(request.body).find((name) => isCredentialName(name));
+  return bodyKey ? `${bodyKey} body field` : null;
+}
+
+function isCredentialHeader(name: string) {
+  return ["authorization", "x-api-key", "api-key", "x-goog-api-key", "anthropic-api-key", "x-auth-key"]
+    .includes(name.toLowerCase());
+}
+
+function isCredentialName(name: string) {
+  return ["key", "api_key", "apikey", "api-key", "token", "access_token"].includes(name.toLowerCase());
 }
 
 function addHeader(headers: Record<string, string>, header: string, flag: string): void {

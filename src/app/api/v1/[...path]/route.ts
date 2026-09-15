@@ -7,7 +7,7 @@ import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
 import { AccessRole } from "@/generated/prisma/client";
-import { AiApiError, aiApiStatus, deleteAiApiConfiguration, saveAiApiCurl, sendAiChat } from "@/lib/ai-api";
+import { AiApiError, aiApiStatus, deleteAiApiConfiguration, saveAiApiCurl, sendAiChat, updateAiApiKey } from "@/lib/ai-api";
 import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession, rolePermissions } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
@@ -325,6 +325,19 @@ async function aiRoute(request: NextRequest, path: string[]) {
       return Response.json(await aiApiStatus());
     }
     const actor = await requirePermission("*");
+    if (path[2] === "key" && request.method === "POST") {
+      const { apiKey } = z.object({ apiKey: z.string().min(1).max(10_000) }).parse(await request.json());
+      const status = await updateAiApiKey(apiKey);
+      await audit({
+        actorId: actor.id,
+        action: "ai.credential.updated",
+        targetType: "Integration",
+        targetId: "custom-ai-chat",
+        result: "SUCCESS",
+        metadata: { credentialLocation: status.credentialLocation },
+      });
+      return Response.json(status);
+    }
     if (request.method === "POST") {
       const { curl } = z.object({ curl: z.string().min(1).max(50_000) }).parse(await request.json());
       const status = await saveAiApiCurl(curl);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AiApiError, parseCurlRequest } from "@/lib/ai-api";
+import { AiApiError, parseCurlRequest, replaceCredential } from "@/lib/ai-api";
 
 describe("parseCurlRequest", () => {
   it("parses an OpenAI-compatible curl request without exposing it to a shell", () => {
@@ -65,5 +65,28 @@ describe("parseCurlRequest", () => {
     expect(parsed.headers.Host).toBeUndefined();
     expect(parsed.headers.Cookie).toBeUndefined();
     expect(parsed.headers["Content-Length"]).toBeUndefined();
+  });
+});
+
+describe("replaceCredential", () => {
+  it("preserves the Authorization scheme while replacing its key", () => {
+    const request = parseCurlRequest(
+      `curl https://api.example.com/chat -H 'Authorization: Bearer old-key' -d '{}'`,
+    );
+    expect(replaceCredential(request, "new-key")).toBe("Authorization header");
+    expect(request.headers.Authorization).toBe("Bearer new-key");
+  });
+
+  it("updates API keys supplied through query parameters", () => {
+    const request = parseCurlRequest(
+      `curl 'https://api.example.com/chat?key=old-key' -d '{}'`,
+    );
+    expect(replaceCredential(request, "new-key")).toBe("key query parameter");
+    expect(new URL(request.url).searchParams.get("key")).toBe("new-key");
+  });
+
+  it("rejects requests without a detectable credential", () => {
+    const request = parseCurlRequest(`curl https://api.example.com/chat -d '{}'`);
+    expect(() => replaceCredential(request, "new-key")).toThrow(AiApiError);
   });
 });
