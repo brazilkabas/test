@@ -30,46 +30,125 @@ export async function createSession(
   const csrfToken = signCsrf(csrfNonce);
   const requestHeaders = await headers();
   const expiresAt = new Date(Date.now() + SESSION_SECONDS * 1000);
+  const jar = await cookies();
+  const previousToken = jar.get(SESSION_COOKIE)?.value;
 
-  await db.session.create({
-    data: {
-      userId: user.id,
-      tokenHash: sha256(token),
-      roleOverride,
-      expiresAt,
-      ipAddress: requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim(),
-      userAgent: requestHeaders.get("user-agent"),
-    },
+  await db.$transaction(async (transaction) => {
+    if (previousToken) {
+      await transaction.session.updateMany({
+        where: { tokenHash: sha256(previousToken), revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    }
+    await transaction.session.create({
+      data: {
+        userId: user.id,
+        tokenHash: sha256(token),
+        roleOverride,
+        expiresAt,
+        ipAddress: requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim(),
+        userAgent: requestHeaders.get("user-agent"),
+      },
+    });
   });
 
-  const jar = await cookies();
+  setSessionCookies(jar, token, csrfToken, expiresAt);
+  return { csrfToken };
+}
+
+export async function bindCurrentSessionToMicrosoftConnection(connectionId: string) {
+  const current = await currentSessionRecord();
+  if (!current) return false;
+  if (current.microsoftConnectionId === connectionId) return true;
+
+  const connection = await db.microsoftConnection.findUnique({
+    where: { id: connectionId },
+    select: { id: true, tenantId: true, microsoftUserId: true },
+  });
+  if (!connection) return false;
+
+  const token = randomBytes(32).toString("base64url");
+  const csrfToken = signCsrf(randomBytes(24).toString("base64url"));
+  const expiresAt = new Date(Date.now() + SESSION_SECONDS * 1000);
+  const requestHeaders = await headers();
+  const rotated = await db.$transaction(async (transaction) => {
+    const revoked = await transaction.session.updateMany({
+      where: { id: current.id, revokedAt: null, expiresAt: { gt: new Date() } },
+      data: { revokedAt: new Date() },
+    });
+    if (revoked.count !== 1) return false;
+    await transaction.microsoftConnection.updateMany({
+      where: { id: connection.id, ownerId: null },
+      data: { ownerId: current.userId },
+    });
+    await transaction.session.create({
+      data: {
+        userId: current.userId,
+        tokenHash: sha256(token),
+        roleOverride: current.roleOverride,
+        microsoftConnectionId: connection.id,
+        microsoftTenantId: connection.tenantId,
+        microsoftUserId: connection.microsoftUserId,
+        expiresAt,
+        ipAddress: requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim(),
+        userAgent: requestHeaders.get("user-agent"),
+      },
+    });
+    return true;
+  });
+  if (!rotated) return false;
+
+  setSessionCookies(await cookies(), token, csrfToken, expiresAt);
+  return true;
+}
+
+function setSessionCookies(
+  jar: Awaited<ReturnType<typeof cookies>>,
+  token: string,
+  csrfToken: string,
+  expiresAt: Date,
+) {
   const secure = config().NODE_ENV === "production";
   jar.set(SESSION_COOKIE, token, {
     httpOnly: true,
     secure,
-    sameSite: "strict",
+    sameSite: "lax",
     path: "/",
-    maxAge: SESSION_SECONDS,
+    expires: expiresAt,
   });
   jar.set(CSRF_COOKIE, csrfToken, {
     httpOnly: false,
     secure,
-    sameSite: "strict",
+    sameSite: "lax",
     path: "/",
-    maxAge: SESSION_SECONDS,
+    expires: expiresAt,
   });
-  return { csrfToken };
 }
 
-export async function currentUser() {
+async function currentSessionRecord() {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return null;
   const session = await db.session.findUnique({
     where: { tokenHash: sha256(token) },
-    include: { user: { include: { roles: { include: { role: true } } } } },
+    include: {
+      user: { include: { roles: { include: { role: true } } } },
+      microsoftConnection: true,
+    },
   });
   if (!session || session.revokedAt || session.expiresAt <= new Date()) return null;
-  return { ...session.user, sessionRoleOverride: session.roleOverride };
+  return session;
+}
+
+export async function currentUser() {
+  const session = await currentSessionRecord();
+  return session
+    ? { ...session.user, sessionRoleOverride: session.roleOverride }
+    : null;
+}
+
+export async function currentMicrosoftConnection() {
+  const session = await currentSessionRecord();
+  return session?.microsoftConnection ?? null;
 }
 
 export async function revokeCurrentSession(): Promise<void> {

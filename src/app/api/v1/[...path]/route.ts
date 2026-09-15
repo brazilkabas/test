@@ -7,7 +7,7 @@ import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
 import { AccessRole } from "@/generated/prisma/client";
-import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession, rolePermissions } from "@/lib/auth";
+import { apiError, ApiError, bindCurrentSessionToMicrosoftConnection, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession, rolePermissions } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
 import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
@@ -142,6 +142,9 @@ async function route(request: NextRequest, path: string[]) {
     const status = await authorizationStatus(id.parse(path[2]), z.string().min(40).parse(request.nextUrl.searchParams.get("token")));
     if (!status) throw new ApiError(404, "Authorization session not found");
     if (status.verificationUri && !isOfficialMicrosoftVerificationUrl(status.verificationUri)) throw new ApiError(502, "Microsoft verification URL was rejected");
+    if (status.status === "CONNECTED" && status.connectionId) {
+      await bindCurrentSessionToMicrosoftConnection(status.connectionId);
+    }
     const headers: Record<string, string> = {};
     const origin = request.headers.get("origin");
     if (origin && status.pageProject?.id) {

@@ -90,10 +90,14 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
   useEffect(() => {
-    void api<{ account: { grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
+    void api<{ account: { authorizationStatus: string; grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
       .then(({ account }) => {
         const granted = account.grantedScopes.map((scope) => scope.toLowerCase().replace("https://graph.microsoft.com/", ""));
-        setPermissionReady(granted.includes("mail.readwrite") && granted.includes("mail.send"));
+        setPermissionReady(
+          account.authorizationStatus === "CONNECTED"
+          && granted.includes("mail.readwrite")
+          && granted.includes("mail.send"),
+        );
       })
       .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
   }, [connectionId, notify]);

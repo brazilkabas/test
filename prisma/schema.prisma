@@ -93,18 +93,23 @@ model UserRole {
 }
 
 model Session {
-  id        String   @id @default(cuid())
-  userId    String
-  tokenHash String   @unique
-  roleOverride AccessRole?
-  expiresAt DateTime
-  revokedAt DateTime?
-  ipAddress String?
-  userAgent String?
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                    String               @id @default(cuid())
+  userId                String
+  tokenHash             String               @unique
+  roleOverride          AccessRole?
+  microsoftConnectionId String?
+  microsoftTenantId     String?
+  microsoftUserId       String?
+  expiresAt             DateTime
+  revokedAt             DateTime?
+  ipAddress             String?
+  userAgent             String?
+  createdAt             DateTime             @default(now())
+  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  microsoftConnection   MicrosoftConnection? @relation(fields: [microsoftConnectionId], references: [id], onDelete: SetNull)
 
   @@index([userId, expiresAt])
+  @@index([microsoftConnectionId, expiresAt])
 }
 
 model AccessCode {
@@ -149,6 +154,7 @@ model MicrosoftConnection {
   createdAt                DateTime              @default(now())
   updatedAt                DateTime              @updatedAt
   owner                    User?                 @relation("ConnectionOwner", fields: [ownerId], references: [id])
+  websiteSessions          Session[]
   authorizationSessions    MicrosoftAuthorizationSession[]
   mailboxes                Mailbox[]
   sharedMailboxPermissions MailboxPermission[]

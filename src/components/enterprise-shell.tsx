@@ -61,10 +61,9 @@ export function EnterpriseShell({ user, children }: { user: { email: string; dis
   }, []);
 
   const navigation = useMemo(() => {
-    const mailbox = accountId ? `/mail/${accountId}` : "/admin/accounts";
     return [
       ...staticNavigation.slice(0, 2),
-      { href: mailbox, icon: Inbox, label: "Mail" },
+      { href: "/mail", icon: Inbox, label: "Mail" },
       ...staticNavigation.slice(2, 4),
       { href: accountId ? `/mail/${accountId}/rules` : "/admin/accounts", icon: FolderKanban, label: "Rules" },
       ...staticNavigation.slice(4),
