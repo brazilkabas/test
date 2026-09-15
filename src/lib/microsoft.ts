@@ -53,6 +53,7 @@ export async function startDeviceAuthorization(
   pageProjectId?: string,
   purpose: MicrosoftAuthorizationPurpose = "identity",
 ): Promise<{ publicId: string; statusToken: string }> {
+  microsoftClientId();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose);
   const customizedPage = purpose === "identity" && pageProjectId
