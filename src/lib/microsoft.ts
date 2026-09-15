@@ -776,7 +776,10 @@ export function microsoftAuthorizationScopes(
   _purpose: MicrosoftAuthorizationPurpose,
   configuredScopes = microsoftAuthConfig().requestedScopes,
 ) {
-  return [...new Set(configuredScopes.map((scope) => scope.trim()).filter(Boolean))];
+  const scopes = [...new Set(configuredScopes.map((scope) => scope.trim()).filter(Boolean))];
+  return scopes.some((scope) => normalizeMicrosoftScope(scope) === "mail.read")
+    ? scopes
+    : [...scopes, "Mail.Read"];
 }
 
 export async function repairMicrosoftCapabilities(connectionId: string) {
