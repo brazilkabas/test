@@ -6,7 +6,6 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, csrfToken } from "@/components/api";
 import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, useToast } from "@/components/design-system";
-import { MailboxAccessConsent } from "@/components/mailbox-settings-consent";
 
 type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number; depth?: number };
 type Message = {
@@ -32,12 +31,6 @@ type MailCapabilities = {
   canSendMail: boolean;
   canReadMailboxSettings: boolean;
   canModifyMailboxSettings: boolean;
-};
-type MailAccount = {
-  displayName: string | null;
-  email: string | null;
-  userPrincipalName: string | null;
-  capabilities: MailCapabilities;
 };
 const emptyFilters: Filters = { sender: "", recipient: "", subject: "", keyword: "", read: "", hasAttachments: false, flagged: false, importance: "", fromDate: "", toDate: "" };
 
@@ -68,7 +61,6 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [preview, setPreview] = useState<{ url: string; attachment: Attachment } | null>(null);
   const [capabilities, setCapabilities] = useState<MailCapabilities | null>(null);
-  const [account, setAccount] = useState<MailAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
 
@@ -108,9 +100,8 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
   const loadCapabilities = useCallback(() => {
-    return api<{ account: MailAccount }>(`/microsoft/accounts/${connectionId}`)
+    return api<{ account: { capabilities: MailCapabilities } }>(`/microsoft/accounts/${connectionId}`)
       .then(({ account }) => {
-        setAccount(account);
         setCapabilities(account.capabilities);
       })
       .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
@@ -200,18 +191,15 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }
 
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
-  const onPermissionGranted = useCallback(() => {
-    notify({ title: "Mail access granted", tone: "success" });
-    void loadCapabilities();
-  }, [loadCapabilities, notify]);
-
   if (capabilities === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
   if (!capabilities.canReadMail) {
-    return <MailboxAccessConsent
-      connectionId={connectionId}
-      accountLabel={account?.displayName ?? account?.email ?? account?.userPrincipalName ?? "Microsoft account"}
-      onGranted={onPermissionGranted}
-    />;
+    return <section className="panel panel-body">
+      <EmptyState
+        icon="✉"
+        title="Mail unavailable"
+        description="This Microsoft connection does not currently include mailbox access."
+      />
+    </section>;
   }
   return (
     <div className="mail-workspace">

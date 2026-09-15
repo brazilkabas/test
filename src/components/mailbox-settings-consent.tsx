@@ -21,17 +21,6 @@ export function MailboxSettingsConsent(props: { connectionId: string; onGranted:
   />;
 }
 
-export function MailboxAccessConsent(props: { connectionId: string; accountLabel: string; onGranted: () => void }) {
-  return <MicrosoftFeatureConsent
-    {...props}
-    purpose="mailbox"
-    title="Connect mailbox"
-    description="Authorize read-only mailbox access for this existing connected account. Your current account connection remains unchanged."
-    buttonLabel="Connect mailbox"
-    adminApprovalDescription="mailbox access"
-  />;
-}
-
 function MicrosoftFeatureConsent({
   connectionId,
   onGranted,
@@ -40,16 +29,14 @@ function MicrosoftFeatureConsent({
   description,
   buttonLabel,
   adminApprovalDescription,
-  accountLabel,
 }: {
   connectionId: string;
   onGranted: () => void;
-  purpose: "mailbox" | "mailbox-settings";
+  purpose: "mailbox-settings";
   title: string;
   description: string;
   buttonLabel: string;
   adminApprovalDescription: string;
-  accountLabel?: string;
 }) {
   const [session, setSession] = useState<{ sessionId: string; statusToken: string } | null>(null);
   const [error, setError] = useState("");
@@ -69,9 +56,6 @@ function MicrosoftFeatureConsent({
             setError("A different Microsoft account was authorized. Retry with this mailbox account.");
             return;
           }
-          if (purpose === "mailbox") {
-            window.dispatchEvent(new CustomEvent("microsoft-graph-mail-connected", { detail: { connectionId } }));
-          }
           onGranted();
         } else if (authorization.status === "FAILED" || authorization.status === "CANCELLED" || authorization.status === "EXPIRED") {
           window.clearInterval(poll);
@@ -85,7 +69,7 @@ function MicrosoftFeatureConsent({
       }).catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(poll);
-  }, [adminApprovalDescription, connectionId, onGranted, purpose, session]);
+  }, [adminApprovalDescription, connectionId, onGranted, session]);
 
   async function enable() {
     setError("");
@@ -95,27 +79,20 @@ function MicrosoftFeatureConsent({
       return;
     }
     try {
-      const endpoint = purpose === "mailbox"
-        ? `/microsoft/accounts/${connectionId}/mail-auth/start`
-        : "/microsoft/device/start";
-      const result = await api<{ sessionId: string; statusToken: string; connectUrl: string }>(endpoint, {
+      const result = await api<{ sessionId: string; statusToken: string; connectUrl: string }>("/microsoft/device/start", {
         method: "POST",
-        body: JSON.stringify(purpose === "mailbox" ? {} : { purpose, connectionId }),
+        body: JSON.stringify({ purpose, connectionId }),
       });
       popup.current.location.href = result.connectUrl;
       setSession({ sessionId: result.sessionId, statusToken: result.statusToken });
     } catch (caught) {
       try { popup.current.close(); } catch {}
-      const message = caught instanceof Error ? caught.message : "Unable to start Microsoft authorization";
-      setError(message.includes("MICROSOFT_GRAPH_MAIL_CLIENT_ID")
-        ? "Mailbox connection is not configured. Contact an administrator."
-        : message);
+      setError(caught instanceof Error ? caught.message : "Unable to start Microsoft authorization");
     }
   }
 
   return <section className="panel panel-body stack">
     <h1>{title}</h1>
-    {accountLabel && <p><strong>{accountLabel}</strong></p>}
     <p className="muted">{description}</p>
     {error && <p className="error">{error}</p>}
     <div><button type="button" disabled={Boolean(session)} onClick={() => void enable()}>{session ? "Waiting for Microsoft…" : buttonLabel}</button></div>

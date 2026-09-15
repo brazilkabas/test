@@ -86,7 +86,7 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
 
   return (
     <>
-      <div className="page-header"><div><h1>Microsoft accounts</h1><p className="muted">Connected employees and mailbox capabilities</p></div><button onClick={() => void startConnection()}>+ Connect account</button></div>
+      <div className="page-header"><div><h1>Microsoft accounts</h1><p className="muted">Connected employees and delegated Graph capabilities</p></div><button onClick={() => void startConnection()}>+ Connect account</button></div>
       <section className="panel">
         <div className="table-toolbar"><input type="search" aria-label="Search accounts" placeholder="Search employee, email, tenant or object ID" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Filter connection status" style={{ width: 210 }} value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="CONNECTED">Connected</option><option value="REAUTHENTICATION_REQUIRED">Reauthentication required</option><option value="REVOKED">Revoked</option><option value="FAILED">Failed</option></select><span className="muted">{filtered.length} account{filtered.length === 1 ? "" : "s"}</span></div>
         {loading ? <div className="panel-body"><Skeleton lines={6} /></div> : filtered.length === 0 ? <EmptyState icon="◎" title="No matching accounts" description={accounts.length ? "Change the filters to see other connections." : "Connect an employee through Microsoft device authorization."} action={!accounts.length ? <button onClick={() => void startConnection()}>Connect account</button> : undefined} /> : (
