@@ -490,7 +490,7 @@ async function completeAuthorization(
     if (!pendingSession.connection || !graphResource) {
       throw new MicrosoftConfigurationError("Graph mail authorization is not attached to a valid Microsoft Graph target.");
     }
-    const tokenCacheKeyVersion = 1;
+    const tokenCacheKeyVersion = 2;
     const encryptedTokenCache = encrypt(
       pca.getTokenCache().serialize(),
       microsoftGraphMailTokenCacheContext({
@@ -498,6 +498,7 @@ async function completeAuthorization(
         tenantId: result.tenantId,
         microsoftUserId: profile.id,
         clientId: pendingSession.clientId,
+        resourceAppId: MICROSOFT_GRAPH_RESOURCE_ID,
         tokenCacheKeyVersion,
       }),
     );
@@ -886,8 +887,19 @@ export function microsoftGraphMailTokenCacheContext(graphMailAuth: {
   tenantId: string;
   microsoftUserId: string;
   clientId: string;
+  resourceAppId: string;
   tokenCacheKeyVersion: number;
 }) {
+  if (graphMailAuth.tokenCacheKeyVersion >= 2) {
+    return [
+      "msal-graph-mail-v2",
+      graphMailAuth.connectionId,
+      graphMailAuth.tenantId,
+      graphMailAuth.microsoftUserId,
+      graphMailAuth.clientId,
+      graphMailAuth.resourceAppId,
+    ].join(":");
+  }
   return [
     "msal-graph-mail",
     graphMailAuth.tokenCacheKeyVersion,

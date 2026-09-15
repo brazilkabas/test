@@ -8,6 +8,7 @@ import {
   microsoftAuthorizationScopes,
   microsoftCapabilitiesFromScopes,
   microsoftErrorCode,
+  microsoftGraphMailTokenCacheContext,
   microsoftProfileEmail,
 } from "@/lib/microsoft";
 
@@ -140,6 +141,30 @@ describe("Microsoft Graph token targeting", () => {
       canReadMailboxSettings: true,
       canModifyMailboxSettings: false,
     });
+  });
+
+  it("binds new mailbox caches to the connection, identity, client, and resource", () => {
+    expect(microsoftGraphMailTokenCacheContext({
+      connectionId: "connection-1",
+      tenantId: "tenant-1",
+      microsoftUserId: "user-1",
+      clientId: "client-1",
+      resourceAppId: "00000003-0000-0000-c000-000000000000",
+      tokenCacheKeyVersion: 2,
+    })).toBe(
+      "msal-graph-mail-v2:connection-1:tenant-1:user-1:client-1:00000003-0000-0000-c000-000000000000",
+    );
+  });
+
+  it("preserves the version-1 mailbox cache context for existing records", () => {
+    expect(microsoftGraphMailTokenCacheContext({
+      connectionId: "connection-1",
+      tenantId: "tenant-1",
+      microsoftUserId: "user-1",
+      clientId: "client-1",
+      resourceAppId: "00000003-0000-0000-c000-000000000000",
+      tokenCacheKeyVersion: 1,
+    })).toBe("msal-graph-mail:1:connection-1:tenant-1:user-1:client-1");
   });
 });
 

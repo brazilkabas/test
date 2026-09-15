@@ -205,7 +205,7 @@ model MicrosoftGraphMailAuth {
   capabilities             Json                  @default("{}")
   authorizationStatus      AuthorizationStatus   @default(CONNECTED)
   encryptedTokenCache      Bytes
-  tokenCacheKeyVersion     Int                   @default(1)
+  tokenCacheKeyVersion     Int                   @default(2)
   accessTokenExpiresAt     DateTime?
   lastSuccessfulGraphAt    DateTime?
   createdAt                DateTime              @default(now())
