@@ -33,6 +33,20 @@ describe("parseCurlRequest", () => {
     expect(parsed.body).toEqual({ prompt: "hello" });
   });
 
+  it("supports compact and equals-style curl flags", () => {
+    const parsed = parseCurlRequest(
+      `curl -XPOST --url=https://api.example.com/chat --header='Authorization: Bearer key' --data='{"model":"chat"}'`,
+    );
+    expect(parsed.method).toBe("POST");
+    expect(parsed.headers.Authorization).toBe("Bearer key");
+    expect(parsed.body).toEqual({ model: "chat" });
+  });
+
+  it("supports Windows caret line continuations", () => {
+    const parsed = parseCurlRequest("curl https://api.example.com/chat ^\n-H \"X-API-Key: key\" ^\n-d '{}'");
+    expect(parsed.headers["X-API-Key"]).toBe("key");
+  });
+
   it.each([
     ["non-HTTPS endpoints", `curl http://api.example.com/chat -d '{}'`],
     ["local endpoints", `curl https://localhost/chat -d '{}'`],

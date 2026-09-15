@@ -12,6 +12,7 @@ import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePer
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
 import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
+import { CodeAgentError, runCodeAgent } from "@/lib/code-agent";
 import { config, MicrosoftConfigurationError, microsoftRedirectUri } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
@@ -352,21 +353,27 @@ async function aiRoute(request: NextRequest, path: string[]) {
   if (path[1] === "chat" && request.method === "POST") {
     const actor = await requirePermission("ai:chat");
     enforceAiRateLimit(`${actor.id}:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local"}`);
-    const { messages } = z.object({
+    const { messages, codeAccess } = z.object({
       messages: z.array(z.object({
         role: z.enum(["system", "user", "assistant"]),
         content: z.string().min(1).max(20_000),
       })).min(1).max(50),
+      codeAccess: z.boolean().default(false),
     }).parse(await request.json());
     try {
-      const result = await sendAiChat(messages);
+      const result = codeAccess ? await runCodeAgent(messages) : await sendAiChat(messages);
       await audit({
         actorId: actor.id,
         action: "ai.chat.completed",
         targetType: "Integration",
         targetId: "custom-ai-chat",
         result: "SUCCESS",
-        metadata: { model: result.model, messageCount: messages.length },
+        metadata: {
+          model: result.model,
+          messageCount: messages.length,
+          codeAccess,
+          toolCount: "activities" in result ? result.activities.length : 0,
+        },
       });
       return Response.json(result);
     } catch (error) {
@@ -376,7 +383,7 @@ async function aiRoute(request: NextRequest, path: string[]) {
         targetType: "Integration",
         targetId: "custom-ai-chat",
         result: "FAILURE",
-        metadata: { messageCount: messages.length },
+        metadata: { messageCount: messages.length, codeAccess },
       });
       throw error;
     }
@@ -393,7 +400,8 @@ async function login(request: NextRequest) {
   let roleOverride: AccessRole | undefined;
 
   const userCount = await db.user.count();
-  if (userCount === 0 && config().BOOTSTRAP_ACCESS_CODE && code === config().BOOTSTRAP_ACCESS_CODE) {
+  const bootstrapCode = config().BOOTSTRAP_ACCESS_CODE && code === config().BOOTSTRAP_ACCESS_CODE;
+  if (bootstrapCode && (userCount === 0 || config().NODE_ENV === "development")) {
     user = await bootstrapAdmin();
   } else {
     const candidates = await db.accessCode.findMany({
@@ -1871,6 +1879,7 @@ function handle(error: unknown) {
     return Response.json({ error: error.message }, { status: error.status });
   }
   if (error instanceof AiApiError) return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof CodeAgentError) return Response.json({ error: error.message }, { status: error.status });
   if (error instanceof ExchangeConfigurationError) return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof ExchangeOperationError) return Response.json({ error: "Exchange Online operation failed", details: error.message }, { status: 502 });
   return apiError(error);

@@ -36,7 +36,7 @@ export function parseCurlRequest(raw: string): StoredRequest {
     throw new AiApiError(400, `The curl command must be between 1 and ${MAX_CURL_LENGTH} characters`);
   }
 
-  const tokens = shellTokens(raw.replace(/\\\r?\n/g, " "));
+  const tokens = shellTokens(raw.replace(/(?:\\|\^)\r?\n/g, " "));
   if (tokens.shift()?.toLowerCase() !== "curl") {
     throw new AiApiError(400, "Paste a curl command that starts with curl");
   }
@@ -48,23 +48,46 @@ export function parseCurlRequest(raw: string): StoredRequest {
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (["-L", "--location", "--compressed", "-s", "--silent", "--show-error"].includes(token)) continue;
+    if (["-L", "--location", "--location-trusted", "--compressed", "-s", "--silent", "-S", "--show-error", "--fail", "--fail-with-body"].includes(token)) continue;
+    if (token.startsWith("--request=")) {
+      method = token.slice("--request=".length).toUpperCase();
+      continue;
+    }
+    if (/^-X.+/.test(token)) {
+      method = token.slice(2).toUpperCase();
+      continue;
+    }
     if (["-X", "--request"].includes(token)) {
       method = requiredFlagValue(tokens, ++index, token).toUpperCase();
       continue;
     }
+    if (token.startsWith("--header=")) {
+      addHeader(headers, token.slice("--header=".length), "--header");
+      continue;
+    }
+    if (/^-H.+/.test(token)) {
+      addHeader(headers, token.slice(2), "-H");
+      continue;
+    }
     if (["-H", "--header"].includes(token)) {
-      const header = requiredFlagValue(tokens, ++index, token);
-      const separator = header.indexOf(":");
-      if (separator <= 0) throw new AiApiError(400, `Invalid header in ${token}`);
-      const name = header.slice(0, separator).trim();
-      const value = header.slice(separator + 1).trim();
-      if (!name || /[\r\n]/.test(name + value)) throw new AiApiError(400, "Invalid curl header");
-      headers[name] = value;
+      addHeader(headers, requiredFlagValue(tokens, ++index, token), token);
+      continue;
+    }
+    const dataPrefix = ["--data=", "--data-raw=", "--data-binary="].find((prefix) => token.startsWith(prefix));
+    if (dataPrefix) {
+      bodyText = token.slice(dataPrefix.length);
       continue;
     }
     if (["-d", "--data", "--data-raw", "--data-binary"].includes(token)) {
       bodyText = requiredFlagValue(tokens, ++index, token);
+      continue;
+    }
+    if (/^-d.+/.test(token)) {
+      bodyText = token.slice(2);
+      continue;
+    }
+    if (token.startsWith("--url=")) {
+      urlText = token.slice("--url=".length);
       continue;
     }
     if (token === "--url") {
@@ -159,7 +182,7 @@ export async function sendAiChat(messages: AiMessage[]): Promise<{ content: stri
   const request = await storedRequest();
   const endpoint = new URL(request.url);
   await assertPublicEndpoint(endpoint);
-  const body = requestBody(request.body, messages);
+  const body = requestBody(request.body, messages, endpoint.hostname, request.headers);
 
   let response: Response;
   try {
@@ -197,8 +220,15 @@ export async function sendAiChat(messages: AiMessage[]): Promise<{ content: stri
   return { content, model };
 }
 
-function requestBody(template: Record<string, unknown>, messages: AiMessage[]): Record<string, unknown> {
+function requestBody(
+  template: Record<string, unknown>,
+  messages: AiMessage[],
+  hostname: string,
+  headers: Record<string, string>,
+): Record<string, unknown> {
   const body = structuredClone(template);
+  const anthropic = hostname.endsWith("anthropic.com") ||
+    Object.keys(headers).some((name) => name.toLowerCase() === "anthropic-version");
   if ("contents" in body) {
     body.contents = messages
       .filter((message) => message.role !== "system")
@@ -212,6 +242,10 @@ function requestBody(template: Record<string, unknown>, messages: AiMessage[]): 
     body.prompt = transcript(messages);
   } else if ("input" in body && !("messages" in body)) {
     body.input = messages;
+  } else if (anthropic) {
+    const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
+    if (system) body.system = system;
+    body.messages = messages.filter((message) => message.role !== "system");
   } else {
     body.messages = messages;
   }
@@ -324,6 +358,15 @@ function requiredFlagValue(tokens: string[], index: number, flag: string): strin
   return value;
 }
 
+function addHeader(headers: Record<string, string>, header: string, flag: string): void {
+  const separator = header.indexOf(":");
+  if (separator <= 0) throw new AiApiError(400, `Invalid header in ${flag}`);
+  const name = header.slice(0, separator).trim();
+  const value = header.slice(separator + 1).trim();
+  if (!name || /[\r\n]/.test(name + value)) throw new AiApiError(400, "Invalid curl header");
+  headers[name] = value;
+}
+
 async function limitedResponseText(response: Response): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length") ?? 0);
   if (declaredLength > MAX_RESPONSE_BYTES) throw new AiApiError(502, "The AI API response was too large");
@@ -354,6 +397,16 @@ function responseContent(payload: unknown): string {
     .filter(Boolean)
     .join("\n");
   if (contentText) return contentText.trim();
+
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  const outputText = output
+    .filter(isRecord)
+    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+    .filter(isRecord)
+    .map((item) => typeof item.text === "string" ? item.text : "")
+    .filter(Boolean)
+    .join("\n");
+  if (outputText) return outputText.trim();
 
   const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
   const candidate = isRecord(candidates[0]) ? candidates[0] : null;

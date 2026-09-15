@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, KeyRound, RotateCcw, Send, Settings2, ShieldCheck, Trash2, UserRound } from "lucide-react";
+import { Bot, CheckCircle2, Code2, KeyRound, RotateCcw, Send, Settings2, ShieldCheck, Trash2, UserRound, XCircle } from "lucide-react";
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import { api } from "@/components/api";
@@ -20,6 +20,12 @@ type Message = {
   content: string;
 };
 
+type CodeActivity = {
+  tool: string;
+  summary: string;
+  success: boolean;
+};
+
 const curlExample = `curl https://api.example.com/v1/chat/completions \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -35,6 +41,8 @@ export function AiApiChat() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
+  const [codeAccess, setCodeAccess] = useState(true);
+  const [activities, setActivities] = useState<CodeActivity[]>([]);
   const [error, setError] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
 
@@ -83,11 +91,12 @@ export function AiApiChat() {
     setSending(true);
     setError("");
     try {
-      const result = await api<{ content: string; model: string | null }>("/ai/chat", {
+      const result = await api<{ content: string; model: string | null; activities?: CodeActivity[] }>("/ai/chat", {
         method: "POST",
-        body: JSON.stringify({ messages: nextMessages }),
+        body: JSON.stringify({ messages: nextMessages, codeAccess }),
       });
       setMessages((current) => [...current, { role: "assistant", content: result.content }]);
+      setActivities((current) => [...current, ...(result.activities ?? [])]);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "The AI API request failed";
       setError(message);
@@ -109,6 +118,7 @@ export function AiApiChat() {
       await api("/ai/configuration", { method: "DELETE" });
       setStatus({ configured: false, enabled: false, endpoint: null, hostname: null, model: null, updatedAt: null });
       setMessages([]);
+      setActivities([]);
       setConfirmDelete(false);
       setConfigurationOpen(true);
       notify({ title: "AI API configuration removed", tone: "success" });
@@ -128,7 +138,7 @@ export function AiApiChat() {
       </div>
       <div className="page-actions">
         {status && <StatusBadge status={status.configured ? "API connected" : "Configuration required"} />}
-        {messages.length > 0 && <button className="secondary" onClick={() => setMessages([])}><RotateCcw size={15} />New chat</button>}
+        {messages.length > 0 && <button className="secondary" onClick={() => { setMessages([]); setActivities([]); }}><RotateCcw size={15} />New chat</button>}
         <button className="secondary" onClick={() => setConfigurationOpen(true)}><Settings2 size={15} />Configure API</button>
       </div>
     </div>
@@ -138,7 +148,13 @@ export function AiApiChat() {
     <section className="ai-chat-shell panel">
       <header className="ai-chat-toolbar">
         <div><span className="ai-provider-mark"><Bot size={17} /></span><span><strong>{status?.model ?? "Custom AI API"}</strong><small>{status?.hostname ?? "Paste a curl request to connect"}</small></span></div>
-        <span className="ai-security-note"><ShieldCheck size={14} />Server-side credentials</span>
+        <div className="ai-toolbar-controls">
+          <label className="code-access-toggle" title="Allows scoped repository edits, approved checks, commits, and pushes on the current feature branch">
+            <input type="checkbox" checked={codeAccess} onChange={(event) => setCodeAccess(event.target.checked)} />
+            <Code2 size={14} />Code access
+          </label>
+          <span className="ai-security-note"><ShieldCheck size={14} />Scoped workspace</span>
+        </div>
       </header>
 
       <div className="ai-transcript" ref={transcriptRef} aria-live="polite">
@@ -146,7 +162,7 @@ export function AiApiChat() {
           <span><Bot size={28} /></span>
           <h2>{status?.configured ? "Start a conversation" : "Connect your AI API"}</h2>
           <p>{status?.configured
-            ? "Messages are sent to the endpoint from your saved curl request. This browser keeps only the current conversation."
+            ? "Messages are sent through your saved curl request. Code access can edit this repository, run approved checks, commit, and push the current feature branch."
             : "Paste the curl example supplied by your AI provider. The endpoint, headers, API key, and body template will be encrypted."}</p>
           {!status?.configured && <button onClick={() => setConfigurationOpen(true)}><KeyRound size={15} />Add API with curl</button>}
         </div> : messages.map((message, index) => <article className={`ai-message ai-message-${message.role}`} key={`${message.role}-${index}`}>
@@ -157,6 +173,13 @@ export function AiApiChat() {
           <span className="ai-message-avatar"><Bot size={16} /></span>
           <div><strong>{status?.model ?? "AI"}</strong><span className="ai-thinking"><i /><i /><i /></span></div>
         </article>}
+        {activities.length > 0 && <aside className="ai-tool-activity">
+          <strong>Repository activity</strong>
+          {activities.map((activity, index) => <div key={`${activity.tool}-${index}`}>
+            {activity.success ? <CheckCircle2 className="tool-success" size={13} /> : <XCircle className="tool-failure" size={13} />}
+            <code>{activity.tool}</code><span>{activity.summary}</span>
+          </div>)}
+        </aside>}
       </div>
 
       <form className="ai-composer" onSubmit={send}>
