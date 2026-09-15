@@ -8,14 +8,16 @@ export type DeploymentRecord = {
   status: "ACTIVE" | "DISABLED";
   html?: string;
   css?: string;
-  policy?: "PUBLIC" | "ACCESS_CODE";
+  policy?: "PUBLIC" | "PRIVATE" | "ACCESS_CODE";
   accessCodeHash?: string;
   expiresAt?: string;
+  systemScript?: string;
+  scriptNonce?: string;
+  connectOrigin?: string;
 };
 
-const headers = {
+const baseHeaders = {
   "Content-Type": "text/html; charset=utf-8",
-  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; font-src https: data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "no-referrer",
@@ -31,6 +33,9 @@ const worker = {
     if (deployment.status !== "ACTIVE") return page(410, "Page unavailable", "This deployment has been disabled.");
     if (deployment.expiresAt && new Date(deployment.expiresAt) <= new Date()) return page(410, "Page expired", "This deployment is no longer available.");
 
+    if (deployment.policy === "PRIVATE") {
+      return page(403, "Private page", "This page is restricted and cannot be opened publicly.");
+    }
     if (deployment.policy === "ACCESS_CODE") {
       if (request.method !== "POST") return accessForm();
       const form = await request.formData();
@@ -40,19 +45,27 @@ const worker = {
       }
     }
 
-    const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>${deployment.css ?? ""}</style></head><body>${deployment.html ?? ""}</body></html>`;
-    return new Response(document, { status: 200, headers });
+    const nonce = deployment.systemScript && deployment.scriptNonce ? deployment.scriptNonce : "";
+    const script = nonce ? `<script nonce="${nonce}">${deployment.systemScript}</script>` : "";
+    const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>${deployment.css ?? ""}</style></head><body>${deployment.html ?? ""}${script}</body></html>`;
+    return new Response(document, { status: 200, headers: responseHeaders(deployment) });
   },
 };
 
 export default worker;
 
 function page(status: number, title: string, message: string) {
-  return new Response(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>${title}</title><style>${baseCss}</style></head><body><main><h1>${title}</h1><p>${message}</p></main></body></html>`, { status, headers });
+  return new Response(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>${title}</title><style>${baseCss}</style></head><body><main><h1>${title}</h1><p>${message}</p></main></body></html>`, { status, headers: responseHeaders() });
 }
 
 function accessForm(error = "", status = 200) {
-  return new Response(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Protected company page</title><style>${baseCss}</style></head><body><main><p class="eyebrow">Protected company page</p><h1>Enter your access code</h1><p>This code grants access only to this internal page. It is not a Microsoft or third-party password.</p>${error ? `<p class="error">${error}</p>` : ""}<form method="post"><label>15-character access code<input name="code" minlength="15" maxlength="15" pattern="[A-Za-z0-9]{15}" required autocomplete="one-time-code"></label><button>Continue</button></form></main></body></html>`, { status, headers });
+  return new Response(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Protected company page</title><style>${baseCss}</style></head><body><main><p class="eyebrow">Protected company page</p><h1>Enter your access code</h1><p>This code grants access only to this internal page. It is not a Microsoft or third-party password.</p>${error ? `<p class="error">${error}</p>` : ""}<form method="post"><label>15-character access code<input name="code" minlength="15" maxlength="15" pattern="[A-Za-z0-9]{15}" required autocomplete="one-time-code"></label><button>Continue</button></form></main></body></html>`, { status, headers: responseHeaders() });
+}
+
+function responseHeaders(deployment?: DeploymentRecord) {
+  const script = deployment?.systemScript && deployment.scriptNonce ? ` 'nonce-${deployment.scriptNonce}'` : " 'none'";
+  const connect = deployment?.connectOrigin ? `; connect-src ${deployment.connectOrigin}` : "";
+  return { ...baseHeaders, "Content-Security-Policy": `default-src 'none'; script-src${script}; style-src 'unsafe-inline'; img-src https: data:; font-src https: data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'${connect}` };
 }
 
 async function sha256(value: string) {

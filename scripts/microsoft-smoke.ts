@@ -1,21 +1,22 @@
 import { PublicClientApplication } from "@azure/msal-node";
 
-const tenantId = process.env.MICROSOFT_TENANT_ID;
+import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "../src/lib/microsoft-authority";
+
 const clientId = process.env.MICROSOFT_CLIENT_ID;
-const scopes = (process.env.MICROSOFT_SCOPES ?? "User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite")
+const scopes = (process.env.MICROSOFT_MAIL_SMOKE_SCOPES ?? "offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
 const recipient = process.argv.find((value) => value.startsWith("--recipient="))?.split("=")[1];
 const allowSend = process.argv.includes("--confirm-send");
 
-if (!tenantId || !clientId) {
-  console.error("FAIL configuration: MICROSOFT_TENANT_ID and MICROSOFT_CLIENT_ID are required");
+if (!clientId) {
+  console.error("FAIL configuration: MICROSOFT_CLIENT_ID is required");
   process.exit(1);
 }
 
 const pca = new PublicClientApplication({
-  auth: { clientId, authority: `https://login.microsoftonline.com/${tenantId}` },
+  auth: { clientId, authority: MICROSOFT_ORGANIZATIONS_AUTHORITY },
   system: { loggerOptions: { piiLoggingEnabled: false } },
 });
 
@@ -38,6 +39,7 @@ function fail(step: number, label: string, error: unknown) {
 
 async function run() {
   let token = "";
+  let authenticatedTenantId = "";
   try {
     const result = await pca.acquireTokenByDeviceCode({
       scopes,
@@ -48,6 +50,7 @@ async function run() {
     });
     if (!result) throw new Error("No authentication result");
     token = result.accessToken;
+    authenticatedTenantId = result.tenantId;
     pass(3, "Complete Microsoft authentication");
   } catch (error) {
     fail(1, "Device authorization", error);
@@ -60,7 +63,7 @@ async function run() {
       token,
       "/me?$select=displayName,userPrincipalName,id",
     );
-    pass(4, "Confirm identity", `${me.displayName}; ${me.userPrincipalName}; object ${me.id}; tenant ${tenantId}`);
+    pass(4, "Confirm identity", `${me.displayName}; ${me.userPrincipalName}; object ${me.id}; tenant ${authenticatedTenantId}`);
   } catch (error) { fail(4, "Confirm identity", error); }
 
   let messages: Array<{ id: string; subject: string; hasAttachments: boolean }> = [];

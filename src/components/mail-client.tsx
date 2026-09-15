@@ -1,10 +1,12 @@
 "use client";
 
+import { ArrowLeft, Menu } from "lucide-react";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, csrfToken } from "@/components/api";
 import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, useToast } from "@/components/design-system";
+import { MailboxAccessConsent } from "@/components/mailbox-settings-consent";
 
 type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number };
 type Message = {
@@ -38,6 +40,8 @@ const wellKnown = [
 export function MailClient({ connectionId }: { connectionId: string }) {
   const { notify } = useToast();
   const [folders, setFolders] = useState<Folder[]>([]);
+  const [wellKnownFolders, setWellKnownFolders] = useState<Record<string, Folder>>({});
+  const [foldersOpen, setFoldersOpen] = useState(false);
   const [folder, setFolder] = useState("inbox");
   const [messages, setMessages] = useState<Message[]>([]);
   const [selected, setSelected] = useState<Message | null>(null);
@@ -50,12 +54,16 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all" | "forward" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [preview, setPreview] = useState<{ url: string; attachment: Attachment } | null>(null);
+  const [permissionReady, setPermissionReady] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
 
   const loadFolders = useCallback(async () => {
     try {
-      setFolders((await api<{ folders: Folder[] }>(`/mail/${connectionId}/folders`)).folders.filter((item) => !wellKnown.some(([id]) => id === item.id.toLowerCase())));
+      const result = await api<{ folders: Array<Folder & { isHidden?: boolean }>; wellKnownFolders: Record<string, Folder> }>(`/mail/${connectionId}/folders`);
+      const defaultIds = new Set(Object.values(result.wellKnownFolders).map((item) => item.id));
+      setWellKnownFolders(result.wellKnownFolders);
+      setFolders(result.folders.filter((item) => !item.isHidden && !defaultIds.has(item.id)));
     } catch (error) {
       notify({ title: "Folders unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" });
     }
@@ -81,8 +89,16 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
-  useEffect(() => { void loadFolders(); }, [loadFolders]);
-  useEffect(() => { void loadMessages(false); }, [folder]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    void api<{ account: { grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
+      .then(({ account }) => {
+        const granted = account.grantedScopes.map((scope) => scope.toLowerCase().replace("https://graph.microsoft.com/", ""));
+        setPermissionReady(granted.includes("mail.readwrite") && granted.includes("mail.send"));
+      })
+      .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
+  }, [connectionId, notify]);
+  useEffect(() => { if (permissionReady) void loadFolders(); }, [loadFolders, permissionReady]);
+  useEffect(() => { if (permissionReady) void loadMessages(false); }, [folder, permissionReady]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
 
   async function openMessage(message: Message) {
@@ -157,26 +173,34 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     if (!selected) return;
     try {
       const result = await api<{ protocolUrl: string }>(`/outlook-launch`, { method: "POST", body: JSON.stringify({ connectionId, messageId: selected.id }) });
-      window.location.assign(result.protocolUrl);
+      window.location.href = result.protocolUrl;
+      notify({ title: "Opening Company Mail Launcher", message: "Approve the browser prompt if it appears. The launch ID expires in 60 seconds.", tone: "success" });
     } catch (error) {
       notify({ title: "Desktop launch unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" });
     }
   }
 
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
+  const onPermissionGranted = useCallback(() => {
+    setPermissionReady(true);
+    notify({ title: "Webmail enabled", tone: "success" });
+  }, [notify]);
 
+  if (permissionReady === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
+  if (!permissionReady) return <MailboxAccessConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
   return (
     <div className="mail-workspace">
-      <aside className="mail-folders">
+      <aside className={`mail-folders ${foldersOpen ? "is-mobile-open" : ""}`}>
         <div className="mail-brand-row"><Link href="/admin">← Control panel</Link></div>
         <button className="compose-button" onClick={() => setComposeOpen(true)}>＋ New message</button>
-        <nav aria-label="Mailbox folders">{wellKnown.map(([id, label, icon]) => <button className={folder === id ? "active" : ""} key={id} onClick={() => setFolder(id)}><span>{icon}</span>{label}</button>)}</nav>
-        {folders.length > 0 && <><h3>Custom folders</h3><nav>{folders.map((item) => <button className={folder === item.id ? "active" : ""} key={item.id} onClick={() => setFolder(item.id)}><span>□</span><span>{item.displayName}</span><small>{item.unreadItemCount || ""}</small></button>)}</nav></>}
+        <nav aria-label="Mailbox folders">{wellKnown.map(([id, label, icon]) => <button className={folder === id ? "active" : ""} key={id} onClick={() => { setFolder(id); setFoldersOpen(false); }}><span>{icon}</span>{label}<small>{wellKnownFolders[id]?.unreadItemCount || ""}</small></button>)}</nav>
+        {folders.length > 0 && <><h3>Custom folders</h3><nav>{folders.map((item) => <button className={folder === item.id ? "active" : ""} key={item.id} onClick={() => { setFolder(item.id); setFoldersOpen(false); }}><span>□</span><span>{item.displayName}</span><small>{item.unreadItemCount || ""}</small></button>)}</nav></>}
         <h3>Shared mailboxes</h3><div className="mailbox-disabled">No verified shared access</div>
         <h3>Manage</h3><nav><Link href={`/mail/${connectionId}/rules`}>⇢ Inbox rules</Link><Link href={`/mail/${connectionId}/settings`}>⚙ Mailbox settings</Link></nav>
       </aside>
+      {foldersOpen && <button className="mail-folder-scrim" aria-label="Close folders" onClick={() => setFoldersOpen(false)} />}
       <section className="message-column">
-        <header className="mail-column-header"><div><h1>{folderTitle}</h1><small>{messages.length} loaded</small></div><button className="icon-button" onClick={() => void loadMessages(false)} aria-label="Refresh">↻</button></header>
+        <header className="mail-column-header"><button className="icon-button mobile-folder-toggle" onClick={() => setFoldersOpen(true)} aria-label="Open folders"><Menu size={17} /></button><div><h1>{folderTitle}</h1><small>{messages.length} loaded</small></div><button className="icon-button" onClick={() => void loadMessages(false)} aria-label="Refresh">↻</button></header>
         <form className="mail-search" onSubmit={(event) => { event.preventDefault(); void loadMessages(false); }}><span>⌕</span><input value={quickSearch} onChange={(event) => setQuickSearch(event.target.value)} placeholder={`Search ${folderTitle}`} aria-label={`Search ${folderTitle}`} /><button className="secondary button-sm">Search</button><button type="button" className="secondary button-sm" onClick={() => setFiltersOpen(true)}>Filters</button></form>
         <div className="message-list" aria-label={`${folderTitle} messages`}>
           {loading ? <div className="panel-body"><Skeleton lines={9} /></div> : messages.length === 0 ? <EmptyState icon="✉" title={`No messages in ${folderTitle}`} description="There are no messages matching the selected folder and filters." /> : messages.map((message) => (
@@ -189,18 +213,19 @@ export function MailClient({ connectionId }: { connectionId: string }) {
           {nextLink && !loading && <button className="load-more secondary" onClick={() => void loadMessages(true)}>Load more messages</button>}
         </div>
       </section>
-      <section className="reading-pane">
+      <section className={`reading-pane ${selected ? "has-message" : ""}`}>
         {messageLoading ? <div className="panel-body"><Skeleton lines={8} /></div> : !selected ? <EmptyState icon="✉" title="Select a message" description="Choose a message from the list to read it here." /> : (
           <>
             <header className="reading-toolbar">
+              <button className="icon-button mobile-reading-back" aria-label="Back to message list" onClick={() => setSelected(null)}><ArrowLeft size={17} /></button>
               <button onClick={() => setReplyMode("reply")}>↩ Reply</button><button className="secondary" onClick={() => setReplyMode("reply-all")}>Reply all</button><button className="secondary" onClick={() => setReplyMode("forward")}>Forward</button>
               <button className="icon-button" title="Archive" aria-label="Archive" onClick={() => void move("archive")}>▣</button>
               <select aria-label="Move message" defaultValue="" onChange={(event) => { if (event.target.value) void move(event.target.value); }}><option value="" disabled>Move…</option>{wellKnown.filter(([id]) => id !== folder).map(([id, label]) => <option value={id} key={id}>{label}</option>)}{folders.map((item) => <option value={item.id} key={item.id}>{item.displayName}</option>)}</select>
               <button className="icon-button" title="Mark unread" aria-label="Mark unread" onClick={() => void updateMessage({ isRead: false })}>◉</button>
               <button className="icon-button" title="Flag" aria-label="Flag" onClick={() => void updateMessage({ flag: { flagStatus: selected.flag?.flagStatus === "flagged" ? "notFlagged" : "flagged" } })}>⚑</button>
               <button className="icon-button" title="Delete" aria-label="Delete" onClick={() => setDeleteOpen(true)}>⌫</button>
-              {selected.webLink && <a className="button secondary" target="_blank" rel="noopener noreferrer" href={selected.webLink}>Open in Outlook ↗</a>}
-              {selected.webLink && <button className="secondary" onClick={() => void openInDesktop()}>Desktop app</button>}
+              {selected.webLink && <button onClick={() => void openInDesktop()}>Open in Outlook ↗</button>}
+              {selected.webLink && <a className="button secondary" target="_blank" rel="noopener noreferrer" href={selected.webLink}>Open in browser</a>}
             </header>
             <article className="reading-content">
               <h1>{selected.subject || "(no subject)"}</h1>

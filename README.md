@@ -1,7 +1,7 @@
 # Company Control
 
 Secure internal Microsoft 365 administration platform. The first milestone provides a
-Microsoft device-code connection flow, encrypted MSAL token cache, Graph-backed mail
+Microsoft Entra device-code connection flow, encrypted MSAL token cache, Graph-backed mail
 operations, mailbox settings and Inbox rules, an internal dashboard, and audit logging.
 
 ## Quick start
@@ -17,8 +17,9 @@ operations, mailbox settings and Inbox rules, an internal dashboard, and audit l
 4. Start the application: `npm run dev`.
 5. Open `http://localhost:3000`.
 
-The first local administrator is bootstrapped from `BOOTSTRAP_ADMIN_EMAIL`. Device
-authorization always takes place on Microsoft's official verification site.
+The first local administrator is bootstrapped from `BOOTSTRAP_ADMIN_EMAIL`. Microsoft
+sign-in, MFA, Conditional Access, account selection, and consent take place only on
+Microsoft's authorization site.
 
 ## Verification
 
@@ -50,6 +51,7 @@ confirmation and a recipient argument.
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [Current implementation status](docs/IMPLEMENTATION_STATUS.md)
 
-Advanced directory, shared mailbox, Exchange administration, Cloudflare publishing,
-desktop companion, and third-party integration modules are intentionally deferred
-until the first Microsoft mail milestone has been validated against a real tenant.
+Live Microsoft, Exchange, Cloudflare, and Windows launcher acceptance still requires
+the corresponding customer tenant, provider configuration, and operating system.
+See the implementation status matrix for the distinction between implemented code
+paths and live-tested integrations.

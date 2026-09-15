@@ -1,19 +1,21 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/components/api";
+import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument } from "@/lib/page-document";
 
 type Authorization = {
   publicId: string;
   userCode: string | null;
   verificationUri: string | null;
-  verificationUriComplete: string | null;
   message: string | null;
+  requestedScopes: string[];
   status: string;
   expiresAt: string;
   connectionId: string | null;
   errorCode: string | null;
+  pageProject?: { versions: Array<{ document: PageDocument | null }> } | null;
 };
 
 export default function ConnectPage({ params, searchParams }: { params: Promise<{ sessionId: string }>; searchParams: Promise<{ token?: string }> }) {
@@ -21,7 +23,8 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   const { token = "" } = use(searchParams);
   const [authorization, setAuthorization] = useState<Authorization | null>(null);
   const [error, setError] = useState("");
-  const [remaining, setRemaining] = useState("");
+  const replacing = useRef(false);
+  const popup = useRef<Window | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -39,40 +42,82 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   }, [load]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (!authorization) return;
-      const seconds = Math.max(0, Math.floor((new Date(authorization.expiresAt).getTime() - Date.now()) / 1000));
-      setRemaining(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
-    }, 1000);
-    return () => window.clearInterval(timer);
+    if (authorization?.status !== "CONNECTED") return;
+    const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
+    const behavior = parsed.success ? parsed.data.settings.builder : undefined;
+    try { popup.current?.close(); } catch {}
+    if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
+      window.location.replace(behavior.redirectUrl);
+      return;
+    }
+    window.location.replace(authorization.connectionId
+      ? `/profiles/${encodeURIComponent(authorization.connectionId)}`
+      : "/admin/accounts");
   }, [authorization]);
 
   async function restart() {
-    const result = await api<{ connectUrl: string }>("/microsoft/device/start", { method: "POST", body: "{}" });
+    if (replacing.current) return;
+    replacing.current = true;
+    const response = await fetch(`/api/v1/microsoft/device/${encodeURIComponent(sessionId)}/restart?token=${encodeURIComponent(token)}`, { method: "POST" });
+    const result = await response.json() as { connectUrl?: string; error?: string };
+    if (!response.ok || !result.connectUrl) throw new Error(result.error ?? "Unable to restart authorization");
     window.location.assign(result.connectUrl);
+  }
+
+  useEffect(() => {
+    if (authorization?.status === "EXPIRED" && !isMailboxSettingsAuthorization(authorization.requestedScopes)) void restart();
+  }, [authorization?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (authorization?.status === "FAILED" && isAdminApprovalRequired(authorization.errorCode)) {
+    return <main className="center-page"><div className="card auth-card stack">
+      <h1>Administrator approval required</h1>
+      <p className="muted">Your Microsoft 365 organization requires an administrator to approve this app’s requested permissions. The application will not retry or request broader permissions automatically.</p>
+    </div></main>;
+  }
+  if (authorization?.status === "FAILED") {
+    return <main className="center-page"><div className="card auth-card stack">
+      <h1>Microsoft authorization did not complete</h1>
+      <p className="muted">{authorizationFailureMessage(authorization.errorCode)}</p>
+      {authorization.errorCode && <p className="badge">{authorization.errorCode}</p>}
+    </div></main>;
+  }
+  const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
+  if (authorization && customDocumentResult.success) {
+    const destination = authorization.verificationUri ?? "#";
+    const rendered = renderPageDocument(customDocumentResult.data, { deviceCode: authorization.userCode ?? "", verificationUri: destination, status: authorization.status });
+    return <main className={`custom-connect-page status-${authorization.status.toLowerCase()}`} onClick={(event) => {
+      const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
+      if (!target) return;
+      const action = target.dataset.action;
+      if (action === "copy-device-code") { event.preventDefault(); void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined); }
+      if (action === "open-microsoft") {
+        if (target.dataset.nodeId === "auth-popup-fallback") return;
+        event.preventDefault();
+        popup.current = window.open(destination, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+        void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
+        if (!popup.current) document.querySelector('[data-node-id="auth-popup-fallback"]')?.classList.add("is-visible");
+      }
+      if (action === "restart-authorization") { event.preventDefault(); void restart(); }
+    }}>
+      <style>{rendered.css}</style>
+      <div dangerouslySetInnerHTML={{ __html: rendered.html }} />
+    </main>;
   }
 
   if (error) return <main className="center-page"><div className="card auth-card error">{error}</div></main>;
   if (!authorization) return <main className="center-page"><div className="card auth-card">Loading Microsoft authorization…</div></main>;
-  if (authorization.status === "CONNECTED") {
-    return (
-      <main className="center-page">
-        <div className="card auth-card stack">
-          <div className="success"><strong>Connection complete</strong></div>
-          <h1>Microsoft account connected</h1>
-          <p>You can close this page. No password or Microsoft token was shared with this website.</p>
-          <a className="button" href="/admin">Return to dashboard</a>
-        </div>
-      </main>
-    );
+  if (authorization.status === "EXPIRED" && isMailboxSettingsAuthorization(authorization.requestedScopes)) {
+    return <main className="center-page"><div className="card auth-card stack">
+      <h1>Microsoft verification expired</h1>
+      <p className="muted">Return to mailbox settings and start the optional permission request again.</p>
+    </div></main>;
   }
   if (["EXPIRED", "FAILED", "CANCELLED"].includes(authorization.status)) {
     return (
       <main className="center-page">
         <div className="card auth-card stack">
-          <h1>Authorization {authorization.status.toLowerCase()}</h1>
-          <p className="muted">Microsoft could not complete this device authorization. {authorization.errorCode}</p>
-          <button onClick={restart}>Restart authorization</button>
+          <h1>Microsoft verification</h1>
+          <p className="muted">Waiting for Microsoft…</p>
         </div>
       </main>
     );
@@ -86,18 +131,37 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
         <p>This page displays a code issued by Microsoft. Sign-in and MFA take place only on Microsoft&apos;s official website.</p>
         <div className="device-code" aria-label={`Device code ${authorization.userCode}`}>{authorization.userCode}</div>
         <div className="row" style={{ justifyContent: "center" }}>
-          <button className="secondary" onClick={() => void navigator.clipboard.writeText(authorization.userCode ?? "")}>Copy code</button>
+          <button className="secondary" onClick={() => void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined)}>Copy Code</button>
           <a
             className="button"
-            href={authorization.verificationUriComplete ?? authorization.verificationUri ?? "https://microsoft.com/devicelogin"}
-            target="_blank"
-            rel="noopener noreferrer"
+            href={authorization.verificationUri ?? "#"}
+            onClick={(event) => {
+              event.preventDefault();
+              popup.current = window.open(event.currentTarget.href, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+              void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
+            }}
           >
-            Open Microsoft
+            Continue to Microsoft
           </a>
         </div>
-        <p className="muted">Expires in {remaining} · Waiting for Microsoft authorization</p>
+        <p className="muted">Waiting for Microsoft…</p>
       </div>
     </main>
   );
+}
+
+function isAdminApprovalRequired(errorCode: string | null) {
+  return Boolean(errorCode && /^AADSTS(?:90094|90095|900941)$/i.test(errorCode));
+}
+
+function authorizationFailureMessage(errorCode: string | null) {
+  if (errorCode === "AADSTS65002") {
+    return "Microsoft rejected the configured application ID because first-party API access was not preauthorized.";
+  }
+  return "Microsoft rejected or cancelled this authorization attempt. Start a new connection and review the Microsoft error code.";
+}
+
+function isMailboxSettingsAuthorization(scopes: string[]) {
+  return scopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
+    && !scopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
 }

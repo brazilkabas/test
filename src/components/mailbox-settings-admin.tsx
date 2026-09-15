@@ -1,9 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 
 import { api } from "@/components/api";
 import { Skeleton, StatusBadge, useToast } from "@/components/design-system";
+import { MailboxSettingsConsent } from "@/components/mailbox-settings-consent";
 
 type Settings = {
   timeZone?: string;
@@ -24,10 +25,29 @@ type Settings = {
 export function MailboxSettingsAdmin({ connectionId }: { connectionId: string }) {
   const { notify } = useToast();
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [permissionReady, setPermissionReady] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    api<{ settings: Settings }>(`/mail/${connectionId}/settings`).then((data) => setSettings(data.settings)).catch((error) => notify({ title: "Settings unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
+  const loadSettings = useCallback(() => {
+    return api<{ settings: Settings }>(`/mail/${connectionId}/settings`)
+      .then((data) => setSettings(data.settings))
+      .catch((error) => notify({ title: "Settings unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
   }, [connectionId, notify]);
+
+  useEffect(() => {
+    api<{ account: { grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
+      .then(({ account }) => {
+        const granted = account.grantedScopes.map((scope) => scope.toLowerCase().replace("https://graph.microsoft.com/", ""));
+        const ready = granted.includes("mailboxsettings.readwrite");
+        setPermissionReady(ready);
+        if (ready) void loadSettings();
+      })
+      .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
+  }, [connectionId, loadSettings, notify]);
+  const onPermissionGranted = useCallback(() => {
+    setPermissionReady(true);
+    void loadSettings();
+    notify({ title: "Mailbox settings enabled", tone: "success" });
+  }, [loadSettings, notify]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,6 +85,8 @@ export function MailboxSettingsAdmin({ connectionId }: { connectionId: string })
     } finally { setBusy(false); }
   }
 
+  if (permissionReady === null) return <section className="panel panel-body"><Skeleton lines={8} /></section>;
+  if (!permissionReady) return <MailboxSettingsConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
   if (!settings) return <section className="panel panel-body"><Skeleton lines={8} /></section>;
   const auto = settings.automaticRepliesSetting ?? {};
   return <>

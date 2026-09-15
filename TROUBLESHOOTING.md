@@ -1,15 +1,20 @@
 # Troubleshooting
 
-## Device code does not appear
+## Microsoft device code does not appear
 
-Confirm tenant/client IDs, public-client flow enablement, outbound access to
-`login.microsoftonline.com`, and that the app registration supports accounts in the
-configured authority. Pending authorization is process-local until Microsoft
-completes it; restarting the server requires a new device code.
+If `MICROSOFT_CLIENT_ID` is blank, the API returns
+`MICROSOFT_CLIENT_ID is not configured.` Add your Entra Application (client) ID and
+restart the server. Confirm public client flows are enabled, outbound access to
+`login.microsoftonline.com` is available, and the registration supports multiple
+organizations. The authority is fixed to
+`https://login.microsoftonline.com/organizations`.
+
+Product sign-in uses Microsoft device authorization. WAM, an authentication broker,
+and a Windows helper are neither used nor required.
 
 ## Consent or permission errors
 
-Compare `MICROSOFT_SCOPES` with delegated permissions on the app registration. Tenant
+Compare `MICROSOFT_SCOPES` with delegated permissions in the app registration. Tenant
 policy may require administrator consent. Do not add broad permissions merely to make
 an error disappear.
 
