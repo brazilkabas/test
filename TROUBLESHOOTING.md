@@ -5,7 +5,8 @@
 Confirm the client ID, public-client flow enablement, outbound access to
 `login.microsoftonline.com`, and that the app registration supports multiple
 organizations. The initial device authorization requests delegated Microsoft Graph
-`User.Read` and `Mail.Read` through `MICROSOFT_AUTHORITY`.
+`User.Read` through `MICROSOFT_AUTHORITY`; mailbox permission is not requested during
+initial sign-in.
 Pending authorization is process-local until Microsoft
 completes it; restarting the server requires a new device code.
 
