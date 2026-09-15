@@ -99,4 +99,25 @@ describe("Microsoft client configuration", () => {
     );
   });
 
+  it("uses MICROSOFT_CLIENT_ID for a separate Graph mailbox request", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "configured-primary-client");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "primary-resource");
+    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "primary-resource/.default");
+    const { microsoftAuthConfig, microsoftMailboxAuthConfig } = await import("@/lib/config");
+
+    expect(microsoftAuthConfig().requestedScopes).toEqual(["primary-resource/.default"]);
+    expect(microsoftMailboxAuthConfig()).toMatchObject({
+      clientId: "configured-primary-client",
+      resourceAppId: "00000003-0000-0000-c000-000000000000",
+      requestedScopes: [
+        "https://graph.microsoft.com/User.Read",
+        "https://graph.microsoft.com/Mail.Read",
+      ],
+    });
+  });
+
 });

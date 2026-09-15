@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { configuredResourceScopes } from "@/lib/microsoft-resource";
+import {
+  configuredResourceScopes,
+  MICROSOFT_GRAPH_RESOURCE_ID,
+  MICROSOFT_GRAPH_SCOPE_ROOT,
+} from "@/lib/microsoft-resource";
 
 const schema = z.object({
   DATABASE_URL: z.string().url(),
@@ -73,6 +77,19 @@ export function microsoftAuthConfig(): MicrosoftAuthConfig {
     resourceAppId,
     resourceScope,
     requestedScopes: configuredResourceScopes(resourceAppId, resourceScope),
+  };
+}
+
+export function microsoftMailboxAuthConfig(): MicrosoftAuthConfig {
+  return {
+    clientId: microsoftClientId(),
+    authority: config().MICROSOFT_AUTHORITY,
+    resourceAppId: MICROSOFT_GRAPH_RESOURCE_ID,
+    resourceScope: "",
+    requestedScopes: [
+      `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
+      `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Read`,
+    ],
   };
 }
 

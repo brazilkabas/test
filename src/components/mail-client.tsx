@@ -78,6 +78,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [account, setAccount] = useState<MailAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
+  const [mailAuthorizationStarting, setMailAuthorizationStarting] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("company-last-mail-connection", connectionId);
@@ -206,6 +207,23 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }
 
+  async function startMailboxAuthorization() {
+    setMailAuthorizationStarting(true);
+    try {
+      const result = await api<{ connectUrl: string }>(`/microsoft/accounts/${connectionId}/mail-auth/start`, {
+        method: "POST",
+      });
+      window.location.assign(result.connectUrl);
+    } catch (error) {
+      notify({
+        title: "Mailbox authorization could not start",
+        message: error instanceof Error ? error.message : undefined,
+        tone: "error",
+      });
+      setMailAuthorizationStarting(false);
+    }
+  }
+
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
 
   if (capabilities === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
@@ -219,11 +237,15 @@ export function MailClient({ connectionId }: { connectionId: string }) {
         icon="✉"
         title={authorizationState === "PENDING" ? "Mailbox authorization waiting" : "Mailbox authorization incomplete"}
         description={mailAuthorizationDescription(accountLabel, authorizationState, errorCode)}
+        action={<button disabled={mailAuthorizationStarting} onClick={() => void startMailboxAuthorization()}>
+          {mailAuthorizationStarting ? "Starting…" : authorizationState === "PENDING" ? "Restart mailbox authorization" : "Authorize mailbox"}
+        </button>}
       />
       <div className="panel-body stack" style={{ maxWidth: 680, margin: "0 auto" }}>
         <p><strong>Status:</strong> {authorizationState}</p>
         {errorCode && <p><strong>Microsoft error:</strong> <code>{errorCode}</code></p>}
-        <p className="muted">No mailbox authorization state is stored for this Microsoft connection.</p>
+        <p><strong>Requested permissions:</strong> User.Read, Mail.Read</p>
+        <p className="muted">Mailbox state is stored only after Microsoft grants access and folder/message verification succeeds.</p>
       </div>
     </section>;
   }
@@ -285,7 +307,13 @@ export function MailClient({ connectionId }: { connectionId: string }) {
 }
 
 function mailAuthorizationDescription(accountLabel: string, status: string, errorCode: string | null | undefined) {
-  if (status === "PENDING") return `${accountLabel} has mailbox authorization state waiting to be completed.`;
+  if (status === "PENDING") return `${accountLabel} still needs to complete Microsoft mailbox authorization.`;
+  if (errorCode === "AADSTS65002") {
+    return "Microsoft rejected MICROSOFT_CLIENT_ID for Microsoft Graph with AADSTS65002 because that Microsoft-owned client is not preauthorized for this resource.";
+  }
+  if (errorCode === "device_code_expired" || status === "EXPIRED") {
+    return "The mailbox device code expired before Microsoft authorization completed. Start a fresh mailbox authorization.";
+  }
   if (errorCode) {
     return `Microsoft mailbox authorization failed with error ${errorCode}.`;
   }
