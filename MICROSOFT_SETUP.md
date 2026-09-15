@@ -1,11 +1,9 @@
 # Microsoft Entra setup
 
-Configure the public client and the resource used for the initial connection:
+Configure the public client used for Microsoft Graph authorization:
 
 ```text
 MICROSOFT_CLIENT_ID=<application/client ID>
-MICROSOFT_RESOURCE_APP_ID=<resource application ID>
-MICROSOFT_RESOURCE_SCOPE=<resource application ID>/<delegated scope or .default>
 MICROSOFT_AUTHORITY=https://login.microsoftonline.com/organizations
 MICROSOFT_REDIRECT_URI=http://localhost:3000/api/v1/microsoft/callback
 ```
@@ -19,15 +17,19 @@ does not use a client secret or redirect URI; the redirect URI is retained for t
 configured browser callback. Do not add a client secret to this
 application unless a later confidential-client flow explicitly requires one.
 
-The initial connection requests only `MICROSOFT_RESOURCE_SCOPE`. The returned access
-token must target `MICROSOFT_RESOURCE_APP_ID`; account identity comes from Microsoft's
-signed ID-token claims. Blank Microsoft values are accepted during application setup,
-but connection attempts return `MICROSOFT_NOT_CONFIGURED` until they are populated.
+The initial connection requests delegated Microsoft Graph `User.Read` and `Mail.Read`
+plus `offline_access`. The returned access token must target Microsoft Graph and contain
+`Mail.Read`; its tenant and object claims must match the signed MSAL identity. Before a
+connection is marked complete, the backend verifies both the mailbox-folder and Inbox
+message endpoints. Blank client IDs are accepted during application setup, but connection
+attempts return `MICROSOFT_NOT_CONFIGURED` until `MICROSOFT_CLIENT_ID` is populated.
 
-## Incremental Graph permissions
+## Graph permissions
 
-Graph mailbox access is separate from initial resource authorization.
-`Mail.ReadWrite` and `Mail.Send` are requested when webmail is enabled.
+Read-only Graph mailbox access is part of every new connection, so new accounts do not
+need a second mailbox-consent step. Connections created before this behavior may use the
+one-time legacy mailbox upgrade. `Mail.ReadWrite` and `Mail.Send` are not requested by
+the read-only connection flow.
 `MailboxSettings.ReadWrite` is requested separately only when a user opens and enables
 mailbox-settings or Inbox-rule editing.
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
@@ -38,8 +40,7 @@ require administrator consent under tenant policy. Microsoft can also require ad
 consent for otherwise delegated permissions depending on tenant configuration.
 
 Each device flow uses a fixed purpose-specific scope; it never expands the request
-from all permissions configured in Entra. The initial resource may use `.default` when
-explicitly configured; Graph authorization does not use `.default`.
+from all permissions configured in Entra. Graph authorization does not use `.default`.
 MSAL can add standard OIDC protocol scopes automatically. The application does not
 force a consent prompt, so existing tenant-wide consent is reused by Microsoft Entra.
 

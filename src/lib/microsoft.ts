@@ -26,6 +26,11 @@ const NORMAL_GRAPH_SCOPES = new Map([
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
+const INITIAL_CONNECTION_SCOPES = [
+  "offline_access",
+  `${GRAPH_SCOPE_ROOT}User.Read`,
+  `${GRAPH_SCOPE_ROOT}Mail.Read`,
+];
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
   `${GRAPH_SCOPE_ROOT}Mail.Read`,
@@ -533,11 +538,10 @@ export function deviceAuthorizationScopes(scopes: string[]) {
 
 export function microsoftAuthorizationScopes(
   purpose: MicrosoftAuthorizationPurpose,
-  identityResourceScope?: string,
 ) {
   if (purpose === "mailbox-settings") return [...MAILBOX_SETTINGS_SCOPES];
   if (purpose === "mailbox") return [...MAILBOX_ACCESS_SCOPES];
-  return [identityResourceScope ?? microsoftResourceConfiguration().scope];
+  return [...INITIAL_CONNECTION_SCOPES];
 }
 
 function scopeName(scope: string) {

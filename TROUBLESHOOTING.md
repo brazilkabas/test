@@ -3,18 +3,18 @@
 ## Device code does not appear
 
 Confirm the client ID, public-client flow enablement, outbound access to
-`login.microsoftonline.com`, `MICROSOFT_RESOURCE_APP_ID`,
-`MICROSOFT_RESOURCE_SCOPE`, and that the app registration supports multiple
-organizations. Device-code authentication uses `MICROSOFT_AUTHORITY`.
+`login.microsoftonline.com`, and that the app registration supports multiple
+organizations. The initial device authorization requests delegated Microsoft Graph
+`User.Read` and `Mail.Read` through `MICROSOFT_AUTHORITY`.
 Pending authorization is process-local until Microsoft
 completes it; restarting the server requires a new device code.
 
 ## Consent or permission errors
 
-Compare `MICROSOFT_RESOURCE_SCOPE` with the delegated permissions exposed by
-`MICROSOFT_RESOURCE_APP_ID`. The scope must target that resource. Tenant policy may
-require administrator consent. Do not add broad permissions merely to make an error
-disappear.
+Confirm that `MICROSOFT_CLIENT_ID` belongs to this application and supports public
+client device authorization. Tenant policy may require administrator consent for
+Microsoft Graph `Mail.Read`. Do not substitute a Microsoft-owned client ID or add broad
+permissions merely to make an error disappear.
 
 ## Reauthentication required
 

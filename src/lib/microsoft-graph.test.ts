@@ -28,12 +28,11 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("uses the configured resource for initial authorization and defers Graph access", () => {
-    expect(microsoftAuthorizationScopes(
-      "identity",
-      "api://00000000-0000-4000-8000-000000000001/access",
-    )).toEqual([
-      "api://00000000-0000-4000-8000-000000000001/access",
+  it("includes mailbox access in the initial connection authorization", () => {
+    expect(microsoftAuthorizationScopes("identity")).toEqual([
+      "offline_access",
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
     expect(microsoftAuthorizationScopes("mailbox")).toEqual([
       "offline_access",
