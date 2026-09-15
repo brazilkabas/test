@@ -9,7 +9,7 @@ type Account = { id: string; displayName: string | null; userPrincipalName: stri
 type Result = { id: string; label: string; status: string; requiredScope: string; error?: string; microsoftCode?: string };
 type ClientProbe = {
   clientId: string | null;
-  accountFound: boolean;
+  accountMetadataFound: boolean;
   ownTokenState: boolean;
   refreshTokenPresent: boolean;
   authentication: "PASS" | "FAIL" | "NOT_CONFIGURED";
@@ -113,7 +113,7 @@ export function MicrosoftDiagnostics() {
         <header className="panel-header">
           <div>
             <h2>MSAL client and FOCI diagnostics</h2>
-            <p className="muted">Compare the configured client cache with another public client ID. No tokens or cache secrets are displayed or persisted.</p>
+            <p className="muted">Compare the configured client cache with another public client ID. Account metadata can be shared and is not authorization proof; the client-specific token state and silent result are evaluated separately. No tokens or cache secrets are displayed or persisted.</p>
           </div>
         </header>
         <div className="panel-body stack">
@@ -163,8 +163,8 @@ function ClientProbeTable({ label, probe }: { label: string; probe: ClientProbe 
         <tbody>
           <tr><td>Client ID</td><td><code>{probe.clientId ?? "NOT CONFIGURED"}</code></td></tr>
           <tr><td>Authentication</td><td><StatusBadge status={probe.authentication} /></td></tr>
-          <tr><td>Account found</td><td>{yesNo(probe.accountFound)}</td></tr>
-          <tr><td>Own token state</td><td>{yesNo(probe.ownTokenState)}</td></tr>
+          <tr><td>Account metadata in shared cache</td><td>{yesNo(probe.accountMetadataFound)}</td></tr>
+          <tr><td>Authorization cached for this client ID</td><td>{yesNo(probe.ownTokenState)}</td></tr>
           <tr><td>Refresh token</td><td>{yesNo(probe.refreshTokenPresent)}</td></tr>
           <tr><td>Silent acquisition</td><td><StatusBadge status={probe.silentAcquisition} /></td></tr>
           <tr><td>Interaction required</td><td>{yesNo(probe.interactionRequired)}</td></tr>

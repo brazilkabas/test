@@ -47,6 +47,9 @@ ID recorded with the encrypted connection cache (or the currently configured cli
 legacy records). Client B is an optional comparison ID supplied for the diagnostic. Both
 tests use silent acquisition only. FOCI is reported only when an actual `family_id`
 marker exists in the cache; the application never creates or simulates family membership.
+“Account metadata in shared cache” can be `YES` for an unrelated client ID and is not
+authorization proof. “Authorization cached for this client ID,” the silent result,
+audience, and granted scopes are the client-specific evidence.
 
 ## Database or encryption errors
 

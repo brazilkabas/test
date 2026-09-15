@@ -433,7 +433,7 @@ export type MailboxDiagnostic = {
 
 export type MsalClientProbe = {
   clientId: string | null;
-  accountFound: boolean;
+  accountMetadataFound: boolean;
   ownTokenState: boolean;
   refreshTokenPresent: boolean;
   authentication: "PASS" | "FAIL" | "NOT_CONFIGURED";
@@ -581,6 +581,7 @@ async function probeMsalClient(
   if (!account) {
     return {
       ...emptyMsalClientProbe(clientId, "FAIL"),
+      accountMetadataFound: false,
       ownTokenState: ownState.hasAccessToken || ownState.hasRefreshToken,
       refreshTokenPresent: ownState.hasRefreshToken,
       errorCode: "account_not_found",
@@ -599,7 +600,7 @@ async function probeMsalClient(
     const graph = isMicrosoftGraphToken(result.accessToken);
     return {
       clientId,
-      accountFound: true,
+      accountMetadataFound: true,
       ownTokenState: ownState.hasAccessToken || ownState.hasRefreshToken,
       refreshTokenPresent: ownState.hasRefreshToken,
       authentication: "PASS",
@@ -617,10 +618,12 @@ async function probeMsalClient(
     const description = microsoftErrorDescription(error);
     return {
       clientId,
-      accountFound: true,
+      accountMetadataFound: true,
       ownTokenState: ownState.hasAccessToken || ownState.hasRefreshToken,
       refreshTokenPresent: ownState.hasRefreshToken,
-      authentication: "PASS",
+      authentication: ownState.hasAccessToken || ownState.hasRefreshToken
+        ? "PASS"
+        : "FAIL",
       silentAcquisition: "FAIL",
       interactionRequired: error instanceof InteractionRequiredAuthError
         || /interaction|required|consent|no_tokens_found|invalid_grant/i.test(errorCode),
@@ -640,7 +643,7 @@ function emptyMsalClientProbe(
 ): MsalClientProbe {
   return {
     clientId,
-    accountFound: false,
+    accountMetadataFound: false,
     ownTokenState: false,
     refreshTokenPresent: false,
     authentication,
