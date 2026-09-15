@@ -3,7 +3,7 @@
 import {
   Activity, BookOpenCheck, Boxes, ChevronDown, ChevronLeft, ChevronRight,
   CircleUserRound, Cloud, FilePenLine, FolderKanban, Inbox, KeyRound,
-  LayoutDashboard, Menu, Search, Settings, ShieldCheck, UsersRound, X,
+  LayoutDashboard, Menu, Search, Settings, ShieldCheck, Sparkles, UsersRound, X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -18,6 +18,7 @@ const staticNavigation = [
   { href: "/admin/directory", icon: UsersRound, label: "Users" },
   { href: "/admin/exchange", icon: Boxes, label: "Shared Mailboxes" },
   { href: "/admin/html-projects", icon: FilePenLine, label: "Page Builder" },
+  { href: "/admin/ai-code", icon: Sparkles, label: "AI Code" },
   { href: "/admin/deployments", icon: Cloud, label: "Deployments" },
   { href: "/admin/access-codes", icon: KeyRound, label: "Access Codes" },
   { href: "/admin/audit", icon: BookOpenCheck, label: "Audit" },
@@ -26,7 +27,7 @@ const staticNavigation = [
 
 const breadcrumbNames: Record<string, string> = {
   admin: "Overview", accounts: "Microsoft Accounts", directory: "Users",
-  exchange: "Shared Mailboxes", "html-projects": "Page Builder",
+  exchange: "Shared Mailboxes", "html-projects": "Page Builder", "ai-code": "AI Code",
   deployments: "Deployments", "access-codes": "Access Codes",
   audit: "Audit", security: "Settings", diagnostics: "Diagnostics",
   rules: "Rules", settings: "Mailbox Settings", mail: "Mail",

@@ -11,7 +11,7 @@ const CSRF_COOKIE = "company_csrf";
 const SESSION_SECONDS = 8 * 60 * 60;
 
 export const rolePermissions: Record<AccessRole, string[]> = {
-  SUPER_ADMIN: ["*"],
+  SUPER_ADMIN: ["*", "ai-code:*"],
   MICROSOFT_ADMIN: ["microsoft:manage", "mail:read", "mail:write", "audit:read"],
   MAIL_OPERATOR: ["mail:read", "mail:write", "mail:send"],
   MAIL_VIEWER: ["mail:read"],

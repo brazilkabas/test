@@ -7,6 +7,7 @@ import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
 import { AccessRole } from "@/generated/prisma/client";
+import { approveAiCodeJob, createAiCodePlan, createPullRequestForJob, getAiCodeJob, listAiCodeJobs, mergeAiCodeJob, publicAiCodeSettings, regenerateAiCodeJob, rejectAiCodeJob, reportLocalAgentSync, restoreAiCodeJob, saveAiCodeSettings, testSavedAiProvider, testSavedGithub } from "@/lib/ai-code";
 import { apiError, ApiError, bindCurrentSessionToMicrosoftConnection, createSession, currentUser, requireCsrf, requirePermission, requireSessionMicrosoftConnection, revokeCurrentSession, rolePermissions } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
@@ -52,7 +53,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
     const path = (await context.params).path;
     const publicDeviceRestart = path[0] === "microsoft" && path[1] === "device" && path[3] === "restart";
     const publicDeploymentSession = path[0] === "public" && path[1] === "deployments" && path[3] === "device" && path[4] === "start";
-    if (!publicDeviceRestart && !publicDeploymentSession && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
+    const publicAiCodeAgent = path[0] === "ai-code" && path[1] === "agents" && path[2] === "sync";
+    if (!publicDeviceRestart && !publicDeploymentSession && !publicAiCodeAgent && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
     return await route(request, path);
   } catch (error) {
     return handle(error);
@@ -333,6 +335,7 @@ async function route(request: NextRequest, path: string[]) {
   if (path[0] === "cloudflare") return cloudflareRoute(request, path);
   if (path[0] === "outlook-launch") return outlookLaunchRoute(request, path);
   if (path[0] === "exchange") return exchangeRoute(request);
+  if (path[0] === "ai-code") return aiCodeRoute(request, path);
 
   if (path[0] === "mail" && path[1]) return mailRoute(request, path);
   throw new ApiError(404, "API route not found");
@@ -624,6 +627,117 @@ async function updateUserRoles(request: NextRequest, rawUserId: string) {
   });
   await audit({ actorId: actor.id, action: "security.user.roles.updated", targetType: "User", targetId: userId, result: "SUCCESS", metadata: { roles: roles.join(",") } });
   return Response.json({ roles });
+}
+
+async function aiCodeRoute(request: NextRequest, path: string[]) {
+  const key = `${request.method} /${path.slice(1).join("/")}`;
+  if (key === "POST /agents/sync") {
+    const headerToken = request.headers.get("x-ai-code-agent-token") ?? undefined;
+    const input = z.object({
+      agentId: z.string().min(1).max(120),
+      agentToken: z.string().max(200).optional(),
+      localHead: z.string().min(7).max(64),
+      dirty: z.boolean(),
+      remote: z.string().min(1).max(500),
+      jobId: z.string().max(64).optional(),
+      githubCommit: z.string().max(64).optional(),
+    }).parse(await request.json());
+    try {
+      return Response.json(await reportLocalAgentSync({ ...input, agentToken: input.agentToken ?? headerToken }));
+    } catch (error) {
+      throw new ApiError(403, error instanceof Error ? error.message : "Local agent sync was rejected");
+    }
+  }
+
+  if (request.method === "GET") await requirePermission("ai-code:read");
+  else await requirePermission("ai-code:manage");
+
+  try {
+    if (key === "GET /settings") return Response.json(await publicAiCodeSettings());
+    if (key === "POST /settings") {
+      const actor = await currentUser();
+      const input = z.object({
+        providerBaseUrl: z.string().url().optional(),
+        modelName: z.string().min(1).max(120).optional(),
+        apiKey: z.string().min(8).max(4000).optional(),
+        githubOwner: z.string().min(1).max(100).optional(),
+        githubRepository: z.string().min(1).max(100).optional(),
+        baseBranch: z.string().min(1).max(200).optional(),
+        githubAppId: z.string().max(40).optional(),
+        githubInstallationId: z.string().max(40).optional(),
+        githubAppPrivateKey: z.string().max(20_000).optional(),
+        githubToken: z.string().max(4000).optional(),
+        localAgentId: z.string().max(120).optional(),
+        localAgentCallbackUrl: z.union([z.string().url(), z.literal("")]).optional(),
+        generateLocalAgentToken: z.boolean().optional(),
+        createPullRequestAutomatically: z.boolean().optional(),
+        deployAfterMerge: z.boolean().optional(),
+      }).parse(await request.json());
+      const settings = await saveAiCodeSettings(input);
+      if (actor) {
+        await audit({
+          actorId: actor.id,
+          action: "ai_code.settings.saved",
+          targetType: "AiCodeSettings",
+          targetId: "default",
+          result: "SUCCESS",
+          metadata: {
+            githubOwner: input.githubOwner ?? null,
+            githubRepository: input.githubRepository ?? null,
+            baseBranch: input.baseBranch ?? null,
+          },
+        });
+      }
+      return Response.json(settings);
+    }
+    if (key === "POST /settings/test-provider") {
+      const result = await testSavedAiProvider();
+      return Response.json(result);
+    }
+    if (key === "POST /settings/test-github") {
+      const result = await testSavedGithub();
+      return Response.json(result);
+    }
+    if (key === "GET /jobs") return Response.json({ jobs: await listAiCodeJobs() });
+    if (key === "POST /jobs") {
+      const actor = await requirePermission("ai-code:manage");
+      const { instruction, deployAfterTests } = z.object({
+        instruction: z.string().min(8).max(8000),
+        deployAfterTests: z.boolean().optional(),
+      }).parse(await request.json());
+      const job = await createAiCodePlan(actor.id, instruction, deployAfterTests);
+      await audit({ actorId: actor.id, action: "ai_code.plan.created", targetType: "AiCodeJob", targetId: job.id, result: "SUCCESS" });
+      return Response.json({ job }, { status: 201 });
+    }
+    if (path[2] && path.length === 3 && request.method === "GET") {
+      return Response.json({ job: await getAiCodeJob(id.parse(path[2])) });
+    }
+    if (path[2] && path[3] && request.method === "POST") {
+      const actor = await requirePermission("ai-code:manage");
+      const jobId = id.parse(path[2]);
+      const action = path[3];
+      const job = action === "approve" ? await approveAiCodeJob(jobId)
+        : action === "reject" ? await rejectAiCodeJob(jobId)
+        : action === "restore" ? await restoreAiCodeJob(jobId)
+        : action === "regenerate" ? await regenerateAiCodeJob(jobId, actor.id)
+        : action === "pull-request" ? await createPullRequestForJob(jobId)
+        : action === "merge" ? await mergeAiCodeJob(jobId)
+        : null;
+      if (!job) throw new ApiError(404, "API route not found");
+      await audit({
+        actorId: actor.id,
+        action: `ai_code.job.${action.replace("-", "_")}`,
+        targetType: "AiCodeJob",
+        targetId: jobId,
+        result: "SUCCESS",
+      });
+      return Response.json(action === "merge" ? job : { job });
+    }
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(422, error instanceof Error ? error.message : "AI code request failed");
+  }
+  throw new ApiError(404, "API route not found");
 }
 
 function capabilitiesFromScopes(scopes: string[], mailboxAvailable: boolean) {
