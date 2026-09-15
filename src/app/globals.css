@@ -321,6 +321,7 @@ kbd { font-size: .72rem; padding: .18rem .35rem; border: 1px solid var(--line); 
 .ai-code-job.selected, .ai-code-job:hover { background: var(--bg); }
 .ai-code-job strong { font-size: 0.82rem; font-weight: 590; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .ai-code-diff { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 0.9rem; max-height: 420px; overflow: auto; }
+.ai-code-layout .definition dd { word-break: break-all; }
 @media (max-width: 900px) {
   .form-grid, .ai-code-layout { grid-template-columns: 1fr; }
 }

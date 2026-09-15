@@ -65,6 +65,8 @@ export function AiCodeConsole() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState("");
+  const [planError, setPlanError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [confirm, setConfirm] = useState<"approve" | "merge" | "reject" | null>(null);
   const [oneTimeToken, setOneTimeToken] = useState<string | null>(null);
 
@@ -135,15 +137,23 @@ export function AiCodeConsole() {
 
   async function plan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const request = instruction.trim();
+    if (request.length < 8) {
+      setPlanError("Describe the change in English first.");
+      return;
+    }
     setBusy("plan");
+    setPlanError("");
     try {
-      const result = await api<{ job: Job }>("/ai-code/jobs", { method: "POST", body: JSON.stringify({ instruction }) });
+      const result = await api<{ job: Job }>("/ai-code/jobs", { method: "POST", body: JSON.stringify({ instruction: request }) });
       setInstruction("");
       await load();
       setSelectedId(result.job.id);
       notify({ title: "Change plan is ready for review", tone: "success" });
     } catch (error) {
-      notify({ title: "The plan could not be created", message: error instanceof Error ? error.message : undefined, tone: "error" });
+      const message = error instanceof Error ? error.message : "The plan could not be created";
+      setPlanError(message);
+      notify({ title: "The plan could not be created", message, tone: "error" });
     } finally {
       setBusy("");
     }
@@ -153,6 +163,7 @@ export function AiCodeConsole() {
     if (!selected) return;
     setBusy(action);
     setConfirm(null);
+    setActionError("");
     try {
       if (action === "merge") {
         const result = await api<MergeResult>(`/ai-code/jobs/${selected.id}/merge`, { method: "POST", body: "{}" });
@@ -170,7 +181,9 @@ export function AiCodeConsole() {
       }
     } catch (error) {
       await load().catch(() => undefined);
-      notify({ title: "The GitHub change was not completed", message: error instanceof Error ? error.message : undefined, tone: "error" });
+      const message = error instanceof Error ? error.message : "The GitHub change was not completed";
+      setActionError(message);
+      notify({ title: "The GitHub change was not completed", message, tone: "error" });
     } finally {
       setBusy("");
     }
@@ -220,7 +233,8 @@ export function AiCodeConsole() {
       <header className="panel-header"><div><h2>Describe a change</h2><small>Write what should change. Do not paste JSON, cookies, tokens, or Microsoft session material.</small></div></header>
       <form className="panel-body stack" onSubmit={plan}>
         <label>Change request<textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} rows={5} required minLength={8} placeholder="Example: Add a status badge to the deployments table showing expiry date." /></label>
-        <div className="row"><button disabled={Boolean(busy) || instruction.trim().length < 8}>{busy === "plan" ? "Inspecting GitHub and planning…" : "Generate plan from GitHub"}</button></div>
+        {planError && <div className="inline-alert" role="alert">{planError}</div>}
+        <div className="row"><button type="submit" disabled={busy === "plan"}>{busy === "plan" ? "Inspecting GitHub and planning…" : "Generate plan from GitHub"}</button></div>
       </form>
     </section>
 
@@ -239,6 +253,7 @@ export function AiCodeConsole() {
         <header className="panel-header"><div><h2>Review</h2><small>Approve applies the patch on a temporary worktree from the recorded GitHub commit, then pushes <code>ai/change-&lt;job-id&gt;</code>.</small></div>{selected && <StatusBadge status={selected.status} />}</header>
         {!selected ? <p className="compact-empty">Generate a plan to review files, explanation, and the Git patch.</p> : <div className="panel-body stack">
           {selected.error && <div className="inline-alert">{selected.error}</div>}
+          {actionError && <div className="inline-alert" role="alert">{actionError}</div>}
           {selected.localSyncStatus?.status === "local_sync_blocked" && <div className="inline-alert">{selected.localSyncStatus.message ?? "Local uncommitted changes blocked synchronization."}</div>}
           <div className="definition-grid">
             <div className="definition"><dt>GitHub base commit</dt><dd>{selected.githubBaseSha ?? "Not recorded"}</dd></div>
