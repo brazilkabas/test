@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { microsoftAuthority } from "@/lib/microsoft-authority";
+import { normalizeMicrosoftAuthority } from "@/lib/microsoft-authority";
 
 describe("Microsoft multitenant authority", () => {
   it("uses the configured organizations authority for device-code authentication", () => {
-    expect(microsoftAuthority()).toBe(
+    expect(normalizeMicrosoftAuthority(
+      "https://login.microsoftonline.com/organizations",
+    )).toBe(
       "https://login.microsoftonline.com/organizations/",
     );
   });
