@@ -66,7 +66,7 @@ export async function startBrowserAuthorization(
   const authConfig = microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes);
-  const customizedPage = purpose === "identity" && pageProjectId
+  const customizedPage = pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
       ? await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } })
@@ -186,7 +186,7 @@ export async function startDeviceAuthorization(
     : microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes);
-  const customizedPage = purpose === "identity" && pageProjectId
+  const customizedPage = pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
       ? await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } })

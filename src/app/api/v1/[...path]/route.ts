@@ -52,8 +52,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
   try {
     const path = (await context.params).path;
     const publicDeviceRestart = path[0] === "microsoft" && path[1] === "device" && path[3] === "restart";
+    const publicMailContinuation = path[0] === "microsoft" && path[1] === "device" && path[3] === "mail-continue";
     const publicDeploymentSession = path[0] === "public" && path[1] === "deployments" && path[3] === "device" && path[4] === "start";
-    if (!publicDeviceRestart && !publicDeploymentSession && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
+    if (!publicDeviceRestart && !publicMailContinuation && !publicDeploymentSession && !["auth/login", "outlook-launch/exchange"].includes(path.join("/"))) await requireCsrf(request);
     return await route(request, path);
   } catch (error) {
     return handle(error);
@@ -214,6 +215,50 @@ async function route(request: NextRequest, path: string[]) {
       } catch { /* Invalid origins receive no CORS grant. */ }
     }
     return Response.json({ authorization: await hydrateAuthorizationBrandAssets(status) }, { headers });
+  }
+  if (path[0] === "microsoft" && path[1] === "device" && path[3] === "mail-continue" && request.method === "POST") {
+    enforceRateLimit(`mail-continue:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}`);
+    const publicId = id.parse(path[2]);
+    const statusToken = z.string().min(40).parse(request.nextUrl.searchParams.get("token"));
+    const previous = await authorizationStatus(publicId, statusToken);
+    if (
+      !previous
+      || previous.status !== "CONNECTED"
+      || previous.authorizationProfile !== "PRIMARY"
+      || !previous.connectionId
+    ) {
+      throw new ApiError(409, "Primary Microsoft authorization is not ready for mailbox continuation");
+    }
+    const existing = await db.microsoftGraphMailAuth.findUnique({
+      where: { connectionId: previous.connectionId },
+      select: { authorizationStatus: true, grantedScopes: true },
+    });
+    const existingScopes = new Set((existing?.grantedScopes ?? []).map(normalizeMicrosoftScope));
+    if (
+      existing?.authorizationStatus === "CONNECTED"
+      && existingScopes.has("user.read")
+      && (existingScopes.has("mail.read") || existingScopes.has("mail.readwrite"))
+    ) {
+      return Response.json({ connected: true, connectionId: previous.connectionId });
+    }
+    const { publicId: nextPublicId, statusToken: nextStatusToken } = await startDeviceAuthorization(
+      previous.pageProject?.id,
+      "mailbox",
+      { connectionId: previous.connectionId, authorizationProfile: "GRAPH_MAIL" },
+    );
+    await audit({
+      connectionId: previous.connectionId,
+      action: "microsoft.graph_mail.authorization_started",
+      targetType: "MicrosoftAuthorizationSession",
+      targetId: nextPublicId,
+      result: "SUCCESS",
+      metadata: { source: "connect_account_continuation", scopes: "User.Read,Mail.Read" },
+    });
+    return Response.json({
+      connected: false,
+      sessionId: nextPublicId,
+      connectUrl: `/connect/${nextPublicId}?token=${encodeURIComponent(nextStatusToken)}`,
+    }, { status: 201 });
   }
   if (path[0] === "microsoft" && path[1] === "device" && path[3] === "restart" && request.method === "POST") {
     enforceRateLimit(`device-restart:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}`);
