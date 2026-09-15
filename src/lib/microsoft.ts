@@ -14,7 +14,6 @@ import {
   MicrosoftConfigurationError,
   microsoftAuthConfig,
   microsoftClientId,
-  microsoftMailboxAuthConfig,
   microsoftRedirectUri,
   type MicrosoftAuthConfig,
 } from "@/lib/config";
@@ -46,7 +45,6 @@ export type MicrosoftAuthorizationPurpose = "identity" | "mailbox" | "mailbox-se
 
 type AuthorizationTarget = {
   connectionId?: string;
-  authorizationProfile?: "PRIMARY" | "MAILBOX";
 };
 
 type DeviceChallenge = {
@@ -176,13 +174,7 @@ export async function startDeviceAuthorization(
   purpose: MicrosoftAuthorizationPurpose = "identity",
   target: AuthorizationTarget = {},
 ): Promise<{ publicId: string; statusToken: string }> {
-  const authorizationProfile = target.authorizationProfile ?? "PRIMARY";
-  if (authorizationProfile === "MAILBOX" && !target.connectionId) {
-    throw new MicrosoftConfigurationError("Mailbox authorization must be attached to an existing Microsoft connection.");
-  }
-  const authConfig = authorizationProfile === "MAILBOX"
-    ? microsoftMailboxAuthConfig()
-    : microsoftAuthConfig();
+  const authConfig = microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes);
   const customizedPage = pageProjectId
@@ -197,7 +189,6 @@ export async function startDeviceAuthorization(
       requestedScopes: scopes,
       clientId: authConfig.clientId,
       resourceAppId: authConfig.resourceAppId,
-      authorizationProfile,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
       connectionId: target.connectionId,
@@ -364,7 +355,6 @@ async function completeAuthorization(
     select: {
       clientId: true,
       resourceAppId: true,
-      authorizationProfile: true,
       connection: {
         select: {
           id: true,
@@ -435,13 +425,8 @@ async function completeAuthorization(
     && (
       pendingSession.connection.tenantId !== result.tenantId
       || pendingSession.connection.microsoftUserId !== profile.id
-      || (
-        pendingSession.authorizationProfile === "PRIMARY"
-        && (
-          pendingSession.connection.clientId !== pendingSession.clientId
-          || pendingSession.connection.resourceAppId !== pendingSession.resourceAppId
-        )
-      )
+      || pendingSession.connection.clientId !== pendingSession.clientId
+      || pendingSession.connection.resourceAppId !== pendingSession.resourceAppId
     )
   ) {
     throw new MicrosoftAccountMismatch();
@@ -484,31 +469,6 @@ async function completeAuthorization(
     || authenticatedAccount.localAccountId !== profile.id
   ) {
     throw new MicrosoftAccountMismatch();
-  }
-  if (pendingSession.authorizationProfile === "MAILBOX") {
-    if (!pendingSession.connection) {
-      throw new MicrosoftConfigurationError("Mailbox authorization is not attached to an existing Microsoft connection.");
-    }
-    await storeMicrosoftMailboxAuthorization({
-      connectionId: pendingSession.connection.id,
-      clientId: pendingSession.clientId,
-      resourceAppId: pendingSession.resourceAppId,
-      pca,
-      result,
-    });
-    const completed = await db.microsoftAuthorizationSession.updateMany({
-      where: {
-        id: authorizationSessionId,
-        status: AuthorizationStatus.PENDING,
-        errorCode: null,
-      },
-      data: {
-        status: AuthorizationStatus.CONNECTED,
-        connectionId: pendingSession.connection.id,
-      },
-    });
-    if (!completed.count) throw new MicrosoftAuthorizationCancelled();
-    return;
   }
   const tokenCacheKeyVersion = 2;
   const encryptedTokenCache = encrypt(
@@ -733,12 +693,6 @@ export async function storeMicrosoftMailboxAuthorization(input: {
         lastSuccessfulGraphAt: capabilities.canReadMail ? now : null,
       },
     });
-    if (capabilities.canReadMail) {
-      await transaction.microsoftConnection.update({
-        where: { id: connectionId },
-        data: { lastSuccessfulGraphAt: now },
-      });
-    }
     await transaction.auditEvent.create({
       data: {
         connectionId,
