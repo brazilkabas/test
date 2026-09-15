@@ -31,7 +31,7 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("preserves configured Graph scopes without duplicating Mail.Read", () => {
+  it("uses only externally configured scopes for device authorization", () => {
     expect(microsoftAuthorizationScopes("identity", [
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/Mail.Read",
@@ -48,12 +48,11 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("adds Mail.Read to the configured sign-in request", () => {
+  it("does not inject Microsoft Graph scopes into a configured broker resource request", () => {
     expect(microsoftAuthorizationScopes("identity", [
       "c44b4083-3bb0-49c1-b47d-974e53cbdf3c/.default",
     ])).toEqual([
       "c44b4083-3bb0-49c1-b47d-974e53cbdf3c/.default",
-      "Mail.Read",
     ]);
   });
 
