@@ -11,7 +11,7 @@ type Authorization = {
   verificationUri: string | null;
   message: string | null;
   requestedScopes: string[];
-  authorizationProfile: "PRIMARY" | "GRAPH_MAIL";
+  authorizationProfile: "PRIMARY";
   status: string;
   expiresAt: string;
   connectionId: string | null;

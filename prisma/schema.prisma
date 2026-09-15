@@ -156,7 +156,7 @@ model MicrosoftConnection {
   updatedAt                DateTime              @updatedAt
   owner                    User?                 @relation("ConnectionOwner", fields: [ownerId], references: [id])
   authorizationSessions    MicrosoftAuthorizationSession[]
-  graphMailAuth            MicrosoftGraphMailAuth?
+  mailboxAuth              MicrosoftMailboxAuth?
   mailboxes                Mailbox[]
   sharedMailboxPermissions MailboxPermission[]
   auditEvents              AuditEvent[]
@@ -193,7 +193,7 @@ model MicrosoftAuthorizationSession {
   @@index([status, expiresAt])
 }
 
-model MicrosoftGraphMailAuth {
+model MicrosoftMailboxAuth {
   id                       String                @id @default(cuid())
   connectionId             String                @unique
   tenantId                 String

@@ -99,40 +99,4 @@ describe("Microsoft client configuration", () => {
     );
   });
 
-  it("requires a separately configured Graph mail client", async () => {
-    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
-    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
-    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
-    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
-    vi.stubEnv("MICROSOFT_GRAPH_MAIL_CLIENT_ID", "");
-    const { microsoftGraphMailAuthConfig } = await import("@/lib/config");
-
-    expect(() => microsoftGraphMailAuthConfig()).toThrow(
-      "MICROSOFT_GRAPH_MAIL_CLIENT_ID is not configured",
-    );
-  });
-
-  it("keeps Graph mail authorization separate from primary resource configuration", async () => {
-    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
-    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
-    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
-    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
-    vi.stubEnv("MICROSOFT_CLIENT_ID", "primary-client");
-    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "primary-resource");
-    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "primary-resource/.default");
-    vi.stubEnv("MICROSOFT_GRAPH_MAIL_CLIENT_ID", "graph-mail-client");
-    const { microsoftAuthConfig, microsoftGraphMailAuthConfig } = await import("@/lib/config");
-
-    expect(microsoftAuthConfig().clientId).toBe("primary-client");
-    expect(microsoftAuthConfig().requestedScopes).toEqual(["primary-resource/.default"]);
-    expect(microsoftGraphMailAuthConfig()).toEqual({
-      clientId: "graph-mail-client",
-      authority: "https://login.microsoftonline.com/organizations",
-      resourceAppId: "00000003-0000-0000-c000-000000000000",
-      requestedScopes: [
-        "https://graph.microsoft.com/User.Read",
-        "https://graph.microsoft.com/Mail.Read",
-      ],
-    });
-  });
 });

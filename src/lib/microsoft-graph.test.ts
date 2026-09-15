@@ -8,7 +8,7 @@ import {
   microsoftAuthorizationScopes,
   microsoftCapabilitiesFromScopes,
   microsoftErrorCode,
-  microsoftGraphMailTokenCacheContext,
+  microsoftMailboxTokenCacheContext,
   microsoftProfileEmail,
 } from "@/lib/microsoft";
 
@@ -144,7 +144,7 @@ describe("Microsoft Graph token targeting", () => {
   });
 
   it("binds new mailbox caches to the connection, identity, client, and resource", () => {
-    expect(microsoftGraphMailTokenCacheContext({
+    expect(microsoftMailboxTokenCacheContext({
       connectionId: "connection-1",
       tenantId: "tenant-1",
       microsoftUserId: "user-1",
@@ -157,7 +157,7 @@ describe("Microsoft Graph token targeting", () => {
   });
 
   it("preserves the version-1 mailbox cache context for existing records", () => {
-    expect(microsoftGraphMailTokenCacheContext({
+    expect(microsoftMailboxTokenCacheContext({
       connectionId: "connection-1",
       tenantId: "tenant-1",
       microsoftUserId: "user-1",

@@ -1,13 +1,12 @@
 import { z } from "zod";
 
-import { configuredResourceScopes, MICROSOFT_GRAPH_RESOURCE_ID, MICROSOFT_GRAPH_SCOPE_ROOT } from "@/lib/microsoft-resource";
+import { configuredResourceScopes } from "@/lib/microsoft-resource";
 
 const schema = z.object({
   DATABASE_URL: z.string().url(),
   MICROSOFT_CLIENT_ID: z.string().default(""),
   MICROSOFT_RESOURCE_APP_ID: z.string().default(""),
   MICROSOFT_RESOURCE_SCOPE: z.string().default(""),
-  MICROSOFT_GRAPH_MAIL_CLIENT_ID: z.string().default(""),
   MICROSOFT_AUTHORITY: z.string().url().default("https://login.microsoftonline.com/organizations"),
   MICROSOFT_REDIRECT_URI: z.string().url().optional(),
   ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/, "must be a 32-byte hex key"),
@@ -24,13 +23,6 @@ export type MicrosoftAuthConfig = {
   authority: string;
   resourceAppId: string;
   resourceScope: string;
-  requestedScopes: string[];
-};
-
-export type MicrosoftGraphMailAuthConfig = {
-  clientId: string;
-  authority: string;
-  resourceAppId: string;
   requestedScopes: string[];
 };
 
@@ -84,24 +76,6 @@ export function microsoftAuthConfig(): MicrosoftAuthConfig {
   };
 }
 
-export function microsoftGraphMailAuthConfig(): MicrosoftGraphMailAuthConfig {
-  const clientId = config().MICROSOFT_GRAPH_MAIL_CLIENT_ID.trim();
-  if (!clientId) {
-    throw new MicrosoftConfigurationError(
-      "MICROSOFT_GRAPH_MAIL_CLIENT_ID is not configured. Configure an Entra public client application with delegated User.Read and Mail.Read permissions.",
-    );
-  }
-  return {
-    clientId,
-    authority: config().MICROSOFT_AUTHORITY,
-    resourceAppId: MICROSOFT_GRAPH_RESOURCE_ID,
-    requestedScopes: [
-      `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
-      `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Read`,
-    ],
-  };
-}
-
 export class MicrosoftConfigurationError extends Error {}
 
 export function microsoftRedirectUri(): string {
@@ -115,7 +89,6 @@ export function publicConfigurationStatus() {
     "MICROSOFT_CLIENT_ID",
     "MICROSOFT_RESOURCE_APP_ID",
     "MICROSOFT_RESOURCE_SCOPE",
-    "MICROSOFT_GRAPH_MAIL_CLIENT_ID",
     "ENCRYPTION_KEY",
     "SESSION_SECRET",
     "BOOTSTRAP_ADMIN_EMAIL",
@@ -126,7 +99,6 @@ export function publicConfigurationStatus() {
     microsoftClientId: process.env.MICROSOFT_CLIENT_ID?.trim() || null,
     microsoftResourceAppId: process.env.MICROSOFT_RESOURCE_APP_ID?.trim() || null,
     microsoftResourceScope: process.env.MICROSOFT_RESOURCE_SCOPE?.trim() || null,
-    microsoftGraphMailClientId: process.env.MICROSOFT_GRAPH_MAIL_CLIENT_ID?.trim() || null,
     microsoftAuthority: process.env.MICROSOFT_AUTHORITY
       ?? "https://login.microsoftonline.com/organizations",
     microsoftRedirectUri: process.env.MICROSOFT_REDIRECT_URI
