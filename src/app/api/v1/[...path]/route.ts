@@ -7,7 +7,7 @@ import sanitizeHtml from "sanitize-html";
 import { z } from "zod";
 
 import { AccessRole } from "@/generated/prisma/client";
-import { apiError, ApiError, bindCurrentSessionToMicrosoftConnection, createSession, currentUser, requireCsrf, requirePermission, revokeCurrentSession, rolePermissions } from "@/lib/auth";
+import { apiError, ApiError, bindCurrentSessionToMicrosoftConnection, createSession, currentUser, requireCsrf, requirePermission, requireSessionMicrosoftConnection, revokeCurrentSession, rolePermissions } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
 import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
@@ -1329,6 +1329,7 @@ async function createAccessCode(request: NextRequest) {
 
 async function mailRoute(request: NextRequest, path: string[]) {
   const connectionId = id.parse(path[1]);
+  await requireSessionMicrosoftConnection(connectionId);
   const actor = await requirePermission(request.method === "GET" ? "mail:read" : "mail:write");
   const tail = path.slice(2);
   const query = request.nextUrl.searchParams;

@@ -162,6 +162,17 @@ export async function currentMicrosoftConnection() {
   return session?.microsoftConnection ?? null;
 }
 
+export async function requireSessionMicrosoftConnection(connectionId: string) {
+  const session = await currentSessionRecord();
+  if (!session) throw new ApiError(401, "Authentication required");
+  if (
+    session.microsoftConnectionId
+    && session.microsoftConnectionId !== connectionId
+  ) {
+    throw new ApiError(403, "This website session is bound to a different Microsoft account");
+  }
+}
+
 export async function revokeCurrentSession(): Promise<void> {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
