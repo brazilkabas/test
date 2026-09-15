@@ -31,10 +31,11 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("keeps the initial connection authorization identity-only", () => {
+  it("includes mailbox access in the initial connection authorization", () => {
     expect(microsoftAuthorizationScopes("identity")).toEqual([
       "offline_access",
       "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
     expect(microsoftAuthorizationScopes("mailbox")).toEqual([
       "offline_access",

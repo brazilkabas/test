@@ -29,6 +29,7 @@ const NORMAL_GRAPH_SCOPES = new Map([
 const INITIAL_CONNECTION_SCOPES = [
   "offline_access",
   `${GRAPH_SCOPE_ROOT}User.Read`,
+  `${GRAPH_SCOPE_ROOT}Mail.Read`,
 ];
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
