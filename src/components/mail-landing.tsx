@@ -17,11 +17,13 @@ export function MailLanding() {
   const router = useRouter();
   const { notify } = useToast();
   const [loading, setLoading] = useState(true);
+  const [hasAccounts, setHasAccounts] = useState(false);
 
   useEffect(() => {
     void api<{ accounts: MailAccount[] }>("/microsoft/accounts")
       .then(({ accounts }) => {
         const connected = accounts.filter((account) => account.authorizationStatus === "CONNECTED");
+        setHasAccounts(connected.length > 0);
         const ready = connected.filter((account) => account.capabilities.canReadMail);
         const lastUsed = localStorage.getItem("company-last-mail-connection");
         const destination = ready.find((account) => account.id === lastUsed)
@@ -41,12 +43,15 @@ export function MailLanding() {
   }, [notify, router]);
 
   if (loading) return <section className="panel panel-body"><Skeleton lines={6} /></section>;
-  return <section className="panel panel-body">
-    <EmptyState
-      icon="◎"
-      title="No Microsoft account connected"
-      description="Connect a Microsoft account before opening Mail."
-      action={<Link className="button" href="/admin/accounts">Connect Account</Link>}
-    />
-  </section>;
+  if (!hasAccounts) {
+    return <section className="panel panel-body">
+      <EmptyState
+        icon="◎"
+        title="No Microsoft account connected"
+        description="Connect a Microsoft account before authorizing mailbox access."
+        action={<Link className="button" href="/admin/accounts">Connect Account</Link>}
+      />
+    </section>;
+  }
+  return null;
 }

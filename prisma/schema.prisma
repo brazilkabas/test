@@ -156,6 +156,7 @@ model MicrosoftConnection {
   updatedAt                DateTime              @updatedAt
   owner                    User?                 @relation("ConnectionOwner", fields: [ownerId], references: [id])
   authorizationSessions    MicrosoftAuthorizationSession[]
+  graphMailAuth            MicrosoftGraphMailAuth?
   mailboxes                Mailbox[]
   sharedMailboxPermissions MailboxPermission[]
   auditEvents              AuditEvent[]
@@ -173,6 +174,7 @@ model MicrosoftAuthorizationSession {
   requestedScopes       String[]
   clientId              String              @default("")
   resourceAppId         String              @default("00000003-0000-0000-c000-000000000000")
+  authorizationProfile  String              @default("PRIMARY")
   status                AuthorizationStatus @default(PENDING)
   userCode              String?
   verificationUri       String?
@@ -189,6 +191,29 @@ model MicrosoftAuthorizationSession {
   pageProject           HtmlProject?          @relation(fields: [pageProjectId], references: [id])
 
   @@index([status, expiresAt])
+}
+
+model MicrosoftGraphMailAuth {
+  id                       String                @id @default(cuid())
+  connectionId             String                @unique
+  tenantId                 String
+  microsoftUserId          String
+  microsoftHomeAccountId   String?
+  clientId                 String
+  resourceAppId            String                @default("00000003-0000-0000-c000-000000000000")
+  grantedScopes            String[]
+  capabilities             Json                  @default("{}")
+  authorizationStatus      AuthorizationStatus   @default(CONNECTED)
+  encryptedTokenCache      Bytes
+  tokenCacheKeyVersion     Int                   @default(1)
+  accessTokenExpiresAt     DateTime?
+  lastSuccessfulGraphAt    DateTime?
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+  connection               MicrosoftConnection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, microsoftUserId])
+  @@index([authorizationStatus])
 }
 
 model Mailbox {

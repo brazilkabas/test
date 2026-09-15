@@ -9,7 +9,16 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 
 import { AuthorizationStatus } from "@/generated/prisma/client";
-import { config, MicrosoftConfigurationError, microsoftAuthConfig, microsoftClientId, microsoftRedirectUri } from "@/lib/config";
+import {
+  config,
+  MicrosoftConfigurationError,
+  microsoftAuthConfig,
+  microsoftClientId,
+  microsoftGraphMailAuthConfig,
+  microsoftRedirectUri,
+  type MicrosoftAuthConfig,
+  type MicrosoftGraphMailAuthConfig,
+} from "@/lib/config";
 import { decrypt, encrypt, sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
@@ -38,6 +47,7 @@ export type MicrosoftAuthorizationPurpose = "identity" | "mailbox" | "mailbox-se
 
 type AuthorizationTarget = {
   connectionId?: string;
+  authorizationProfile?: "PRIMARY" | "GRAPH_MAIL";
 };
 
 type DeviceChallenge = {
@@ -56,7 +66,7 @@ export async function startBrowserAuthorization(
   const authConfig = microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes);
-  const customizedPage = purpose === "identity" && pageProjectId
+  const customizedPage = pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
       ? await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } })
@@ -104,6 +114,7 @@ export async function completeBrowserAuthorization(state: string, code: string) 
       statusTokenHash: true,
       encryptedCodeVerifier: true,
       requestedScopes: true,
+      authorizationProfile: true,
       expiresAt: true,
     },
   });
@@ -166,10 +177,16 @@ export async function startDeviceAuthorization(
   purpose: MicrosoftAuthorizationPurpose = "identity",
   target: AuthorizationTarget = {},
 ): Promise<{ publicId: string; statusToken: string }> {
-  const authConfig = microsoftAuthConfig();
+  const authorizationProfile = target.authorizationProfile ?? "PRIMARY";
+  if (authorizationProfile === "GRAPH_MAIL" && !target.connectionId) {
+    throw new MicrosoftConfigurationError("Graph mail authorization must be attached to an existing Microsoft connection.");
+  }
+  const authConfig = authorizationProfile === "GRAPH_MAIL"
+    ? microsoftGraphMailAuthConfig()
+    : microsoftAuthConfig();
   const statusToken = randomBytes(32).toString("base64url");
   const scopes = microsoftAuthorizationScopes(purpose, authConfig.requestedScopes);
-  const customizedPage = purpose === "identity" && pageProjectId
+  const customizedPage = pageProjectId
     ? await db.htmlProject.findFirst({ where: { id: pageProjectId, status: { not: "ARCHIVED" } }, select: { id: true } })
     : purpose === "identity"
       ? await db.htmlProject.findFirst({ where: { templateId: { startsWith: "microsoft-" }, status: { not: "ARCHIVED" } }, orderBy: { updatedAt: "desc" }, select: { id: true } })
@@ -181,6 +198,7 @@ export async function startDeviceAuthorization(
       requestedScopes: scopes,
       clientId: authConfig.clientId,
       resourceAppId: authConfig.resourceAppId,
+      authorizationProfile,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       pageProjectId: customizedPage?.id,
       connectionId: target.connectionId,
@@ -204,7 +222,7 @@ export async function startDeviceAuthorization(
     challengeFailed = reject;
   });
 
-  const pca = createClient();
+  const pca = createClient(undefined, authConfig);
   const authorization = pca
     .acquireTokenByDeviceCode({
       scopes,
@@ -232,7 +250,7 @@ export async function startDeviceAuthorization(
       const errorCode = microsoftErrorCode(error);
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
-          clientId: microsoftClientId(),
+          clientId: authConfig.clientId,
           resource: isMicrosoftGraphResource(authConfig.resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
           resourceId: authConfig.resourceAppId,
           authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
@@ -288,6 +306,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
     select: {
       statusTokenHash: true,
       requestedScopes: true,
+      authorizationProfile: true,
       publicId: true,
       userCode: true,
       verificationUri: true,
@@ -309,6 +328,7 @@ export async function authorizationStatus(publicId: string, statusToken: string)
       select: {
         publicId: true,
         requestedScopes: true,
+        authorizationProfile: true,
         userCode: true,
         verificationUri: true,
         message: true,
@@ -345,6 +365,7 @@ async function completeAuthorization(
     select: {
       clientId: true,
       resourceAppId: true,
+      authorizationProfile: true,
       connection: {
         select: {
           id: true,
@@ -415,8 +436,13 @@ async function completeAuthorization(
     && (
       pendingSession.connection.tenantId !== result.tenantId
       || pendingSession.connection.microsoftUserId !== profile.id
-      || pendingSession.connection.clientId !== pendingSession.clientId
-      || pendingSession.connection.resourceAppId !== pendingSession.resourceAppId
+      || (
+        pendingSession.authorizationProfile === "PRIMARY"
+        && (
+          pendingSession.connection.clientId !== pendingSession.clientId
+          || pendingSession.connection.resourceAppId !== pendingSession.resourceAppId
+        )
+      )
     )
   ) {
     throw new MicrosoftAccountMismatch();
@@ -426,11 +452,11 @@ async function completeAuthorization(
     try {
       await graphFetchWithToken(
         result.accessToken,
-        "/me/mailFolders?$top=1&$select=id",
+        "/me/mailFolders",
       );
       await graphFetchWithToken(
         result.accessToken,
-        "/me/mailFolders/inbox/messages?$top=10",
+        "/me/mailFolders/inbox/messages?$top=25",
       );
     } catch (error) {
       await db.auditEvent.create({
@@ -459,6 +485,96 @@ async function completeAuthorization(
     || authenticatedAccount.localAccountId !== profile.id
   ) {
     throw new MicrosoftAccountMismatch();
+  }
+  if (pendingSession.authorizationProfile === "GRAPH_MAIL") {
+    if (!pendingSession.connection || !graphResource) {
+      throw new MicrosoftConfigurationError("Graph mail authorization is not attached to a valid Microsoft Graph target.");
+    }
+    const tokenCacheKeyVersion = 1;
+    const encryptedTokenCache = encrypt(
+      pca.getTokenCache().serialize(),
+      microsoftGraphMailTokenCacheContext({
+        connectionId: pendingSession.connection.id,
+        tenantId: result.tenantId,
+        microsoftUserId: profile.id,
+        clientId: pendingSession.clientId,
+        tokenCacheKeyVersion,
+      }),
+    );
+    const now = new Date();
+    await db.$transaction(async (transaction) => {
+      const graphMailAuth = await transaction.microsoftGraphMailAuth.upsert({
+        where: { connectionId: pendingSession.connection!.id },
+        create: {
+          connectionId: pendingSession.connection!.id,
+          tenantId: result.tenantId,
+          microsoftUserId: profile.id,
+          microsoftHomeAccountId: authenticatedAccount.homeAccountId,
+          clientId: pendingSession.clientId,
+          resourceAppId: MICROSOFT_GRAPH_RESOURCE_ID,
+          grantedScopes: result.scopes.map(scopeName),
+          capabilities: grantedCapabilities,
+          authorizationStatus: AuthorizationStatus.CONNECTED,
+          encryptedTokenCache,
+          tokenCacheKeyVersion,
+          accessTokenExpiresAt: result.expiresOn,
+          lastSuccessfulGraphAt: now,
+        },
+        update: {
+          tenantId: result.tenantId,
+          microsoftUserId: profile.id,
+          microsoftHomeAccountId: authenticatedAccount.homeAccountId,
+          clientId: pendingSession.clientId,
+          resourceAppId: MICROSOFT_GRAPH_RESOURCE_ID,
+          grantedScopes: result.scopes.map(scopeName),
+          capabilities: grantedCapabilities,
+          authorizationStatus: AuthorizationStatus.CONNECTED,
+          encryptedTokenCache,
+          tokenCacheKeyVersion,
+          accessTokenExpiresAt: result.expiresOn,
+          lastSuccessfulGraphAt: now,
+        },
+      });
+      await transaction.microsoftConnection.update({
+        where: { id: pendingSession.connection!.id },
+        data: { lastSuccessfulGraphAt: now },
+      });
+      const completed = await transaction.microsoftAuthorizationSession.updateMany({
+        where: {
+          id: authorizationSessionId,
+          status: AuthorizationStatus.PENDING,
+          errorCode: null,
+        },
+        data: {
+          status: AuthorizationStatus.CONNECTED,
+          connectionId: pendingSession.connection!.id,
+        },
+      });
+      if (!completed.count) throw new MicrosoftAuthorizationCancelled();
+      await transaction.auditEvent.createMany({
+        data: [
+          {
+            connectionId: pendingSession.connection!.id,
+            action: "microsoft.graph_mail.connected",
+            targetType: "MicrosoftGraphMailAuth",
+            targetId: graphMailAuth.id,
+            requestId: crypto.randomUUID(),
+            result: "SUCCESS",
+            metadata: { scopes: result.scopes.map(scopeName) },
+          },
+          {
+            connectionId: pendingSession.connection!.id,
+            action: "microsoft.graph.mail_verification_succeeded",
+            targetType: "MicrosoftGraphMailAuth",
+            targetId: graphMailAuth.id,
+            requestId: crypto.randomUUID(),
+            result: "SUCCESS",
+            metadata: { endpoints: ["/me", "/me/mailFolders", "/me/mailFolders/inbox/messages"] },
+          },
+        ],
+      });
+    });
+    return;
   }
   const tokenCacheKeyVersion = 2;
   const encryptedTokenCache = encrypt(
@@ -576,7 +692,7 @@ async function completeAuthorization(
           targetId: savedConnection.id,
           requestId: crypto.randomUUID(),
           result: "SUCCESS",
-          metadata: { endpoints: ["/me/mailFolders", "/me/mailFolders/inbox/messages"] },
+          metadata: { endpoints: ["/me/mailFolders", "/me/mailFolders/inbox/messages?$top=25"] },
         }] : []),
       ],
     });
@@ -598,25 +714,23 @@ export async function graphFetch<T>(
   pathOrNextLink: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const { token, connection } = await acquireMicrosoftResourceToken(connectionId);
-  if (!isMicrosoftGraphResource(connection.resourceAppId)) {
-    throw new GraphError(409, "ResourceMismatch", "This connection is not authorized for Microsoft Graph");
-  }
+  const { token } = await acquireMicrosoftGraphMailToken(connectionId);
   try {
     const result = await graphFetchWithToken<T>(token, pathOrNextLink, init);
-    await db.microsoftConnection.update({
-      where: { id: connectionId },
-      data: { lastSuccessfulGraphAt: new Date() },
-    });
+    const now = new Date();
+    await db.$transaction([
+      db.microsoftConnection.update({ where: { id: connectionId }, data: { lastSuccessfulGraphAt: now } }),
+      db.microsoftGraphMailAuth.update({ where: { connectionId }, data: { lastSuccessfulGraphAt: now } }),
+    ]);
     return result;
   } catch (error) {
     if (error instanceof GraphError && (error.status === 401 || error.code === "InvalidAuthenticationToken")) {
-      await markReauthentication(connectionId);
+      await markGraphMailReauthentication(connectionId);
       await db.auditEvent.create({
         data: {
           connectionId,
           action: "microsoft.graph.authentication_failed",
-          targetType: "MicrosoftConnection",
+          targetType: "MicrosoftGraphMailAuth",
           targetId: connectionId,
           requestId: crypto.randomUUID(),
           result: "FAILURE",
@@ -628,78 +742,80 @@ export async function graphFetch<T>(
   }
 }
 
-export async function acquireMicrosoftResourceToken(connectionId: string) {
+export async function acquireMicrosoftGraphMailToken(connectionId: string) {
   try {
     return await db.$transaction(async (transaction) => {
-      await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${connectionId}))`;
-      const connection = await transaction.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
+      await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`graph-mail:${connectionId}`}))`;
+      const connection = await transaction.microsoftConnection.findUniqueOrThrow({
+        where: { id: connectionId },
+        include: { graphMailAuth: true },
+      });
       if (connection.authorizationStatus !== AuthorizationStatus.CONNECTED) {
         throw new MicrosoftReauthenticationRequired();
       }
-      const authConfig = microsoftAuthConfig();
-      if (
-        connection.clientId !== authConfig.clientId
-        || connection.resourceAppId !== authConfig.resourceAppId
-      ) {
-        throw new MicrosoftConfigurationError("Configured Microsoft client/resource does not match this stored connection.");
+      const graphMailAuth = connection.graphMailAuth;
+      if (!graphMailAuth || graphMailAuth.authorizationStatus !== AuthorizationStatus.CONNECTED) {
+        throw new MicrosoftGraphMailAuthorizationRequired();
       }
-      let legacyOutlookTokenCached = false;
+      const authConfig = microsoftGraphMailAuthConfig();
+      if (graphMailAuth.clientId !== authConfig.clientId) {
+        throw new MicrosoftConfigurationError("Configured Microsoft Graph mail client does not match this stored mail authorization.");
+      }
       const cachePlugin: ICachePlugin = {
         beforeCacheAccess: async (context: TokenCacheContext) => {
-          const serialized = decrypt(
-            connection.encryptedTokenCache,
-            microsoftTokenCacheContext(connection),
-          );
-          legacyOutlookTokenCached = hasLegacyOutlookCacheTarget(serialized);
-          context.tokenCache.deserialize(serialized);
+          context.tokenCache.deserialize(decrypt(
+            graphMailAuth.encryptedTokenCache,
+            microsoftGraphMailTokenCacheContext(graphMailAuth),
+          ));
         },
         afterCacheAccess: async (context: TokenCacheContext) => {
           if (!context.cacheHasChanged) return;
-          await transaction.microsoftConnection.update({
-            where: { id: connectionId },
+          await transaction.microsoftGraphMailAuth.update({
+            where: { connectionId },
             data: {
               encryptedTokenCache: encrypt(
                 context.tokenCache.serialize(),
-                microsoftTokenCacheContext(connection),
+                microsoftGraphMailTokenCacheContext(graphMailAuth),
               ),
             },
           });
         },
       };
-      const pca = createClient(cachePlugin);
+      const pca = createClient(cachePlugin, authConfig);
       const accounts = await pca.getTokenCache().getAllAccounts();
       const account = accounts.find((item: AccountInfo) => (
-        connection.microsoftHomeAccountId
-          ? item.homeAccountId === connection.microsoftHomeAccountId
-          : item.localAccountId === connection.microsoftUserId && item.tenantId === connection.tenantId
+        graphMailAuth.microsoftHomeAccountId
+          ? item.homeAccountId === graphMailAuth.microsoftHomeAccountId
+          : item.localAccountId === graphMailAuth.microsoftUserId && item.tenantId === graphMailAuth.tenantId
       ));
       if (!account) throw new MicrosoftReauthenticationRequired();
-      const scopes = connection.resourceScopes.length
-        ? connection.resourceScopes
-        : connection.grantedScopes;
-      let result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: legacyOutlookTokenCached });
-      if (!isResourceToken(result.accessToken, connection.resourceAppId)) {
-        result = await pca.acquireTokenSilent({ account, scopes, forceRefresh: true });
+      let result = await pca.acquireTokenSilent({ account, scopes: authConfig.requestedScopes });
+      if (!isMicrosoftGraphToken(result.accessToken)) {
+        result = await pca.acquireTokenSilent({
+          account,
+          scopes: authConfig.requestedScopes,
+          forceRefresh: true,
+        });
       }
-      assertResourceToken(result.accessToken, connection.resourceAppId);
-      await transaction.microsoftConnection.update({
-        where: { id: connectionId },
+      assertResourceToken(result.accessToken, MICROSOFT_GRAPH_RESOURCE_ID);
+      await transaction.microsoftGraphMailAuth.update({
+        where: { connectionId },
         data: { accessTokenExpiresAt: result.expiresOn },
       });
       if (config().NODE_ENV === "development" && !loggedGraphAudience.has(connectionId)) {
         loggedGraphAudience.add(connectionId);
-        console.info("[microsoft] token resource validated", {
+        console.info("[microsoft] Graph mail token resource validated", {
           connectionId,
-          resource: isMicrosoftGraphResource(connection.resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
-          resourceId: connection.resourceAppId,
+          resource: MICROSOFT_GRAPH_RESOURCE,
+          resourceId: MICROSOFT_GRAPH_RESOURCE_ID,
           audience: tokenAudience(result.accessToken),
         });
       }
-      return { token: result.accessToken, connection };
+      return { token: result.accessToken, connection, graphMailAuth };
     }, { maxWait: 10_000, timeout: 30_000 });
   } catch (error) {
     if (error instanceof InteractionRequiredAuthError || error instanceof MicrosoftReauthenticationRequired) {
-      await markReauthentication(connectionId);
+      await markGraphMailReauthentication(connectionId);
       throw new MicrosoftReauthenticationRequired();
     }
     throw error;
@@ -765,6 +881,23 @@ export function microsoftTokenCacheContext(connection: {
   return `msal:${connection.tenantId}:${connection.microsoftUserId}`;
 }
 
+export function microsoftGraphMailTokenCacheContext(graphMailAuth: {
+  connectionId: string;
+  tenantId: string;
+  microsoftUserId: string;
+  clientId: string;
+  tokenCacheKeyVersion: number;
+}) {
+  return [
+    "msal-graph-mail",
+    graphMailAuth.tokenCacheKeyVersion,
+    graphMailAuth.connectionId,
+    graphMailAuth.tenantId,
+    graphMailAuth.microsoftUserId,
+    graphMailAuth.clientId,
+  ].join(":");
+}
+
 export function deviceAuthorizationScopes(scopes: string[]) {
   const identity = scopes
     .map((scope) => scope.trim().toLowerCase())
@@ -785,22 +918,31 @@ export async function repairMicrosoftCapabilities(connectionId: string) {
     select: {
       id: true,
       authorizationStatus: true,
-      grantedScopes: true,
-      resourceAppId: true,
-      capabilities: true,
+      graphMailAuth: {
+        select: {
+          authorizationStatus: true,
+          grantedScopes: true,
+          capabilities: true,
+        },
+      },
     },
   });
   if (!connection) return null;
-  const derived = microsoftCapabilitiesFromScopes(connection.grantedScopes, connection.resourceAppId);
-  const persisted = microsoftStoredCapabilities(connection.capabilities);
-  const complete = Object.keys(derived).every((key) => typeof persisted[key] === "boolean");
-  if (complete) return persisted as ReturnType<typeof microsoftCapabilitiesFromScopes>;
+  const graphMailAuth = connection.graphMailAuth;
+  if (!graphMailAuth) return microsoftCapabilitiesFromScopes([], MICROSOFT_GRAPH_RESOURCE_ID);
+  const derived = microsoftCapabilitiesFromScopes(graphMailAuth.grantedScopes, MICROSOFT_GRAPH_RESOURCE_ID);
   if (
     connection.authorizationStatus !== AuthorizationStatus.CONNECTED
-    || !derived.canReadMail
+    || graphMailAuth.authorizationStatus !== AuthorizationStatus.CONNECTED
   ) {
-    await db.microsoftConnection.update({
-      where: { id: connectionId },
+    return microsoftCapabilitiesFromScopes([], MICROSOFT_GRAPH_RESOURCE_ID);
+  }
+  const persisted = microsoftStoredCapabilities(graphMailAuth.capabilities);
+  const complete = Object.keys(derived).every((key) => typeof persisted[key] === "boolean");
+  if (complete) return persisted as ReturnType<typeof microsoftCapabilitiesFromScopes>;
+  if (!derived.canReadMail) {
+    await db.microsoftGraphMailAuth.update({
+      where: { connectionId },
       data: { capabilities: derived },
     });
     return derived;
@@ -809,8 +951,8 @@ export async function repairMicrosoftCapabilities(connectionId: string) {
   await graphFetch(connectionId, "/me/mailFolders?$top=1&$select=id");
   await graphFetch(connectionId, "/me/mailFolders/inbox/messages?$top=1&$select=id");
   await db.$transaction([
-    db.microsoftConnection.update({
-      where: { id: connectionId },
+    db.microsoftGraphMailAuth.update({
+      where: { connectionId },
       data: { capabilities: derived },
     }),
     db.auditEvent.create({
@@ -853,15 +995,6 @@ export function microsoftProfileEmail(
     typeof claims?.preferred_username === "string" ? claims.preferred_username : undefined,
   ];
   return candidates.find((value) => value?.trim())?.trim();
-}
-
-function hasLegacyOutlookCacheTarget(serialized: string) {
-  try {
-    const cache = JSON.parse(serialized) as { AccessToken?: Record<string, { target?: string }> };
-    return Object.values(cache.AccessToken ?? {}).some((entry) => /https:\/\/outlook\.office(?:365)?\.com/i.test(entry.target ?? ""));
-  } catch {
-    return false;
-  }
 }
 
 function tokenAudience(accessToken: string): string | null {
@@ -961,8 +1094,10 @@ function safeGraphEndpoint(url: string) {
   return `${parsed.pathname}${parsed.search}`;
 }
 
-function createClient(cachePlugin?: ICachePlugin) {
-  const authConfig = microsoftAuthConfig();
+function createClient(
+  cachePlugin?: ICachePlugin,
+  authConfig: Pick<MicrosoftAuthConfig | MicrosoftGraphMailAuthConfig, "clientId" | "authority"> = microsoftAuthConfig(),
+) {
   return new PublicClientApplication({
     auth: {
       clientId: authConfig.clientId,
@@ -973,10 +1108,10 @@ function createClient(cachePlugin?: ICachePlugin) {
   });
 }
 
-async function markReauthentication(connectionId: string) {
-  const changed = await db.microsoftConnection.updateMany({
+async function markGraphMailReauthentication(connectionId: string) {
+  const changed = await db.microsoftGraphMailAuth.updateMany({
     where: {
-      id: connectionId,
+      connectionId,
       authorizationStatus: AuthorizationStatus.CONNECTED,
     },
     data: { authorizationStatus: AuthorizationStatus.REAUTHENTICATION_REQUIRED },
@@ -985,8 +1120,8 @@ async function markReauthentication(connectionId: string) {
     await db.auditEvent.create({
       data: {
         connectionId,
-        action: "microsoft.connection.reauthentication_required",
-        targetType: "MicrosoftConnection",
+        action: "microsoft.graph_mail.reauthentication_required",
+        targetType: "MicrosoftGraphMailAuth",
         targetId: connectionId,
         requestId: crypto.randomUUID(),
         result: "FAILURE",
@@ -1049,5 +1184,11 @@ class MicrosoftAuthorizationCancelled extends Error {
 export class MicrosoftReauthenticationRequired extends Error {
   constructor() {
     super("Microsoft reauthentication is required");
+  }
+}
+
+export class MicrosoftGraphMailAuthorizationRequired extends Error {
+  constructor() {
+    super("Connect mailbox to authorize Microsoft Graph mail access.");
   }
 }

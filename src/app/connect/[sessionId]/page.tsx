@@ -11,6 +11,7 @@ type Authorization = {
   verificationUri: string | null;
   message: string | null;
   requestedScopes: string[];
+  authorizationProfile: "PRIMARY" | "GRAPH_MAIL";
   status: string;
   expiresAt: string;
   connectionId: string | null;
@@ -24,6 +25,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   const [authorization, setAuthorization] = useState<Authorization | null>(null);
   const [error, setError] = useState("");
   const replacing = useRef(false);
+  const continuingMailbox = useRef(false);
   const popup = useRef<Window | null>(null);
 
   const load = useCallback(async () => {
@@ -43,17 +45,41 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
 
   useEffect(() => {
     if (authorization?.status !== "CONNECTED") return;
-    const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
-    const behavior = parsed.success ? parsed.data.settings.builder : undefined;
-    try { popup.current?.close(); } catch {}
-    if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
-      window.location.replace(behavior.redirectUrl);
+    const finishConnection = () => {
+      const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
+      const behavior = parsed.success ? parsed.data.settings.builder : undefined;
+      try { popup.current?.close(); } catch {}
+      if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
+        window.location.replace(behavior.redirectUrl);
+        return;
+      }
+      window.location.replace(authorization.connectionId
+        ? `/mail/${encodeURIComponent(authorization.connectionId)}`
+        : "/admin/accounts");
+    };
+    if (authorization.authorizationProfile === "GRAPH_MAIL" || !authorization.connectionId) {
+      finishConnection();
       return;
     }
-    window.location.replace(authorization.connectionId
-      ? `/profiles/${encodeURIComponent(authorization.connectionId)}`
-      : "/admin/accounts");
-  }, [authorization]);
+    if (continuingMailbox.current) return;
+    continuingMailbox.current = true;
+    void fetch(
+      `/api/v1/microsoft/device/${encodeURIComponent(sessionId)}/mail-continue?token=${encodeURIComponent(token)}`,
+      { method: "POST" },
+    ).then(async (response) => {
+      const result = await response.json() as { connected?: boolean; connectUrl?: string; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Unable to continue Microsoft mailbox authorization");
+      if (result.connected) finishConnection();
+      else if (result.connectUrl) window.location.replace(result.connectUrl);
+      else throw new Error("Microsoft mailbox authorization did not return a connection page");
+    }).catch((caught) => {
+      continuingMailbox.current = false;
+      const message = caught instanceof Error ? caught.message : "Unable to continue Microsoft mailbox authorization";
+      setError(message.includes("MICROSOFT_GRAPH_MAIL_CLIENT_ID")
+        ? "Your Microsoft account is connected, but mailbox setup is not configured. Contact an administrator."
+        : message);
+    });
+  }, [authorization, sessionId, token]);
 
   async function restart() {
     if (replacing.current) return;
@@ -81,6 +107,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       {authorization.errorCode && <p className="badge">{authorization.errorCode}</p>}
     </div></main>;
   }
+  if (error) return <main className="center-page"><div className="card auth-card stack"><h1>Mailbox setup could not continue</h1><p className="error">{error}</p></div></main>;
   const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
   if (authorization && customDocumentResult.success) {
     const destination = authorization.verificationUri ?? "#";
@@ -104,7 +131,6 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     </main>;
   }
 
-  if (error) return <main className="center-page"><div className="card auth-card error">{error}</div></main>;
   if (!authorization) return <main className="center-page"><div className="card auth-card">Loading Microsoft authorization…</div></main>;
   if (authorization.status === "EXPIRED" && isMailboxSettingsAuthorization(authorization.requestedScopes)) {
     return <main className="center-page"><div className="card auth-card stack">

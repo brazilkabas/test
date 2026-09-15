@@ -155,7 +155,7 @@ export function EnterpriseShell({ user, children }: { user: { email: string; dis
             <div className={`system-health ${healthyCount > 0 ? "is-healthy" : ""}`}><Activity size={14} /><span>{healthyCount > 0 ? "Systems healthy" : "Setup required"}</span></div>
             <select className="account-switcher" aria-label="Active Microsoft account" value={accountId} onChange={(event) => { setAccountId(event.target.value); if (event.target.value) router.push(`/mail/${event.target.value}`); }}>
               <option value="">Select mailbox</option>
-              {accounts.map((account) => <option value={account.id} key={account.id}>{account.displayName ?? account.userPrincipalName} — {account.capabilities?.canReadMail ? "Mail ready" : "Mail unavailable"}</option>)}
+              {accounts.map((account) => <option value={account.id} key={account.id}>{account.displayName ?? account.userPrincipalName} — {account.capabilities?.canReadMail ? "Mail ready" : "Mailbox pending"}</option>)}
             </select>
             <ThemeToggle />
             <details className="admin-menu"><summary><span className="avatar">{(user.displayName ?? user.email).slice(0, 1).toUpperCase()}</span><ChevronDown size={14} /></summary><div><strong>{user.displayName ?? "Administrator"}</strong><small>{user.email}</small><Link href="/admin/security"><Settings size={14} /> Settings</Link><button onClick={() => void logout()}><ChevronRight size={14} /> Sign out</button></div></details>

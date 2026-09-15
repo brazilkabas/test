@@ -32,6 +32,12 @@ type MailCapabilities = {
   canReadMailboxSettings: boolean;
   canModifyMailboxSettings: boolean;
 };
+type MailAccount = {
+  displayName: string | null;
+  email: string | null;
+  userPrincipalName: string | null;
+  capabilities: MailCapabilities;
+};
 const emptyFilters: Filters = { sender: "", recipient: "", subject: "", keyword: "", read: "", hasAttachments: false, flagged: false, importance: "", fromDate: "", toDate: "" };
 
 const wellKnown = [
@@ -61,6 +67,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [preview, setPreview] = useState<{ url: string; attachment: Attachment } | null>(null);
   const [capabilities, setCapabilities] = useState<MailCapabilities | null>(null);
+  const [account, setAccount] = useState<MailAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
 
@@ -100,8 +107,9 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
   const loadCapabilities = useCallback(() => {
-    return api<{ account: { capabilities: MailCapabilities } }>(`/microsoft/accounts/${connectionId}`)
+    return api<{ account: MailAccount }>(`/microsoft/accounts/${connectionId}`)
       .then(({ account }) => {
+        setAccount(account);
         setCapabilities(account.capabilities);
       })
       .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
@@ -191,13 +199,15 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }
 
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
+
   if (capabilities === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
   if (!capabilities.canReadMail) {
+    const accountLabel = account?.displayName ?? account?.email ?? account?.userPrincipalName ?? "This Microsoft account";
     return <section className="panel panel-body">
       <EmptyState
         icon="✉"
-        title="Mail unavailable"
-        description="This Microsoft connection does not currently include mailbox access."
+        title="Mailbox authorization incomplete"
+        description={`${accountLabel} did not complete mailbox authorization during Connect Account.`}
       />
     </section>;
   }
