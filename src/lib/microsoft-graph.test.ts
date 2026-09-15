@@ -5,6 +5,7 @@ import {
   deviceAuthorizationScopes,
   graphDelegatedScopes,
   GraphError,
+  inspectMsalCacheMetadata,
   isMicrosoftGraphToken,
   mailboxDiagnosticStatusCode,
   microsoftIdentityFromAccessToken,
@@ -115,6 +116,42 @@ describe("Microsoft Graph token targeting", () => {
     expect(mailboxDiagnosticStatusCode(new GraphError(403, "ErrorAccessDenied", "denied"))).toBe(403);
     expect(mailboxDiagnosticStatusCode(new GraphError(429, "TooManyRequests", "throttled"))).toBe(429);
     expect(mailboxDiagnosticStatusCode(new Error("unexpected"))).toBe(500);
+  });
+
+  it("reports only safe client and FOCI metadata from an MSAL cache", () => {
+    const metadata = inspectMsalCacheMetadata(JSON.stringify({
+      AccessToken: {
+        one: {
+          home_account_id: "user-a.tenant-a",
+          client_id: "client-a",
+          secret: "must-not-be-returned",
+        },
+      },
+      RefreshToken: {
+        one: {
+          home_account_id: "user-a.tenant-a",
+          client_id: "client-a",
+          family_id: "1",
+          secret: "must-not-be-returned",
+        },
+        other: {
+          home_account_id: "user-b.tenant-b",
+          client_id: "client-b",
+          family_id: "2",
+          secret: "must-not-be-returned",
+        },
+      },
+    }), "user-a", ["client-a", "client-b"]);
+
+    expect(metadata).toEqual({
+      clients: {
+        "client-a": { hasAccessToken: true, hasRefreshToken: true },
+        "client-b": { hasAccessToken: false, hasRefreshToken: false },
+      },
+      familyRefreshTokenPresent: true,
+      familyIds: ["1"],
+    });
+    expect(JSON.stringify(metadata)).not.toContain("must-not-be-returned");
   });
 });
 

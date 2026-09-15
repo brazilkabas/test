@@ -17,7 +17,7 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, diagnoseMailboxConnection, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftConfigurationError, MicrosoftReauthenticationRequired, probeMailboxReadiness, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, diagnoseMailboxConnection, diagnoseMsalClientMatrix, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftConfigurationError, MicrosoftReauthenticationRequired, probeMailboxReadiness, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
@@ -297,6 +297,37 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "POST /access-codes") return createAccessCode(request);
   if (key === "GET /access-codes") return listAccessCodes();
   if (path[0] === "access-codes" && path[1] && request.method === "DELETE") return revokeAccessCode(path[1]);
+  if (
+    path[0] === "diagnostics"
+    && path[1]
+    && path[2] === "client-matrix"
+    && request.method === "POST"
+  ) {
+    const connectionId = id.parse(path[1]);
+    const actor = await requirePermission("microsoft:read");
+    await requireSessionMicrosoftConnection(connectionId);
+    const { comparisonClientId } = z.object({
+      comparisonClientId: z.string().uuid().optional(),
+    }).parse(await request.json().catch(() => ({})));
+    const matrix = await diagnoseMsalClientMatrix(connectionId, comparisonClientId);
+    await audit({
+      actorId: actor.id,
+      connectionId,
+      action: "microsoft.client_matrix.diagnostic",
+      targetType: "MicrosoftConnection",
+      targetId: connectionId,
+      result: "SUCCESS",
+      metadata: {
+        comparisonClientProvided: Boolean(comparisonClientId),
+        clientASilentAcquisition: matrix.clientA.silentAcquisition,
+        clientBSilentAcquisition: matrix.clientB?.silentAcquisition ?? "NOT_RUN",
+        familyRefreshTokenPresent: matrix.foci.familyRefreshTokenPresent,
+      },
+    });
+    return Response.json(matrix, {
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
   if (path[0] === "diagnostics" && path[1]) return microsoftDiagnostics(request, path[1]);
   if (path[0] === "html-projects") return htmlProjectRoute(request, path);
   if (path[0] === "cloudflare") return cloudflareRoute(request, path);

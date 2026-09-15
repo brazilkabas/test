@@ -431,6 +431,230 @@ export type MailboxDiagnostic = {
   messageCount: number | null;
 };
 
+export type MsalClientProbe = {
+  clientId: string | null;
+  accountFound: boolean;
+  ownTokenState: boolean;
+  refreshTokenPresent: boolean;
+  authentication: "PASS" | "FAIL" | "NOT_CONFIGURED";
+  silentAcquisition: "PASS" | "FAIL" | "NOT_RUN";
+  interactionRequired: boolean;
+  graph: "PASS" | "FAIL" | "NOT_RUN";
+  audience: string;
+  grantedScopes: string[];
+  mailRead: boolean;
+  errorCode: string | null;
+  aadstsCode: string | null;
+};
+
+export type MsalClientMatrix = {
+  clientA: MsalClientProbe;
+  clientB: MsalClientProbe | null;
+  foci: {
+    familyRefreshTokenPresent: boolean;
+    actualMicrosoftFamilyMembership: string[];
+    familyLookupEligible: boolean;
+    note: string;
+  };
+};
+
+type MsalCacheCredential = {
+  home_account_id?: string;
+  client_id?: string;
+  family_id?: string;
+};
+
+export function inspectMsalCacheMetadata(
+  serializedCache: string,
+  microsoftUserId: string,
+  clientIds: string[],
+) {
+  let parsed: {
+    AccessToken?: Record<string, MsalCacheCredential>;
+    RefreshToken?: Record<string, MsalCacheCredential>;
+  };
+  try {
+    parsed = JSON.parse(serializedCache) as typeof parsed;
+  } catch {
+    parsed = {};
+  }
+  const belongsToAccount = (credential: MsalCacheCredential) =>
+    !credential.home_account_id
+    || credential.home_account_id.toLowerCase().includes(microsoftUserId.toLowerCase());
+  const accessTokens = Object.values(parsed.AccessToken ?? {}).filter(belongsToAccount);
+  const refreshTokens = Object.values(parsed.RefreshToken ?? {}).filter(belongsToAccount);
+  const familyIds = [...new Set(
+    refreshTokens.map((credential) => credential.family_id).filter((value): value is string => Boolean(value)),
+  )].sort();
+  const clients = Object.fromEntries(clientIds.map((clientId) => {
+    const normalized = clientId.toLowerCase();
+    const hasAccessToken = accessTokens.some(
+      (credential) => credential.client_id?.toLowerCase() === normalized,
+    );
+    const hasRefreshToken = refreshTokens.some(
+      (credential) => credential.client_id?.toLowerCase() === normalized,
+    );
+    return [clientId, { hasAccessToken, hasRefreshToken }];
+  }));
+  return {
+    clients,
+    familyRefreshTokenPresent: familyIds.length > 0,
+    familyIds,
+  };
+}
+
+export async function diagnoseMsalClientMatrix(
+  connectionId: string,
+  comparisonClientId?: string,
+): Promise<MsalClientMatrix> {
+  const connection = await db.microsoftConnection.findUniqueOrThrow({
+    where: { id: connectionId },
+  });
+  const serializedCache = decrypt(
+    connection.encryptedTokenCache,
+    `msal:${connection.tenantId}:${connection.microsoftUserId}`,
+  );
+  const configuredClientId = connection.clientId || config().MICROSOFT_CLIENT_ID || null;
+  const clientIds = [configuredClientId, comparisonClientId]
+    .filter((value): value is string => Boolean(value));
+  const metadata = inspectMsalCacheMetadata(
+    serializedCache,
+    connection.microsoftUserId,
+    clientIds,
+  );
+  const clientA = await probeMsalClient(
+    configuredClientId,
+    connection.microsoftUserId,
+    serializedCache,
+    metadata,
+  );
+  const clientB = comparisonClientId
+    ? await probeMsalClient(
+        comparisonClientId,
+        connection.microsoftUserId,
+        serializedCache,
+        metadata,
+      )
+    : null;
+  return {
+    clientA,
+    clientB,
+    foci: {
+      familyRefreshTokenPresent: metadata.familyRefreshTokenPresent,
+      actualMicrosoftFamilyMembership: metadata.familyIds,
+      familyLookupEligible: metadata.familyRefreshTokenPresent && Boolean(comparisonClientId),
+      note: metadata.familyRefreshTokenPresent
+        ? "MSAL cache contains an actual family refresh-token marker. Microsoft still decides whether the comparison client belongs to that family."
+        : "No family_id exists in the encrypted MSAL cache; cross-client family lookup is unavailable.",
+    },
+  };
+}
+
+async function probeMsalClient(
+  clientId: string | null,
+  microsoftUserId: string,
+  serializedCache: string,
+  metadata: ReturnType<typeof inspectMsalCacheMetadata>,
+): Promise<MsalClientProbe> {
+  if (!clientId) return emptyMsalClientProbe(null, "NOT_CONFIGURED");
+  const ownState = metadata.clients[clientId] ?? {
+    hasAccessToken: false,
+    hasRefreshToken: false,
+  };
+  const pca = new PublicClientApplication({
+    auth: { clientId, authority: microsoftAuthority() },
+    cache: {
+      cachePlugin: {
+        beforeCacheAccess: async (context: TokenCacheContext) => {
+          context.tokenCache.deserialize(serializedCache);
+        },
+        // Diagnostics never persist cache mutations or returned tokens.
+        afterCacheAccess: async () => undefined,
+      },
+    },
+    system: { loggerOptions: { piiLoggingEnabled: false } },
+  });
+  const account = (await pca.getTokenCache().getAllAccounts()).find(
+    (candidate) =>
+      candidate.localAccountId.toLowerCase() === microsoftUserId.toLowerCase(),
+  );
+  if (!account) {
+    return {
+      ...emptyMsalClientProbe(clientId, "FAIL"),
+      ownTokenState: ownState.hasAccessToken || ownState.hasRefreshToken,
+      refreshTokenPresent: ownState.hasRefreshToken,
+      errorCode: "account_not_found",
+    };
+  }
+  try {
+    const result = await pca.acquireTokenSilent({
+      account,
+      scopes: [
+        `${GRAPH_SCOPE_ROOT}User.Read`,
+        `${GRAPH_SCOPE_ROOT}Mail.Read`,
+      ],
+    });
+    const audience = tokenAudience(result.accessToken) ?? "NONE";
+    const grantedScopes = [...tokenDelegatedScopes(result.accessToken)].sort();
+    const graph = isMicrosoftGraphToken(result.accessToken);
+    return {
+      clientId,
+      accountFound: true,
+      ownTokenState: ownState.hasAccessToken || ownState.hasRefreshToken,
+      refreshTokenPresent: ownState.hasRefreshToken,
+      authentication: "PASS",
+      silentAcquisition: "PASS",
+      interactionRequired: false,
+      graph: graph ? "PASS" : "FAIL",
+      audience,
+      grantedScopes,
+      mailRead: graph && grantedScopes.includes("mail.read"),
+      errorCode: null,
+      aadstsCode: null,
+    };
+  } catch (error) {
+    const errorCode = microsoftErrorCode(error);
+    const description = microsoftErrorDescription(error);
+    return {
+      clientId,
+      accountFound: true,
+      ownTokenState: ownState.hasAccessToken || ownState.hasRefreshToken,
+      refreshTokenPresent: ownState.hasRefreshToken,
+      authentication: "PASS",
+      silentAcquisition: "FAIL",
+      interactionRequired: error instanceof InteractionRequiredAuthError
+        || /interaction|required|consent|no_tokens_found|invalid_grant/i.test(errorCode),
+      graph: "FAIL",
+      audience: "NONE",
+      grantedScopes: [],
+      mailRead: false,
+      errorCode,
+      aadstsCode: description.match(/\bAADSTS\d+\b/i)?.[0].toUpperCase() ?? null,
+    };
+  }
+}
+
+function emptyMsalClientProbe(
+  clientId: string | null,
+  authentication: "FAIL" | "NOT_CONFIGURED",
+): MsalClientProbe {
+  return {
+    clientId,
+    accountFound: false,
+    ownTokenState: false,
+    refreshTokenPresent: false,
+    authentication,
+    silentAcquisition: "NOT_RUN",
+    interactionRequired: false,
+    graph: "NOT_RUN",
+    audience: "NONE",
+    grantedScopes: [],
+    mailRead: false,
+    errorCode: authentication === "NOT_CONFIGURED" ? "client_not_configured" : null,
+    aadstsCode: null,
+  };
+}
+
 export async function diagnoseMailboxConnection(
   connectionId: string,
 ): Promise<MailboxDiagnostic> {

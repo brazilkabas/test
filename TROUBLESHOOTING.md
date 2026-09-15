@@ -42,6 +42,12 @@ folder and one Inbox message. The response contains only readiness, status, scop
 token audience/expiry, and counts. It never returns access tokens, refresh tokens, cache
 contents, or Microsoft browser cookies.
 
+The Diagnostics dashboard also provides a Client A/B comparison. Client A is the client
+ID recorded with the encrypted connection cache (or the currently configured client for
+legacy records). Client B is an optional comparison ID supplied for the diagnostic. Both
+tests use silent acquisition only. FOCI is reported only when an actual `family_id`
+marker exists in the cache; the application never creates or simulates family membership.
+
 ## Database or encryption errors
 
 Verify `DATABASE_URL`, run `npm run db:generate` and `npm run db:migrate`, and ensure
