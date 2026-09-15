@@ -1,0 +1,37 @@
+name: Auto Sync Repos
+
+on:
+  # 1. Trigger this workflow when you push code to your local repo
+  push:
+    branches: [ main ]
+  # 2. Or trigger it manually from the GitHub Dashboard
+  workflow_dispatch:
+
+jobs:
+  sync-repos:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout your local repository code
+      - name: Checkout Target Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.MY_GITHUB_TOKEN }}
+
+      # Step 2: Add the SOURCE repository as a remote
+      - name: Add Source Remote
+        run: |
+          git remote add source https://github.com/Sfedfcv/redesigned-pancake.git
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "bot@github.com"
+
+      # Step 3: Pull the latest changes from Source
+      - name: Pull Changes from Source
+        run: |
+          git pull source main
+
+      # Step 4: Push the changes to your Target Repository
+      - name: Push Changes to Target
+        run: |
+          git push origin main
