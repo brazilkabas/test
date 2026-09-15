@@ -310,6 +310,33 @@ export async function graphFetch<T>(
   }
 }
 
+export type MailboxStatus = "READY" | "NOT_AUTHORIZED" | "REAUTH_REQUIRED" | "ERROR";
+
+export async function probeMailboxReadiness(connectionId: string): Promise<{
+  mailboxAvailable: boolean;
+  mailboxStatus: MailboxStatus;
+}> {
+  try {
+    await graphFetch<{ value: Array<{ id: string }> }>(
+      connectionId,
+      "/me/mailFolders?$top=1&$select=id",
+    );
+    return { mailboxAvailable: true, mailboxStatus: "READY" };
+  } catch (error) {
+    if (
+      error instanceof MicrosoftReauthenticationRequired
+      || (error instanceof GraphError
+        && (error.status === 401 || error.code === "InvalidAuthenticationToken"))
+    ) {
+      return { mailboxAvailable: false, mailboxStatus: "REAUTH_REQUIRED" };
+    }
+    if (error instanceof GraphError && error.status === 403) {
+      return { mailboxAvailable: false, mailboxStatus: "NOT_AUTHORIZED" };
+    }
+    return { mailboxAvailable: false, mailboxStatus: "ERROR" };
+  }
+}
+
 async function acquireGraphToken(connectionId: string) {
   const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
   let legacyOutlookTokenCached = false;

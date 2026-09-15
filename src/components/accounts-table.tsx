@@ -17,6 +17,8 @@ type Account = {
   connectedAt: string;
   lastSuccessfulGraphAt: string | null;
   grantedScopes: string[];
+  mailboxAvailable: boolean;
+  mailboxStatus: "READY" | "NOT_AUTHORIZED" | "REAUTH_REQUIRED" | "ERROR";
 };
 
 export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) {
@@ -79,10 +81,10 @@ export function AccountsTable({ initialQuery = "" }: { initialQuery?: string }) 
               <td><StatusBadge status={account.authorizationStatus} /></td>
               <td><small>{account.microsoftUserId}</small></td>
               <td>{account.lastSuccessfulGraphAt ? new Date(account.lastSuccessfulGraphAt).toLocaleString() : "Never"}</td>
-              <td><StatusBadge status={account.authorizationStatus === "CONNECTED" ? "Available" : "Unavailable"} /></td>
+              <td><StatusBadge status={account.mailboxStatus} /></td>
               <td>0</td>
               <td>{account.grantedScopes.includes("Mail.Send") ? "Mail operator" : "Mail viewer"}</td>
-              <td><details className="action-menu"><summary aria-label={`Actions for ${account.displayName}`}>•••</summary><div><Link href={`/mail/${account.id}`}>Open mail</Link><Link href={`/profiles/${account.id}`}>Open profile</Link><button onClick={startConnection}>Reconnect</button><button onClick={() => setPermissions(account)}>View permissions</button><a href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer">Open Outlook</a><Link href={`/admin/audit?connectionId=${account.id}`}>Audit history</Link><button className="error" onClick={() => setDisconnect(account)}>Disconnect</button></div></details></td>
+              <td><details className="action-menu"><summary aria-label={`Actions for ${account.displayName}`}>•••</summary><div>{account.mailboxAvailable ? <Link href={`/mail/${account.id}`}>Open Mail</Link> : <span className="muted">Mailbox: {account.mailboxStatus.replaceAll("_", " ").toLowerCase()}</span>}<Link href={`/profiles/${account.id}`}>Open profile</Link><button onClick={startConnection}>Reconnect</button><button onClick={() => setPermissions(account)}>View permissions</button><a href="https://outlook.office.com/mail/" target="_blank" rel="noopener noreferrer">Open Outlook</a><Link href={`/admin/audit?connectionId=${account.id}`}>Audit history</Link><button className="error" onClick={() => setDisconnect(account)}>Disconnect</button></div></details></td>
             </tr>
           ))}</tbody></table></div>
         )}

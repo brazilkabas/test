@@ -1,6 +1,7 @@
 import { AuthenticatedShell } from "@/components/authenticated-shell";
 import { MailClient } from "@/components/mail-client";
 import { currentMicrosoftConnection } from "@/lib/auth";
+import { probeMailboxReadiness } from "@/lib/microsoft";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
@@ -11,5 +12,10 @@ export default async function MailPage({ params }: { params: Promise<{ connectio
   if (boundConnection && boundConnection.id !== connectionId) {
     redirect(`/mail/${boundConnection.id}`);
   }
-  return <AuthenticatedShell><MailClient connectionId={connectionId} /></AuthenticatedShell>;
+  const mailbox = await probeMailboxReadiness(connectionId);
+  return (
+    <AuthenticatedShell>
+      <MailClient connectionId={connectionId} initialMailboxStatus={mailbox.mailboxStatus} />
+    </AuthenticatedShell>
+  );
 }

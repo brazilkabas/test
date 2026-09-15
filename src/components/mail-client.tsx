@@ -7,6 +7,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, csrfToken } from "@/components/api";
 import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, useToast } from "@/components/design-system";
 import { MailboxAccessConsent } from "@/components/mailbox-settings-consent";
+import type { MailboxStatus } from "@/lib/microsoft";
 
 type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number };
 type Message = {
@@ -37,7 +38,13 @@ const wellKnown = [
   ["junkemail", "Junk", "⊘"],
 ] as const;
 
-export function MailClient({ connectionId }: { connectionId: string }) {
+export function MailClient({
+  connectionId,
+  initialMailboxStatus,
+}: {
+  connectionId: string;
+  initialMailboxStatus: MailboxStatus;
+}) {
   const { notify } = useToast();
   const [folders, setFolders] = useState<Folder[]>([]);
   const [wellKnownFolders, setWellKnownFolders] = useState<Record<string, Folder>>({});
@@ -54,7 +61,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all" | "forward" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [preview, setPreview] = useState<{ url: string; attachment: Attachment } | null>(null);
-  const [permissionReady, setPermissionReady] = useState<boolean | null>(null);
+  const [mailboxStatus, setMailboxStatus] = useState<MailboxStatus>(initialMailboxStatus);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
 
@@ -89,34 +96,34 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
-  useEffect(() => {
-    void api<{ account: { authorizationStatus: string; grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
-      .then(({ account }) => {
-        const granted = account.grantedScopes.map((scope) => scope.toLowerCase().replace("https://graph.microsoft.com/", ""));
-        setPermissionReady(
-          account.authorizationStatus === "CONNECTED"
-          && granted.includes("mail.readwrite")
-          && granted.includes("mail.send"),
-        );
-      })
-      .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
-  }, [connectionId, notify]);
-  useEffect(() => { if (permissionReady) void loadFolders(); }, [loadFolders, permissionReady]);
-  useEffect(() => { if (permissionReady) void loadMessages(false); }, [folder, permissionReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (mailboxStatus === "READY") void loadFolders(); }, [loadFolders, mailboxStatus]);
+  useEffect(() => { if (mailboxStatus === "READY") void loadMessages(false); }, [folder, mailboxStatus]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
 
   async function openMessage(message: Message) {
     setMessageLoading(true);
+    setAttachments([]);
     try {
-      const [messageData, attachmentData] = await Promise.all([
-        api<{ message: Message }>(`/mail/${connectionId}/messages/${encodeURIComponent(message.id)}`),
-        message.hasAttachments ? api<{ attachments: Attachment[] }>(`/mail/${connectionId}/messages/${encodeURIComponent(message.id)}/attachments`) : Promise.resolve({ attachments: [] }),
-      ]);
+      const messageData = await api<{ message: Message }>(
+        `/mail/${connectionId}/messages/${encodeURIComponent(message.id)}`,
+      );
       setSelected(messageData.message);
-      setAttachments(attachmentData.attachments.filter((attachment) => !attachment.isInline));
       if (!message.isRead) {
         void api(`/mail/${connectionId}/messages/${encodeURIComponent(message.id)}`, { method: "PATCH", body: JSON.stringify({ isRead: true }) });
         setMessages((items) => items.map((item) => item.id === message.id ? { ...item, isRead: true } : item));
+      }
+      if (message.hasAttachments) {
+        void api<{ attachments: Attachment[] }>(
+          `/mail/${connectionId}/messages/${encodeURIComponent(message.id)}/attachments`,
+        ).then(({ attachments: nextAttachments }) => {
+          setAttachments(nextAttachments.filter((attachment) => !attachment.isInline));
+        }).catch((error) => {
+          notify({
+            title: "Attachments unavailable",
+            message: error instanceof Error ? error.message : undefined,
+            tone: "error",
+          });
+        });
       }
     } catch (error) {
       notify({ title: "Message could not open", message: error instanceof Error ? error.message : undefined, tone: "error" });
@@ -186,12 +193,30 @@ export function MailClient({ connectionId }: { connectionId: string }) {
 
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
   const onPermissionGranted = useCallback(() => {
-    setPermissionReady(true);
-    notify({ title: "Webmail enabled", tone: "success" });
-  }, [notify]);
+    void api<{ account: { mailboxStatus: MailboxStatus } }>(`/microsoft/accounts/${connectionId}`)
+      .then(({ account }) => {
+        setMailboxStatus(account.mailboxStatus);
+        notify({
+          title: account.mailboxStatus === "READY" ? "Webmail enabled" : "Mailbox is not ready",
+          tone: account.mailboxStatus === "READY" ? "success" : "error",
+        });
+      })
+      .catch((error) => notify({
+        title: "Mailbox readiness check failed",
+        message: error instanceof Error ? error.message : undefined,
+        tone: "error",
+      }));
+  }, [connectionId, notify]);
 
-  if (permissionReady === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
-  if (!permissionReady) return <MailboxAccessConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
+  if (mailboxStatus === "NOT_AUTHORIZED") {
+    return <MailboxAccessConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
+  }
+  if (mailboxStatus === "REAUTH_REQUIRED") {
+    return <MailboxUnavailable title="Mailbox authentication must be renewed." description="The stored Microsoft authorization can no longer be reused. Reconnect this account before opening mail." />;
+  }
+  if (mailboxStatus === "ERROR") {
+    return <MailboxUnavailable title="Mailbox status could not be confirmed." description="The backend could not verify mailbox access. No empty mailbox has been shown." />;
+  }
   return (
     <div className="mail-workspace">
       <aside className={`mail-folders ${foldersOpen ? "is-mobile-open" : ""}`}>
@@ -246,6 +271,15 @@ export function MailClient({ connectionId }: { connectionId: string }) {
       <AttachmentPreview preview={preview} onClose={() => setPreview(null)} />
       <ConfirmDialog open={deleteOpen} title="Delete message?" description="The message will be moved according to Microsoft mailbox deletion behavior." confirmLabel="Delete message" destructive onClose={() => setDeleteOpen(false)} onConfirm={() => void deleteMessage()} />
     </div>
+  );
+}
+
+function MailboxUnavailable({ title, description }: { title: string; description: string }) {
+  return (
+    <section className="panel panel-body stack">
+      <h1>{title}</h1>
+      <p className="muted">{description}</p>
+    </section>
   );
 }
 

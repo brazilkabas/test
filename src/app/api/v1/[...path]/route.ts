@@ -17,7 +17,7 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftConfigurationError, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftConfigurationError, MicrosoftReauthenticationRequired, probeMailboxReadiness, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
@@ -210,7 +210,12 @@ async function route(request: NextRequest, path: string[]) {
         lastSuccessfulGraphAt: true,
       },
     });
-    return Response.json({ accounts });
+    return Response.json({
+      accounts: await Promise.all(accounts.map(async (account) => ({
+        ...account,
+        ...await probeMailboxReadiness(account.id),
+      }))),
+    });
   }
   if (key === "GET /microsoft/users") return organizationUsers(request);
   if (path[0] === "microsoft" && path[1] === "accounts" && path[2]) {
@@ -404,11 +409,12 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
       },
     });
     if (!account) throw new ApiError(404, "Microsoft account not found");
+    const mailbox = await probeMailboxReadiness(account.id);
     return Response.json({
       account: {
         ...account,
         tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
-        mailboxAvailability: account.authorizationStatus === "CONNECTED" ? "AVAILABLE" : "UNAVAILABLE",
+        ...mailbox,
         capabilities: capabilitiesFromScopes(account.grantedScopes),
       },
     });

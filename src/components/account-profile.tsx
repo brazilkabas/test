@@ -18,7 +18,8 @@ type Account = {
   authorizationStatus: string;
   grantedScopes: string[];
   tokenCacheHealth: string;
-  mailboxAvailability: string;
+  mailboxAvailable: boolean;
+  mailboxStatus: "READY" | "NOT_AUTHORIZED" | "REAUTH_REQUIRED" | "ERROR";
   capabilities: Record<string, boolean>;
   auditEvents: Array<{ id: string; action: string; result: string; createdAt: string; targetType: string }>;
 };
@@ -41,6 +42,11 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
 
   async function changeTab(next: (typeof tabs)[number]) {
     setTab(next);
+    if (
+      account
+      && !account.mailboxAvailable
+      && ["Folders", "Rules", "Mailbox Settings"].includes(next)
+    ) return;
     try {
       if (next === "Folders" && !folders.length) setFolders((await api<{ folders: Array<Record<string, unknown>> }>(`/mail/${connectionId}/folders`)).folders);
       if (next === "Rules" && !rules.length) setRules((await api<{ rules: Array<Record<string, unknown>> }>(`/mail/${connectionId}/rules`)).rules);
@@ -53,7 +59,7 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
   if (!account) return <div className="panel panel-body"><Skeleton lines={8} /></div>;
   return (
     <>
-      <div className="page-header"><div><Link href="/admin/accounts">← Microsoft accounts</Link><h1>{account.displayName ?? "Microsoft account"}</h1><p className="muted">{account.email ?? account.userPrincipalName}</p></div><div className="page-actions"><StatusBadge status={account.authorizationStatus} /><Link className="button" href={`/mail/${account.id}`}>Open mailbox</Link></div></div>
+      <div className="page-header"><div><Link href="/admin/accounts">← Microsoft accounts</Link><h1>{account.displayName ?? "Microsoft account"}</h1><p className="muted">{account.email ?? account.userPrincipalName}</p></div><div className="page-actions"><StatusBadge status={account.authorizationStatus} />{account.mailboxAvailable ? <Link className="button" href={`/mail/${account.id}`}>Open Mail</Link> : <StatusBadge status={account.mailboxStatus} />}</div></div>
       <section className="panel">
         <nav className="tabs" aria-label="Profile sections">{tabs.map((item) => <button className={tab === item ? "active" : ""} key={item} onClick={() => void changeTab(item)}>{item}</button>)}</nav>
         <div className="panel-body">
@@ -63,7 +69,7 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
               <Info label="Tenant ID" value={account.tenantId} />
               <Info label="Connection state" value={<StatusBadge status={account.authorizationStatus} />} />
               <Info label="Token cache health" value={<StatusBadge status={account.tokenCacheHealth} />} />
-              <Info label="Mailbox availability" value={<StatusBadge status={account.mailboxAvailability} />} />
+              <Info label="Mailbox availability" value={<StatusBadge status={account.mailboxStatus} />} />
               <Info label="Connected" value={new Date(account.connectedAt).toLocaleString()} />
               <Info label="Last Graph activity" value={account.lastSuccessfulGraphAt ? new Date(account.lastSuccessfulGraphAt).toLocaleString() : "Never"} />
               <Info label="Reauthentication" value={account.authorizationStatus === "REAUTHENTICATION_REQUIRED" ? "Required" : "Not required"} />
@@ -71,10 +77,12 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
             <h2>Detected capabilities</h2><div className="row">{Object.entries(account.capabilities).map(([capability, enabled]) => <span className={`status status-${enabled ? "positive" : "neutral"}`} key={capability}><span />{capability.replace(/([A-Z])/g, " $1")}</span>)}</div>
             <h2>Granted Graph scopes</h2><div className="row">{account.grantedScopes.map((scope) => <span className="badge" key={scope}>{scope}</span>)}</div>
           </div>}
-          {tab === "Mailbox" && <EmptyState icon="✉" title="Mailbox is available" description="Open the full folder-aware mail workspace for this employee." action={<Link className="button" href={`/mail/${account.id}`}>Open mailbox</Link>} />}
-          {tab === "Folders" && <SimpleTable rows={folders} columns={["displayName", "totalItemCount", "unreadItemCount"]} />}
-          {tab === "Rules" && <SimpleTable rows={rules} columns={["displayName", "isEnabled", "sequence"]} />}
-          {tab === "Mailbox Settings" && <div className="definition-grid">{settings && Object.entries(settings).filter(([, value]) => typeof value !== "object").map(([key, value]) => <Info key={key} label={key} value={String(value ?? "Not set")} />)}</div>}
+          {tab === "Mailbox" && (account.mailboxAvailable
+            ? <EmptyState icon="✉" title="Mailbox is available" description="Open the full folder-aware mail workspace for this employee." action={<Link className="button" href={`/mail/${account.id}`}>Open Mail</Link>} />
+            : <Unavailable title="Mailbox is not available" description={`Current mailbox status: ${account.mailboxStatus.replaceAll("_", " ").toLowerCase()}.`} />)}
+          {tab === "Folders" && (account.mailboxAvailable ? <SimpleTable rows={folders} columns={["displayName", "totalItemCount", "unreadItemCount"]} /> : <Unavailable title="Folders unavailable" description={`Mailbox status: ${account.mailboxStatus.replaceAll("_", " ").toLowerCase()}.`} />)}
+          {tab === "Rules" && (account.mailboxAvailable ? <SimpleTable rows={rules} columns={["displayName", "isEnabled", "sequence"]} /> : <Unavailable title="Rules unavailable" description={`Mailbox status: ${account.mailboxStatus.replaceAll("_", " ").toLowerCase()}.`} />)}
+          {tab === "Mailbox Settings" && (account.mailboxAvailable ? <div className="definition-grid">{settings && Object.entries(settings).filter(([, value]) => typeof value !== "object").map(([key, value]) => <Info key={key} label={key} value={String(value ?? "Not set")} />)}</div> : <Unavailable title="Mailbox settings unavailable" description={`Mailbox status: ${account.mailboxStatus.replaceAll("_", " ").toLowerCase()}.`} />)}
           {tab === "Shared Mailboxes" && <Unavailable title="Shared mailbox discovery is not configured" description="Shared access must be probed with Mail.ReadWrite.Shared/Mail.Send.Shared and existing Exchange mailbox rights. Global Admin alone does not grant access." />}
           {tab === "Microsoft Permissions" && <div className="row">{account.grantedScopes.map((scope) => <span className="badge" key={scope}>{scope}</span>)}</div>}
           {["Files", "Calendar", "Contacts"].includes(tab) && <Unavailable title={`${tab} module is disabled`} description={`This tenant connection has not enabled the dedicated ${tab.toLowerCase()} module or its least-privilege Graph permissions.`} />}
