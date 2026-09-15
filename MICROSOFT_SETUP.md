@@ -17,19 +17,18 @@ does not use a client secret or redirect URI; the redirect URI is retained for t
 configured browser callback. Do not add a client secret to this
 application unless a later confidential-client flow explicitly requires one.
 
-The initial connection requests delegated Microsoft Graph `User.Read` and `Mail.Read`
-plus `offline_access`. The returned access token must target Microsoft Graph and contain
-`Mail.Read`; its tenant and object claims must match the signed MSAL identity. Before a
-connection is marked complete, the backend verifies both the mailbox-folder and Inbox
-message endpoints. Blank client IDs are accepted during application setup, but connection
-attempts return `MICROSOFT_NOT_CONFIGURED` until `MICROSOFT_CLIENT_ID` is populated.
+The initial connection requests delegated Microsoft Graph `User.Read` plus
+`offline_access`. It does not request `Mail.Read`. The returned access token must target
+Microsoft Graph, and its tenant and object claims must match the signed MSAL identity.
+Blank client IDs are accepted during application setup, but connection attempts return
+`MICROSOFT_NOT_CONFIGURED` until `MICROSOFT_CLIENT_ID` is populated.
 
 ## Graph permissions
 
-Read-only Graph mailbox access is part of every new connection, so new accounts do not
-need a second mailbox-consent step. Connections created before this behavior may use the
-one-time legacy mailbox upgrade. `Mail.ReadWrite` and `Mail.Send` are not requested by
-the read-only connection flow.
+Mailbox access is not part of initial sign-in. The optional mailbox authorization flow
+requests delegated `Mail.Read` and verifies the Graph token, folders, and Inbox before
+marking the mailbox available. `Mail.ReadWrite` and `Mail.Send` are not requested by the
+read-only mailbox flow.
 `MailboxSettings.ReadWrite` is requested separately only when a user opens and enables
 mailbox-settings or Inbox-rule editing.
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
