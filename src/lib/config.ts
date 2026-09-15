@@ -91,6 +91,11 @@ export function microsoftGraphMailAuthConfig(): MicrosoftGraphMailAuthConfig {
       "MICROSOFT_GRAPH_MAIL_CLIENT_ID is not configured. Configure an Entra public client application with delegated User.Read and Mail.Read permissions.",
     );
   }
+  if (clientId === config().MICROSOFT_CLIENT_ID.trim()) {
+    throw new MicrosoftConfigurationError(
+      "MICROSOFT_GRAPH_MAIL_CLIENT_ID must be your own Entra application and cannot equal the primary Microsoft Authentication Broker client ID. Graph scopes will not be requested through the primary client.",
+    );
+  }
   return {
     clientId,
     authority: config().MICROSOFT_AUTHORITY,

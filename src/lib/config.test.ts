@@ -112,6 +112,20 @@ describe("Microsoft client configuration", () => {
     );
   });
 
+  it("refuses to request Graph mail through the primary client", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "primary-broker-client");
+    vi.stubEnv("MICROSOFT_GRAPH_MAIL_CLIENT_ID", "primary-broker-client");
+    const { microsoftGraphMailAuthConfig } = await import("@/lib/config");
+
+    expect(() => microsoftGraphMailAuthConfig()).toThrow(
+      "cannot equal the primary Microsoft Authentication Broker client ID",
+    );
+  });
+
   it("keeps Graph mail authorization separate from primary resource configuration", async () => {
     vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
     vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
