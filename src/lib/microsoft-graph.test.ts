@@ -25,15 +25,12 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
-  it("includes webmail in initial authorization and defers mailbox settings", () => {
-    expect(microsoftAuthorizationScopes("identity")).toEqual([
-      "openid",
-      "profile",
-      "email",
-      "offline_access",
-      "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
+  it("uses the configured resource for initial authorization and defers Graph access", () => {
+    expect(microsoftAuthorizationScopes(
+      "identity",
+      "api://00000000-0000-4000-8000-000000000001/access",
+    )).toEqual([
+      "api://00000000-0000-4000-8000-000000000001/access",
     ]);
     expect(microsoftAuthorizationScopes("mailbox")).toEqual([
       "offline_access",

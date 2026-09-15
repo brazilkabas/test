@@ -1,15 +1,13 @@
 # Microsoft Entra setup
 
-Use the existing Entra app registration as a public client. Set:
+Configure the public client and the resource used for the initial connection:
 
 ```text
 MICROSOFT_CLIENT_ID=<application/client ID>
-```
-
-Device-code authentication always uses the multitenant organizations authority:
-
-```text
-https://login.microsoftonline.com/organizations/
+MICROSOFT_RESOURCE_APP_ID=<resource application ID>
+MICROSOFT_RESOURCE_SCOPE=<resource application ID>/<delegated scope or .default>
+MICROSOFT_AUTHORITY=https://login.microsoftonline.com/organizations
+MICROSOFT_REDIRECT_URI=http://localhost:3000/api/v1/microsoft/callback
 ```
 
 Do not configure a home-tenant GUID as the global authority. After authentication,
@@ -17,22 +15,21 @@ the tenant ID returned by Microsoft is still stored with the connection so accou
 from different organizations remain correctly isolated.
 
 Under **Authentication**, enable **Allow public client flows**. Device authorization
-does not use a client secret or redirect URI. Do not add a client secret to this
+does not use a client secret or redirect URI; the redirect URI is retained for the
+configured browser callback. Do not add a client secret to this
 application unless a later confidential-client flow explicitly requires one.
 
-## Delegated Graph permissions
+The initial connection requests only `MICROSOFT_RESOURCE_SCOPE`. The returned access
+token must target `MICROSOFT_RESOURCE_APP_ID`; account identity comes from Microsoft's
+signed ID-token claims. Blank Microsoft values are accepted during application setup,
+but connection attempts return `MICROSOFT_NOT_CONFIGURED` until they are populated.
 
-Initial sign-in passes only these scopes to MSAL:
+## Incremental Graph permissions
 
-- `openid`, `profile`, `email` — basic sign-in identity;
-- `User.Read` — signed-in profile;
-- `offline_access` — renew access without storing browser tokens;
-- `Mail.ReadWrite` — read and manage messages, folders, attachments, and drafts;
-- `Mail.Send` — send, reply to, and forward messages.
-
-These mailbox scopes are part of initial authorization so internal webmail is available
-immediately after a successful connection. `MailboxSettings.ReadWrite` is requested
-separately only when a user opens and enables mailbox-settings or Inbox-rule editing.
+Graph mailbox access is separate from initial resource authorization.
+`Mail.ReadWrite` and `Mail.Send` are requested when webmail is enabled.
+`MailboxSettings.ReadWrite` is requested separately only when a user opens and enables
+mailbox-settings or Inbox-rule editing.
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
 because shared-mailbox workflows are not enabled.
 Directory permissions such as
@@ -40,8 +37,9 @@ Directory permissions such as
 require administrator consent under tenant policy. Microsoft can also require admin
 consent for otherwise delegated permissions depending on tenant configuration.
 
-Each device flow uses a fixed purpose-specific allowlist; it never expands the request
-from all permissions configured in Entra and never requests Microsoft Graph `.default`.
+Each device flow uses a fixed purpose-specific scope; it never expands the request
+from all permissions configured in Entra. The initial resource may use `.default` when
+explicitly configured; Graph authorization does not use `.default`.
 MSAL can add standard OIDC protocol scopes automatically. The application does not
 force a consent prompt, so existing tenant-wide consent is reused by Microsoft Entra.
 

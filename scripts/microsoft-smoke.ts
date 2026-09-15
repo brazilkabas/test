@@ -1,8 +1,7 @@
 import { PublicClientApplication } from "@azure/msal-node";
 
-import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "../src/lib/microsoft-authority";
-
 const clientId = process.env.MICROSOFT_CLIENT_ID;
+const authority = process.env.MICROSOFT_AUTHORITY ?? "https://login.microsoftonline.com/organizations";
 const scopes = (process.env.MICROSOFT_MAIL_SMOKE_SCOPES ?? "offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite")
   .split(",")
   .map((value) => value.trim())
@@ -16,7 +15,7 @@ if (!clientId) {
 }
 
 const pca = new PublicClientApplication({
-  auth: { clientId, authority: MICROSOFT_ORGANIZATIONS_AUTHORITY },
+  auth: { clientId, authority },
   system: { loggerOptions: { piiLoggingEnabled: false } },
 });
 

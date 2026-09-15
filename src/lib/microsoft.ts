@@ -12,7 +12,7 @@ import { AuthorizationStatus } from "@/generated/prisma/client";
 import { config } from "@/lib/config";
 import { decrypt, encrypt, sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
-import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
+import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const GRAPH_SCOPE_ROOT = "https://graph.microsoft.com/";
@@ -25,15 +25,6 @@ const NORMAL_GRAPH_SCOPES = new Map([
   ["mail.send", "Mail.Send"],
   ["mailboxsettings.readwrite", "MailboxSettings.ReadWrite"],
 ]);
-const IDENTITY_AUTHORIZATION_SCOPES = [
-  "openid",
-  "profile",
-  "email",
-  "offline_access",
-  `${GRAPH_SCOPE_ROOT}User.Read`,
-  `${GRAPH_SCOPE_ROOT}Mail.ReadWrite`,
-  `${GRAPH_SCOPE_ROOT}Mail.Send`,
-];
 const MAILBOX_ACCESS_SCOPES = [
   "offline_access",
   `${GRAPH_SCOPE_ROOT}User.Read`,
@@ -80,7 +71,7 @@ export async function startDeviceAuthorization(
   });
   if (config().NODE_ENV === "development") {
     console.info("[microsoft] authorization started", {
-      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      authority: microsoftAuthority(),
       clientId: config().MICROSOFT_CLIENT_ID,
       requestedScopes: scopes.map(scopeName),
     });
@@ -121,7 +112,7 @@ export async function startDeviceAuthorization(
       const errorCode = microsoftErrorCode(error);
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
-          authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+          authority: microsoftAuthority(),
           clientId: config().MICROSOFT_CLIENT_ID,
           requestedScopes: scopes.map(scopeName),
           errorCode,
@@ -215,14 +206,20 @@ async function completeAuthorization(
   pca: PublicClientApplication,
   result: AuthenticationResult,
 ) {
-  const pendingSession = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
+  const pendingSession = await db.microsoftAuthorizationSession.findUnique({
+    where: { id: authorizationSessionId },
+    select: { status: true, expiresAt: true, requestedScopes: true },
+  });
   if (!pendingSession || pendingSession.status !== AuthorizationStatus.PENDING || pendingSession.expiresAt <= new Date()) return;
-  const profile = await graphFetchWithToken<{
-    id: string;
-    displayName?: string;
-    userPrincipalName?: string;
-    mail?: string;
-  }>(result.accessToken, "/me?$select=id,displayName,userPrincipalName,mail");
+  const graphAuthorization = pendingSession.requestedScopes.some((scope) =>
+    scope.toLowerCase().startsWith(GRAPH_SCOPE_ROOT),
+  );
+  if (graphAuthorization) {
+    assertMicrosoftGraphToken(result.accessToken);
+  } else {
+    assertConfiguredResourceToken(result.accessToken);
+  }
+  const profile = profileFromAuthenticationResult(result);
   const stillPending = await db.microsoftAuthorizationSession.findUnique({ where: { id: authorizationSessionId }, select: { status: true, expiresAt: true } });
   if (!stillPending || stillPending.status !== AuthorizationStatus.PENDING || stillPending.expiresAt <= new Date()) return;
   const encryptedTokenCache = encrypt(
@@ -250,7 +247,6 @@ async function completeAuthorization(
       email: profile.mail,
       encryptedTokenCache,
       grantedScopes,
-      lastSuccessfulGraphAt: new Date(),
       authorizationStatus: AuthorizationStatus.CONNECTED,
     },
     update: {
@@ -260,7 +256,6 @@ async function completeAuthorization(
       encryptedTokenCache,
       grantedScopes,
       connectedAt: new Date(),
-      lastSuccessfulGraphAt: new Date(),
       authorizationStatus: AuthorizationStatus.CONNECTED,
     },
   });
@@ -271,7 +266,7 @@ async function completeAuthorization(
   });
   if (config().NODE_ENV === "development") {
     console.info("[microsoft] authorization completed", {
-      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      authority: microsoftAuthority(),
       clientId: config().MICROSOFT_CLIENT_ID,
       requestedScopes: result.scopes.map(scopeName),
       tenantId: result.tenantId,
@@ -384,10 +379,13 @@ export function deviceAuthorizationScopes(scopes: string[]) {
   return [...new Set([...identity, ...graphDelegatedScopes(scopes)])];
 }
 
-export function microsoftAuthorizationScopes(purpose: MicrosoftAuthorizationPurpose) {
+export function microsoftAuthorizationScopes(
+  purpose: MicrosoftAuthorizationPurpose,
+  identityResourceScope?: string,
+) {
   if (purpose === "mailbox-settings") return [...MAILBOX_SETTINGS_SCOPES];
   if (purpose === "mailbox") return [...MAILBOX_ACCESS_SCOPES];
-  return [...IDENTITY_AUTHORIZATION_SCOPES];
+  return [identityResourceScope ?? microsoftResourceConfiguration().scope];
 }
 
 function scopeName(scope: string) {
@@ -423,6 +421,41 @@ function assertMicrosoftGraphToken(accessToken: string) {
   if (!isMicrosoftGraphToken(accessToken)) {
     throw new GraphError(401, "InvalidTokenAudience", "Internal webmail requires a Microsoft Graph access token");
   }
+}
+
+function assertConfiguredResourceToken(accessToken: string) {
+  const audience = tokenAudience(accessToken);
+  const { appId } = microsoftResourceConfiguration();
+  if (audience !== appId && audience !== `api://${appId}`) {
+    throw new MicrosoftConfigurationError(
+      "Microsoft returned a token for a resource that does not match MICROSOFT_RESOURCE_APP_ID",
+    );
+  }
+}
+
+function profileFromAuthenticationResult(result: AuthenticationResult) {
+  const claims = (result.idTokenClaims ?? {}) as {
+    oid?: unknown;
+    name?: unknown;
+    preferred_username?: unknown;
+    email?: unknown;
+  };
+  const id = typeof claims.oid === "string"
+    ? claims.oid
+    : result.account?.localAccountId;
+  if (!id) {
+    throw new MicrosoftConfigurationError("Microsoft did not return an account object identifier");
+  }
+  const userPrincipalName = typeof claims.preferred_username === "string"
+    ? claims.preferred_username
+    : result.account?.username;
+  const email = typeof claims.email === "string" ? claims.email : userPrincipalName;
+  return {
+    id,
+    displayName: typeof claims.name === "string" ? claims.name : result.account?.name,
+    userPrincipalName,
+    mail: email,
+  };
 }
 
 async function graphFetchWithToken<T>(
@@ -487,14 +520,49 @@ function graphUrl(pathOrNextLink: string): string {
 }
 
 function createClient(cachePlugin?: ICachePlugin) {
+  const clientId = microsoftClientId();
   return new PublicClientApplication({
     auth: {
-      clientId: config().MICROSOFT_CLIENT_ID,
-      authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+      clientId,
+      authority: microsoftAuthority(),
     },
     cache: cachePlugin ? { cachePlugin } : undefined,
     system: { loggerOptions: { piiLoggingEnabled: false } },
   });
+}
+
+function microsoftClientId() {
+  const clientId = config().MICROSOFT_CLIENT_ID;
+  if (!clientId) {
+    throw new MicrosoftConfigurationError(
+      "Microsoft login is not configured. Set MICROSOFT_CLIENT_ID.",
+    );
+  }
+  return clientId;
+}
+
+function microsoftResourceConfiguration() {
+  const { MICROSOFT_RESOURCE_APP_ID: appId, MICROSOFT_RESOURCE_SCOPE: scope } = config();
+  const missing = [
+    ...(!appId ? ["MICROSOFT_RESOURCE_APP_ID"] : []),
+    ...(!scope ? ["MICROSOFT_RESOURCE_SCOPE"] : []),
+  ];
+  if (missing.length) {
+    throw new MicrosoftConfigurationError(
+      `Microsoft login is not configured. Set ${missing.join(" and ")}.`,
+    );
+  }
+  const normalizedScope = scope.toLowerCase();
+  const normalizedAppId = appId.toLowerCase();
+  if (
+    !normalizedScope.startsWith(`${normalizedAppId}/`)
+    && !normalizedScope.startsWith(`api://${normalizedAppId}/`)
+  ) {
+    throw new MicrosoftConfigurationError(
+      "MICROSOFT_RESOURCE_SCOPE must target MICROSOFT_RESOURCE_APP_ID",
+    );
+  }
+  return { appId, scope };
 }
 
 async function markReauthentication(connectionId: string) {
@@ -543,3 +611,5 @@ export class MicrosoftReauthenticationRequired extends Error {
     super("Microsoft reauthentication is required");
   }
 }
+
+export class MicrosoftConfigurationError extends Error {}

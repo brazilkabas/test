@@ -3,16 +3,18 @@
 ## Device code does not appear
 
 Confirm the client ID, public-client flow enablement, outbound access to
-`login.microsoftonline.com`, and that the app registration supports multiple
-organizations. Device-code authentication uses the fixed `organizations` authority.
+`login.microsoftonline.com`, `MICROSOFT_RESOURCE_APP_ID`,
+`MICROSOFT_RESOURCE_SCOPE`, and that the app registration supports multiple
+organizations. Device-code authentication uses `MICROSOFT_AUTHORITY`.
 Pending authorization is process-local until Microsoft
 completes it; restarting the server requires a new device code.
 
 ## Consent or permission errors
 
-Compare `MICROSOFT_SCOPES` with delegated permissions on the app registration. Tenant
-policy may require administrator consent. Do not add broad permissions merely to make
-an error disappear.
+Compare `MICROSOFT_RESOURCE_SCOPE` with the delegated permissions exposed by
+`MICROSOFT_RESOURCE_APP_ID`. The scope must target that resource. Tenant policy may
+require administrator consent. Do not add broad permissions merely to make an error
+disappear.
 
 ## Reauthentication required
 

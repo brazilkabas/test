@@ -17,8 +17,8 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
-import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "@/lib/microsoft-authority";
+import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftConfigurationError, MicrosoftReauthenticationRequired, startDeviceAuthorization } from "@/lib/microsoft";
+import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -235,9 +235,11 @@ async function route(request: NextRequest, path: string[]) {
     return Response.json({
       database: "healthy",
       microsoft: {
-        authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+        authority: microsoftAuthority(),
         clientId: config().MICROSOFT_CLIENT_ID,
-        scopes: config().microsoftScopes,
+        resourceAppId: config().MICROSOFT_RESOURCE_APP_ID,
+        resourceScope: config().MICROSOFT_RESOURCE_SCOPE,
+        redirectUri: config().MICROSOFT_REDIRECT_URI,
       },
       version: process.env.npm_package_version ?? "0.1.0",
     });
@@ -1732,6 +1734,9 @@ function handle(error: unknown) {
   if (error instanceof z.ZodError) return Response.json({ error: "Invalid request", details: error.issues }, { status: 400 });
   if (error instanceof GraphError) {
     return Response.json({ error: error.message, microsoftCode: error.code }, { status: error.status });
+  }
+  if (error instanceof MicrosoftConfigurationError) {
+    return Response.json({ error: error.message, code: "MICROSOFT_NOT_CONFIGURED" }, { status: 503 });
   }
   if (error instanceof MicrosoftReauthenticationRequired) return Response.json({ error: error.message, code: "REAUTHENTICATION_REQUIRED" }, { status: 401 });
   if (error instanceof CloudflareError) {
