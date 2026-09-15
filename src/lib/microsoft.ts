@@ -351,6 +351,7 @@ async function completeAuthorization(
     create: {
       tenantId: result.tenantId,
       microsoftUserId: profile.id,
+      clientId: microsoftClientId(),
       displayName: profile.displayName,
       userPrincipalName: profile.userPrincipalName,
       email: profile.mail,
@@ -360,6 +361,7 @@ async function completeAuthorization(
       ...mailboxReadiness,
     },
     update: {
+      clientId: microsoftClientId(),
       displayName: profile.displayName,
       userPrincipalName: profile.userPrincipalName,
       email: profile.mail,
@@ -419,6 +421,86 @@ export async function graphFetch<T>(
 
 export type MailboxStatus = "READY" | "NOT_AUTHORIZED" | "REAUTH_REQUIRED" | "ERROR";
 
+export type MailboxDiagnostic = {
+  mailboxAvailable: boolean;
+  statusCode: number;
+  grantedScopes: string[];
+  tokenAudience: string;
+  tokenExpiry: string | null;
+  folderCount: number | null;
+  messageCount: number | null;
+};
+
+export async function diagnoseMailboxConnection(
+  connectionId: string,
+): Promise<MailboxDiagnostic> {
+  const connection = await db.microsoftConnection.findUniqueOrThrow({
+    where: { id: connectionId },
+    select: { grantedScopes: true },
+  });
+  const storedScopes = normalizedScopeNames(connection.grantedScopes);
+  let grantedScopes = storedScopes;
+  let tokenAudienceValue = "NONE";
+  let tokenExpiry: string | null = null;
+  try {
+    const authorization = await acquireGraphToken(connectionId);
+    tokenAudienceValue = tokenAudience(authorization.token) ?? "NONE";
+    tokenExpiry = authorization.expiresOn?.toISOString() ?? null;
+    grantedScopes = [...tokenDelegatedScopes(authorization.token)].sort();
+    if (!grantedScopes.includes("mail.read")) {
+      return {
+        mailboxAvailable: false,
+        statusCode: 403,
+        grantedScopes,
+        tokenAudience: tokenAudienceValue,
+        tokenExpiry,
+        folderCount: null,
+        messageCount: null,
+      };
+    }
+    const folders = await graphFetchWithToken<{ value: Array<{ id: string }> }>(
+      authorization.token,
+      "/me/mailFolders?$top=1&$select=id",
+    );
+    const messages = await graphFetchWithToken<{ value: Array<{ id: string }> }>(
+      authorization.token,
+      "/me/mailFolders/inbox/messages?$top=1&$select=id",
+    );
+    return {
+      mailboxAvailable: true,
+      statusCode: 200,
+      grantedScopes,
+      tokenAudience: tokenAudienceValue,
+      tokenExpiry,
+      folderCount: folders.value.length,
+      messageCount: messages.value.length,
+    };
+  } catch (error) {
+    return {
+      mailboxAvailable: false,
+      statusCode: mailboxDiagnosticStatusCode(error),
+      grantedScopes,
+      tokenAudience: tokenAudienceValue,
+      tokenExpiry,
+      folderCount: null,
+      messageCount: null,
+    };
+  }
+}
+
+export function mailboxDiagnosticStatusCode(error: unknown) {
+  if (error instanceof MicrosoftReauthenticationRequired) return 401;
+  if (error instanceof GraphError) {
+    if ([401, 403, 429].includes(error.status)) return error.status;
+    return error.status >= 400 && error.status <= 599 ? error.status : 500;
+  }
+  return 500;
+}
+
+function normalizedScopeNames(scopes: string[]) {
+  return [...new Set(scopes.map((scope) => scopeName(scope).toLowerCase()))].sort();
+}
+
 export async function probeMailboxReadiness(connectionId: string): Promise<{
   mailboxAvailable: boolean;
   mailboxStatus: MailboxStatus;
@@ -464,6 +546,10 @@ export async function probeMailboxReadiness(connectionId: string): Promise<{
 
 async function acquireGraphToken(connectionId: string) {
   const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
+  if (connection.clientId && connection.clientId !== microsoftClientId()) {
+    await markReauthentication(connectionId);
+    throw new MicrosoftReauthenticationRequired();
+  }
   let legacyOutlookTokenCached = false;
   const cachePlugin: ICachePlugin = {
     beforeCacheAccess: async (context: TokenCacheContext) => {
@@ -506,7 +592,7 @@ async function acquireGraphToken(connectionId: string) {
       loggedGraphAudience.add(connectionId);
       console.info("[microsoft] token target/resource = Microsoft Graph", { connectionId, audience: tokenAudience(result.accessToken) });
     }
-    return { token: result.accessToken, connection };
+    return { token: result.accessToken, connection, expiresOn: result.expiresOn };
   } catch (error) {
     if (error instanceof InteractionRequiredAuthError) {
       await markReauthentication(connectionId);

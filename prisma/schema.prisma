@@ -139,6 +139,7 @@ model MicrosoftConnection {
   id                       String                @id @default(cuid())
   tenantId                 String
   microsoftUserId          String
+  clientId                 String?
   displayName              String?
   userPrincipalName        String?
   email                    String?

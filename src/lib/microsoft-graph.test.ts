@@ -4,9 +4,12 @@ import {
   assertMicrosoftConnectionIdentity,
   deviceAuthorizationScopes,
   graphDelegatedScopes,
+  GraphError,
   isMicrosoftGraphToken,
+  mailboxDiagnosticStatusCode,
   microsoftIdentityFromAccessToken,
   microsoftAuthorizationScopes,
+  MicrosoftReauthenticationRequired,
   tokenDelegatedScopes,
 } from "@/lib/microsoft";
 
@@ -105,6 +108,13 @@ describe("Microsoft Graph token targeting", () => {
       { tenantId: "tenant-a", microsoftUserId: "user-a" },
       { tenantId: "tenant-a", microsoftUserId: "user-b" },
     )).toThrow("different account");
+  });
+
+  it("maps mailbox diagnostics to safe HTTP status categories", () => {
+    expect(mailboxDiagnosticStatusCode(new MicrosoftReauthenticationRequired())).toBe(401);
+    expect(mailboxDiagnosticStatusCode(new GraphError(403, "ErrorAccessDenied", "denied"))).toBe(403);
+    expect(mailboxDiagnosticStatusCode(new GraphError(429, "TooManyRequests", "throttled"))).toBe(429);
+    expect(mailboxDiagnosticStatusCode(new Error("unexpected"))).toBe(500);
   });
 });
 

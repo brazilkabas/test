@@ -33,6 +33,15 @@ is not enabled in milestone one.
 The backend honors `Retry-After` on 429 and retries temporary 5xx failures with bounded
 backoff. Reduce request frequency if throttling persists.
 
+## Backend mailbox diagnostic
+
+An authenticated, session-bound test is available at
+`GET /api/v1/microsoft/accounts/{connectionId}/mailbox-test`. It decrypts the server-side
+MSAL cache, attempts silent Graph authorization, validates `Mail.Read`, and probes one
+folder and one Inbox message. The response contains only readiness, status, scope names,
+token audience/expiry, and counts. It never returns access tokens, refresh tokens, cache
+contents, or Microsoft browser cookies.
+
 ## Database or encryption errors
 
 Verify `DATABASE_URL`, run `npm run db:generate` and `npm run db:migrate`, and ensure

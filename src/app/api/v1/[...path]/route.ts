@@ -17,7 +17,7 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftConfigurationError, MicrosoftReauthenticationRequired, probeMailboxReadiness, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, diagnoseMailboxConnection, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftConfigurationError, MicrosoftReauthenticationRequired, probeMailboxReadiness, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
 
 export const runtime = "nodejs";
@@ -228,6 +228,30 @@ async function route(request: NextRequest, path: string[]) {
     });
   }
   if (key === "GET /microsoft/users") return organizationUsers(request);
+  if (
+    path[0] === "microsoft"
+    && path[1] === "accounts"
+    && path[2]
+    && path[3] === "mailbox-test"
+    && request.method === "GET"
+  ) {
+    const connectionId = id.parse(path[2]);
+    const actor = await requirePermission("mail:read");
+    await requireSessionMicrosoftConnection(connectionId);
+    const diagnostic = await diagnoseMailboxConnection(connectionId);
+    await audit({
+      actorId: actor.id,
+      connectionId,
+      action: "microsoft.mailbox.diagnostic",
+      targetType: "MicrosoftConnection",
+      targetId: connectionId,
+      result: diagnostic.statusCode === 200 ? "SUCCESS" : "FAILURE",
+      metadata: { statusCode: diagnostic.statusCode },
+    });
+    return Response.json(diagnostic, {
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
   if (path[0] === "microsoft" && path[1] === "accounts" && path[2]) {
     return microsoftAccountRoute(request, path[2]);
   }
