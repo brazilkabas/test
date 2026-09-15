@@ -1,10 +1,13 @@
 import { z } from "zod";
 
-import { MICROSOFT_GRAPH_RESOURCE_ID, MICROSOFT_GRAPH_SCOPE_ROOT } from "@/lib/microsoft-resource";
+import { configuredResourceScopes, MICROSOFT_GRAPH_RESOURCE_ID, MICROSOFT_GRAPH_SCOPE_ROOT } from "@/lib/microsoft-resource";
 
 const schema = z.object({
   DATABASE_URL: z.string().url(),
   MICROSOFT_CLIENT_ID: z.string().default(""),
+  MICROSOFT_RESOURCE_APP_ID: z.string().default(""),
+  MICROSOFT_RESOURCE_SCOPE: z.string().default(""),
+  MICROSOFT_GRAPH_MAIL_CLIENT_ID: z.string().default(""),
   MICROSOFT_AUTHORITY: z.string().url().default("https://login.microsoftonline.com/organizations"),
   MICROSOFT_REDIRECT_URI: z.string().url().optional(),
   ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/, "must be a 32-byte hex key"),
@@ -21,6 +24,13 @@ export type MicrosoftAuthConfig = {
   authority: string;
   resourceAppId: string;
   resourceScope: string;
+  requestedScopes: string[];
+};
+
+export type MicrosoftGraphMailAuthConfig = {
+  clientId: string;
+  authority: string;
+  resourceAppId: string;
   requestedScopes: string[];
 };
 
@@ -45,27 +55,46 @@ export function microsoftClientId(): string {
   if (!clientId) {
     throw new MicrosoftConfigurationError("MICROSOFT_CLIENT_ID is not configured.");
   }
-  if (clientId.toLowerCase() === MICROSOFT_GRAPH_RESOURCE_ID) {
+  if (clientId.toLowerCase() === config().MICROSOFT_RESOURCE_APP_ID.trim().toLowerCase()) {
     throw new MicrosoftConfigurationError(
-      "MICROSOFT_CLIENT_ID must be your Entra application's client ID, not the Microsoft Graph resource ID.",
+      "MICROSOFT_CLIENT_ID and MICROSOFT_RESOURCE_APP_ID must identify separate OAuth concepts.",
     );
   }
   return clientId;
 }
 
 export function microsoftResourceAppId(): string {
-  return MICROSOFT_GRAPH_RESOURCE_ID;
+  const resourceAppId = config().MICROSOFT_RESOURCE_APP_ID.trim();
+  if (!resourceAppId) {
+    throw new MicrosoftConfigurationError("MICROSOFT_RESOURCE_APP_ID is not configured.");
+  }
+  return resourceAppId;
 }
 
 export function microsoftAuthConfig(): MicrosoftAuthConfig {
   const clientId = microsoftClientId();
-  const resourceAppId = MICROSOFT_GRAPH_RESOURCE_ID;
-  const resourceScope = "User.Read,Mail.Read";
+  const resourceAppId = microsoftResourceAppId();
+  const resourceScope = config().MICROSOFT_RESOURCE_SCOPE.trim();
   return {
     clientId,
     authority: config().MICROSOFT_AUTHORITY,
     resourceAppId,
     resourceScope,
+    requestedScopes: configuredResourceScopes(resourceAppId, resourceScope),
+  };
+}
+
+export function microsoftGraphMailAuthConfig(): MicrosoftGraphMailAuthConfig {
+  const clientId = config().MICROSOFT_GRAPH_MAIL_CLIENT_ID.trim();
+  if (!clientId) {
+    throw new MicrosoftConfigurationError(
+      "MICROSOFT_GRAPH_MAIL_CLIENT_ID is not configured. Configure an Entra public client application with delegated User.Read and Mail.Read permissions.",
+    );
+  }
+  return {
+    clientId,
+    authority: config().MICROSOFT_AUTHORITY,
+    resourceAppId: MICROSOFT_GRAPH_RESOURCE_ID,
     requestedScopes: [
       `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
       `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Read`,
@@ -84,6 +113,9 @@ export function publicConfigurationStatus() {
   const keys = [
     "DATABASE_URL",
     "MICROSOFT_CLIENT_ID",
+    "MICROSOFT_RESOURCE_APP_ID",
+    "MICROSOFT_RESOURCE_SCOPE",
+    "MICROSOFT_GRAPH_MAIL_CLIENT_ID",
     "ENCRYPTION_KEY",
     "SESSION_SECRET",
     "BOOTSTRAP_ADMIN_EMAIL",
@@ -92,12 +124,13 @@ export function publicConfigurationStatus() {
   return {
     configured: Object.fromEntries(keys.map((key) => [key, Boolean(process.env[key])])),
     microsoftClientId: process.env.MICROSOFT_CLIENT_ID?.trim() || null,
-    microsoftResourceAppId: MICROSOFT_GRAPH_RESOURCE_ID,
-    microsoftResourceScope: "User.Read,Mail.Read",
+    microsoftResourceAppId: process.env.MICROSOFT_RESOURCE_APP_ID?.trim() || null,
+    microsoftResourceScope: process.env.MICROSOFT_RESOURCE_SCOPE?.trim() || null,
+    microsoftGraphMailClientId: process.env.MICROSOFT_GRAPH_MAIL_CLIENT_ID?.trim() || null,
     microsoftAuthority: process.env.MICROSOFT_AUTHORITY
       ?? "https://login.microsoftonline.com/organizations",
     microsoftRedirectUri: process.env.MICROSOFT_REDIRECT_URI
       ?? new URL("/api/v1/microsoft/callback", process.env.APP_BASE_URL ?? "http://localhost:3000").toString(),
-    scopes: ["User.Read", "Mail.Read"],
+    scopes: process.env.MICROSOFT_RESOURCE_SCOPE?.split(",").map((scope) => scope.trim()).filter(Boolean) ?? [],
   };
 }

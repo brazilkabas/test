@@ -4,12 +4,15 @@ Create or use a multitenant Microsoft Entra app registration. Set:
 
 ```text
 MICROSOFT_CLIENT_ID=<application/client ID>
+MICROSOFT_RESOURCE_APP_ID=<target resource/application ID>
+MICROSOFT_RESOURCE_SCOPE=<delegated scope or comma-separated scopes>
 MICROSOFT_AUTHORITY=https://login.microsoftonline.com/organizations
 ```
 
-`MICROSOFT_CLIENT_ID` must be the Application (client) ID of an app registration
-owned by your organization. Do not use Microsoft Authentication Broker or Microsoft
-Graph's resource ID as the client ID.
+The client, target resource, and scope remain separate OAuth values and are never
+concatenated into an application identity. When `MICROSOFT_RESOURCE_SCOPE` is blank,
+the backend requests `<MICROSOFT_RESOURCE_APP_ID>/.default`. Prefer an explicit
+delegated scope for custom APIs.
 
 Do not configure a home-tenant GUID as the authority. After authentication,
 the tenant ID returned by Microsoft is still stored with the connection so accounts
@@ -22,13 +25,12 @@ the corresponding `device_code` and all OAuth tokens remain backend-only.
 
 ## Delegated Graph permissions
 
-Configure these delegated Microsoft Graph permissions on the app registration:
+To enable the Graph-backed webmail module, configure:
 
 ```text
-User.Read
-Mail.Read
+MICROSOFT_RESOURCE_APP_ID=00000003-0000-0000-c000-000000000000
+MICROSOFT_RESOURCE_SCOPE=User.Read,Mail.Read
 ```
-The product requests these permissions during its single device-code connection flow.
 Shared permissions (`Mail.ReadWrite.Shared`, `Mail.Send.Shared`) are not requested
 because shared-mailbox workflows are not enabled.
 Directory permissions such as

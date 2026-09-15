@@ -4,10 +4,13 @@ import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "../src/lib/microsoft-authorit
 import {
   MICROSOFT_GRAPH_RESOURCE,
   MICROSOFT_GRAPH_RESOURCE_ID,
-  MICROSOFT_GRAPH_SCOPE_ROOT,
+  configuredResourceScopes,
+  isMicrosoftGraphResource,
 } from "../src/lib/microsoft-resource";
 
 const clientId = process.env.MICROSOFT_CLIENT_ID;
+const resourceAppId = process.env.MICROSOFT_RESOURCE_APP_ID ?? "";
+const resourceScope = process.env.MICROSOFT_RESOURCE_SCOPE ?? "";
 const recipient = process.argv.find((value) => value.startsWith("--recipient="))?.split("=")[1];
 const allowSend = process.argv.includes("--confirm-send");
 
@@ -15,15 +18,20 @@ if (!clientId) {
   console.error("FAIL configuration: MICROSOFT_CLIENT_ID is required");
   process.exit(1);
 }
-const requestedScopes = [
-  `${MICROSOFT_GRAPH_SCOPE_ROOT}User.Read`,
-  `${MICROSOFT_GRAPH_SCOPE_ROOT}Mail.Read`,
-];
+if (!resourceAppId) {
+  console.error("FAIL configuration: MICROSOFT_RESOURCE_APP_ID is required");
+  process.exit(1);
+}
+if (!isMicrosoftGraphResource(resourceAppId)) {
+  console.error(`FAIL configuration: this smoke test requires ${MICROSOFT_GRAPH_RESOURCE} (${MICROSOFT_GRAPH_RESOURCE_ID})`);
+  process.exit(1);
+}
+const requestedScopes = configuredResourceScopes(resourceAppId, resourceScope);
 
 console.info("Microsoft Auth Flow: Device Code", {
   clientId,
   resource: MICROSOFT_GRAPH_RESOURCE,
-  resourceId: MICROSOFT_GRAPH_RESOURCE_ID,
+  resourceId: resourceAppId,
   authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
   requestedScopes,
 });

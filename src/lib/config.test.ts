@@ -19,12 +19,28 @@ describe("Microsoft client configuration", () => {
     );
   });
 
-  it("uses one app-owned client for the minimum Graph scopes", async () => {
+  it("fails cleanly when the target resource is blank", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "client-application");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "");
+    const { microsoftAuthConfig } = await import("@/lib/config");
+
+    expect(() => microsoftAuthConfig()).toThrow(
+      "MICROSOFT_RESOURCE_APP_ID is not configured.",
+    );
+  });
+
+  it("keeps the client, resource, and explicit Graph scopes separate", async () => {
     vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
     vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
     vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
     vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
     vi.stubEnv("MICROSOFT_CLIENT_ID", "11111111-2222-4333-8444-555555555555");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "00000003-0000-0000-c000-000000000000");
+    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "User.Read,Mail.Read");
     const { microsoftAuthConfig } = await import("@/lib/config");
 
     expect(microsoftAuthConfig()).toEqual({
@@ -39,20 +55,84 @@ describe("Microsoft client configuration", () => {
     });
   });
 
-  it("ignores obsolete secondary and custom-resource configuration", async () => {
+  it("constructs the configured resource default scope only when no scope is supplied", async () => {
     vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
     vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
     vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
     vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
     vi.stubEnv("MICROSOFT_CLIENT_ID", "client-application");
-    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "legacy-resource");
-    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "legacy-resource/.default");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "api://resource-application");
+    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "");
     const { microsoftAuthConfig } = await import("@/lib/config");
 
     expect(microsoftAuthConfig().requestedScopes).toEqual([
-      "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.Read",
+      "api://resource-application/.default",
     ]);
-    expect(microsoftAuthConfig().resourceAppId).toBe("00000003-0000-0000-c000-000000000000");
+  });
+
+  it("passes an explicit custom API scope without inventing permissions", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "client-application");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "custom-api-application");
+    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "api://custom-api-application/access_as_user");
+    const { microsoftAuthConfig } = await import("@/lib/config");
+
+    expect(microsoftAuthConfig().requestedScopes).toEqual([
+      "api://custom-api-application/access_as_user",
+    ]);
+  });
+
+  it("rejects using the resource application as the client application", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "same-application");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "same-application");
+    const { microsoftAuthConfig } = await import("@/lib/config");
+
+    expect(() => microsoftAuthConfig()).toThrow(
+      "must identify separate OAuth concepts",
+    );
+  });
+
+  it("requires a separately configured Graph mail client", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_GRAPH_MAIL_CLIENT_ID", "");
+    const { microsoftGraphMailAuthConfig } = await import("@/lib/config");
+
+    expect(() => microsoftGraphMailAuthConfig()).toThrow(
+      "MICROSOFT_GRAPH_MAIL_CLIENT_ID is not configured",
+    );
+  });
+
+  it("keeps Graph mail authorization separate from primary resource configuration", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://user:pass@localhost:5432/test");
+    vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-with-at-least-32-characters");
+    vi.stubEnv("BOOTSTRAP_ADMIN_EMAIL", "admin@example.com");
+    vi.stubEnv("MICROSOFT_CLIENT_ID", "primary-client");
+    vi.stubEnv("MICROSOFT_RESOURCE_APP_ID", "primary-resource");
+    vi.stubEnv("MICROSOFT_RESOURCE_SCOPE", "primary-resource/.default");
+    vi.stubEnv("MICROSOFT_GRAPH_MAIL_CLIENT_ID", "graph-mail-client");
+    const { microsoftAuthConfig, microsoftGraphMailAuthConfig } = await import("@/lib/config");
+
+    expect(microsoftAuthConfig().clientId).toBe("primary-client");
+    expect(microsoftAuthConfig().requestedScopes).toEqual(["primary-resource/.default"]);
+    expect(microsoftGraphMailAuthConfig()).toEqual({
+      clientId: "graph-mail-client",
+      authority: "https://login.microsoftonline.com/organizations",
+      resourceAppId: "00000003-0000-0000-c000-000000000000",
+      requestedScopes: [
+        "https://graph.microsoft.com/User.Read",
+        "https://graph.microsoft.com/Mail.Read",
+      ],
+    });
   });
 });

@@ -210,9 +210,8 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   async function startMailboxAuthorization() {
     setMailAuthorizationStarting(true);
     try {
-      const result = await api<{ connectUrl: string }>("/microsoft/device/start", {
+      const result = await api<{ connectUrl: string }>(`/microsoft/accounts/${connectionId}/mail-auth/start`, {
         method: "POST",
-        body: JSON.stringify({ connectionId }),
       });
       window.location.assign(result.connectUrl);
     } catch (error) {
@@ -239,7 +238,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
         title={authorizationState === "PENDING" ? "Mailbox authorization waiting" : "Mailbox authorization incomplete"}
         description={mailAuthorizationDescription(accountLabel, authorizationState, errorCode)}
         action={<button disabled={mailAuthorizationStarting} onClick={() => void startMailboxAuthorization()}>
-          {mailAuthorizationStarting ? "Starting…" : "Reauthorize Microsoft account"}
+          {mailAuthorizationStarting ? "Starting…" : authorizationState === "PENDING" ? "Restart mailbox authorization" : "Authorize mailbox"}
         </button>}
       />
       <div className="panel-body stack" style={{ maxWidth: 680, margin: "0 auto" }}>
@@ -309,7 +308,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
 
 function mailAuthorizationDescription(accountLabel: string, status: string, errorCode: string | null | undefined) {
   if (status === "PENDING") {
-    return `${accountLabel} still needs to complete Microsoft device-code reauthorization for mailbox access.`;
+    return `${accountLabel} still needs to complete the separate Microsoft Graph device-code sign-in for mailbox access.`;
   }
   if (errorCode === "AADSTS65002") {
     return "Microsoft rejected this Graph client because it is a Microsoft-owned application that is not preauthorized for this resource. Configure your own Entra Application client ID.";
