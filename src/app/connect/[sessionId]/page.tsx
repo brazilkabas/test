@@ -82,10 +82,15 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
   async function restart() {
     if (replacing.current) return;
     replacing.current = true;
-    const response = await fetch(`/api/v1/microsoft/device/${encodeURIComponent(sessionId)}/restart?token=${encodeURIComponent(token)}`, { method: "POST" });
-    const result = await response.json() as { connectUrl?: string; error?: string };
-    if (!response.ok || !result.connectUrl) throw new Error(result.error ?? "Unable to restart authorization");
-    window.location.assign(result.connectUrl);
+    try {
+      const response = await fetch(`/api/v1/microsoft/device/${encodeURIComponent(sessionId)}/restart?token=${encodeURIComponent(token)}`, { method: "POST" });
+      const result = await response.json() as { connectUrl?: string; error?: string };
+      if (!response.ok || !result.connectUrl) throw new Error(result.error ?? "Unable to restart authorization");
+      window.location.assign(result.connectUrl);
+    } catch (caught) {
+      replacing.current = false;
+      setError(caught instanceof Error ? caught.message : "Unable to restart Microsoft authorization");
+    }
   }
 
   useEffect(() => {
