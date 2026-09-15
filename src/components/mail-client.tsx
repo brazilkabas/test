@@ -37,6 +37,14 @@ type MailAccount = {
   email: string | null;
   userPrincipalName: string | null;
   capabilities: MailCapabilities;
+  mailAuthorizationStatus: string;
+  mailAuthorization: {
+    status: string;
+    errorCode: string | null;
+    requestedScopes: string[];
+    createdAt: string;
+    expiresAt: string;
+  } | null;
 };
 const emptyFilters: Filters = { sender: "", recipient: "", subject: "", keyword: "", read: "", hasAttachments: false, flagged: false, importance: "", fromDate: "", toDate: "" };
 
@@ -70,6 +78,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [account, setAccount] = useState<MailAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
+  const [mailAuthorizationStarting, setMailAuthorizationStarting] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("company-last-mail-connection", connectionId);
@@ -198,17 +207,46 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }
 
+  async function startMailboxAuthorization() {
+    setMailAuthorizationStarting(true);
+    try {
+      const result = await api<{ connectUrl: string }>(`/microsoft/accounts/${connectionId}/mail-auth/start`, {
+        method: "POST",
+      });
+      window.location.assign(result.connectUrl);
+    } catch (error) {
+      notify({
+        title: "Mailbox authorization could not start",
+        message: error instanceof Error ? error.message : undefined,
+        tone: "error",
+      });
+      setMailAuthorizationStarting(false);
+    }
+  }
+
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
 
   if (capabilities === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
   if (!capabilities.canReadMail) {
     const accountLabel = account?.displayName ?? account?.email ?? account?.userPrincipalName ?? "This Microsoft account";
+    const authorization = account?.mailAuthorization;
+    const authorizationState = authorization?.status ?? account?.mailAuthorizationStatus ?? "NOT_CONNECTED";
+    const errorCode = authorization?.errorCode;
     return <section className="panel panel-body">
       <EmptyState
         icon="✉"
-        title="Mailbox authorization incomplete"
-        description={`${accountLabel} did not complete mailbox authorization during Connect Account.`}
+        title={authorizationState === "PENDING" ? "Mailbox authorization waiting" : "Mailbox authorization incomplete"}
+        description={mailAuthorizationDescription(accountLabel, authorizationState, errorCode)}
+        action={<button disabled={mailAuthorizationStarting} onClick={() => void startMailboxAuthorization()}>
+          {mailAuthorizationStarting ? "Starting…" : authorizationState === "PENDING" ? "Restart mailbox authorization" : "Authorize mailbox"}
+        </button>}
       />
+      <div className="panel-body stack" style={{ maxWidth: 680, margin: "0 auto" }}>
+        <p><strong>Status:</strong> {authorizationState}</p>
+        {errorCode && <p><strong>Microsoft error:</strong> <code>{errorCode}</code></p>}
+        <p><strong>Requested permissions:</strong> User.Read, Mail.Read</p>
+        <p className="muted">Mail.Read includes reading normal Outlook folders and messages. No additional folder permission is required.</p>
+      </div>
     </section>;
   }
   return (
@@ -266,6 +304,22 @@ export function MailClient({ connectionId }: { connectionId: string }) {
       {capabilities.canModifyMail && <ConfirmDialog open={deleteOpen} title="Delete message?" description="The message will be moved according to Microsoft mailbox deletion behavior." confirmLabel="Delete message" destructive onClose={() => setDeleteOpen(false)} onConfirm={() => void deleteMessage()} />}
     </div>
   );
+}
+
+function mailAuthorizationDescription(accountLabel: string, status: string, errorCode: string | null | undefined) {
+  if (status === "PENDING") {
+    return `${accountLabel} still needs to complete the separate Microsoft Graph device-code sign-in for mailbox access.`;
+  }
+  if (errorCode === "AADSTS65002") {
+    return "Microsoft rejected this Graph client because it is a Microsoft-owned application that is not preauthorized for this resource. Configure your own Entra Application client ID.";
+  }
+  if (errorCode === "device_code_expired" || status === "EXPIRED") {
+    return "The Microsoft Graph mailbox device code expired before authorization completed. Start a fresh mailbox authorization.";
+  }
+  if (errorCode) {
+    return `Microsoft mailbox authorization failed with error ${errorCode}.`;
+  }
+  return `${accountLabel} has primary sign-in, but Microsoft Graph mailbox authorization has not completed.`;
 }
 
 function ComposeDrawer({ connectionId, open, onClose, onSent }: { connectionId: string; open: boolean; onClose: () => void; onSent: () => void }) {

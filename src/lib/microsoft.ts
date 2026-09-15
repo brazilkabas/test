@@ -745,7 +745,7 @@ export async function graphFetch<T>(
 export async function acquireMicrosoftGraphMailToken(connectionId: string) {
   try {
     return await db.$transaction(async (transaction) => {
-      await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`graph-mail:${connectionId}`}))`;
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`graph-mail:${connectionId}`}))`;
       const connection = await transaction.microsoftConnection.findUniqueOrThrow({
         where: { id: connectionId },
         include: { graphMailAuth: true },

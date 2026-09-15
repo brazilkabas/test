@@ -327,6 +327,18 @@ async function route(request: NextRequest, path: string[]) {
             lastSuccessfulGraphAt: true,
           },
         },
+        authorizationSessions: {
+          where: { authorizationProfile: "GRAPH_MAIL" },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            status: true,
+            errorCode: true,
+            requestedScopes: true,
+            createdAt: true,
+            expiresAt: true,
+          },
+        },
         connectedAt: true,
         lastSuccessfulGraphAt: true,
       },
@@ -345,11 +357,12 @@ async function route(request: NextRequest, path: string[]) {
             account.graphMailAuth?.grantedScopes ?? [],
             "00000003-0000-0000-c000-000000000000",
           );
-        const { graphMailAuth, ...safeAccount } = account;
+        const { graphMailAuth, authorizationSessions, ...safeAccount } = account;
         return {
           ...safeAccount,
           capabilities,
           mailAuthorizationStatus: graphMailAuth?.authorizationStatus ?? "NOT_CONNECTED",
+          mailAuthorization: authorizationSessions[0] ?? null,
           mailLastSuccessfulGraphAt: graphMailAuth?.lastSuccessfulGraphAt ?? null,
           mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail
             ? "AVAILABLE"
@@ -359,6 +372,44 @@ async function route(request: NextRequest, path: string[]) {
     });
   }
   if (key === "GET /microsoft/users") return organizationUsers(request);
+  if (
+    path[0] === "microsoft"
+    && path[1] === "accounts"
+    && path[2]
+    && path[3] === "mail-auth"
+    && path[4] === "start"
+    && request.method === "POST"
+  ) {
+    const actor = await requirePermission("microsoft:manage");
+    const connectionId = id.parse(path[2]);
+    const connection = await db.microsoftConnection.findFirst({
+      where: { id: connectionId, authorizationStatus: "CONNECTED" },
+      select: { id: true },
+    });
+    if (!connection) throw new ApiError(404, "Connected Microsoft account not found");
+    await db.microsoftAuthorizationSession.updateMany({
+      where: { connectionId, authorizationProfile: "GRAPH_MAIL", status: "PENDING" },
+      data: { status: "CANCELLED", errorCode: "REPLACED_BY_NEW_AUTHORIZATION" },
+    });
+    const { publicId, statusToken } = await startDeviceAuthorization(
+      undefined,
+      "mailbox",
+      { connectionId, authorizationProfile: "GRAPH_MAIL" },
+    );
+    await audit({
+      actorId: actor.id,
+      connectionId,
+      action: "microsoft.graph_mail.authorization_started",
+      targetType: "MicrosoftAuthorizationSession",
+      targetId: publicId,
+      result: "SUCCESS",
+      metadata: { source: "mail_page", scopes: "User.Read,Mail.Read" },
+    });
+    return Response.json({
+      sessionId: publicId,
+      connectUrl: `/connect/${publicId}?token=${encodeURIComponent(statusToken)}`,
+    }, { status: 201 });
+  }
   if (path[0] === "microsoft" && path[1] === "accounts" && path[2]) {
     return microsoftAccountRoute(request, path[2]);
   }
@@ -567,6 +618,18 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
             lastSuccessfulGraphAt: true,
           },
         },
+        authorizationSessions: {
+          where: { authorizationProfile: "GRAPH_MAIL" },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            status: true,
+            errorCode: true,
+            requestedScopes: true,
+            createdAt: true,
+            expiresAt: true,
+          },
+        },
         tenantDisplayName: true,
         adminRoleSummary: true,
         owner: { select: { id: true, email: true, displayName: true } },
@@ -582,12 +645,13 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
     } catch {
       capabilities = microsoftCapabilitiesFromScopes(account.graphMailAuth?.grantedScopes ?? []);
     }
-    const { graphMailAuth, ...safeAccount } = account;
+    const { graphMailAuth, authorizationSessions, ...safeAccount } = account;
     return Response.json({
       account: {
         ...safeAccount,
         tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
         mailAuthorizationStatus: graphMailAuth?.authorizationStatus ?? "NOT_CONNECTED",
+        mailAuthorization: authorizationSessions[0] ?? null,
         mailLastSuccessfulGraphAt: graphMailAuth?.lastSuccessfulGraphAt ?? null,
         mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail ? "AVAILABLE" : "UNAVAILABLE",
         capabilities,
@@ -601,7 +665,7 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
     );
     if (confirmation !== "DELETE") throw new ApiError(400, "Type DELETE to confirm");
     await db.$transaction(async (transaction) => {
-      await transaction.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${connectionId}))`;
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${connectionId}))`;
       const connection = await transaction.microsoftConnection.findUnique({ where: { id: connectionId } });
       if (!connection) throw new ApiError(404, "Microsoft account not found");
       await transaction.microsoftAuthorizationSession.updateMany({
