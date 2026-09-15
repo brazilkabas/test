@@ -21,7 +21,7 @@ export function MailboxSettingsConsent(props: { connectionId: string; onGranted:
   />;
 }
 
-export function MailboxAccessConsent(props: { connectionId: string; onGranted: () => void }) {
+export function MailboxAccessConsent(props: { connectionId: string; accountLabel: string; onGranted: () => void }) {
   return <MicrosoftFeatureConsent
     {...props}
     purpose="mailbox"
@@ -40,6 +40,7 @@ function MicrosoftFeatureConsent({
   description,
   buttonLabel,
   adminApprovalDescription,
+  accountLabel,
 }: {
   connectionId: string;
   onGranted: () => void;
@@ -48,6 +49,7 @@ function MicrosoftFeatureConsent({
   description: string;
   buttonLabel: string;
   adminApprovalDescription: string;
+  accountLabel?: string;
 }) {
   const [session, setSession] = useState<{ sessionId: string; statusToken: string } | null>(null);
   const [error, setError] = useState("");
@@ -110,6 +112,7 @@ function MicrosoftFeatureConsent({
 
   return <section className="panel panel-body stack">
     <h1>{title}</h1>
+    {accountLabel && <p><strong>{accountLabel}</strong></p>}
     <p className="muted">{description}</p>
     {error && <p className="error">{error}</p>}
     <div><button type="button" disabled={Boolean(session)} onClick={() => void enable()}>{session ? "Waiting for Microsoft…" : buttonLabel}</button></div>

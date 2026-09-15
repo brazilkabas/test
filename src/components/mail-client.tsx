@@ -33,6 +33,12 @@ type MailCapabilities = {
   canReadMailboxSettings: boolean;
   canModifyMailboxSettings: boolean;
 };
+type MailAccount = {
+  displayName: string | null;
+  email: string | null;
+  userPrincipalName: string | null;
+  capabilities: MailCapabilities;
+};
 const emptyFilters: Filters = { sender: "", recipient: "", subject: "", keyword: "", read: "", hasAttachments: false, flagged: false, importance: "", fromDate: "", toDate: "" };
 
 const wellKnown = [
@@ -62,6 +68,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [preview, setPreview] = useState<{ url: string; attachment: Attachment } | null>(null);
   const [capabilities, setCapabilities] = useState<MailCapabilities | null>(null);
+  const [account, setAccount] = useState<MailAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
 
@@ -101,8 +108,9 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
   const loadCapabilities = useCallback(() => {
-    return api<{ account: { capabilities: MailCapabilities } }>(`/microsoft/accounts/${connectionId}`)
+    return api<{ account: MailAccount }>(`/microsoft/accounts/${connectionId}`)
       .then(({ account }) => {
+        setAccount(account);
         setCapabilities(account.capabilities);
       })
       .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
@@ -198,7 +206,13 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }, [loadCapabilities, notify]);
 
   if (capabilities === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
-  if (!capabilities.canReadMail) return <MailboxAccessConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
+  if (!capabilities.canReadMail) {
+    return <MailboxAccessConsent
+      connectionId={connectionId}
+      accountLabel={account?.displayName ?? account?.email ?? account?.userPrincipalName ?? "Microsoft account"}
+      onGranted={onPermissionGranted}
+    />;
+  }
   return (
     <div className="mail-workspace">
       <aside className={`mail-folders ${foldersOpen ? "is-mobile-open" : ""}`}>

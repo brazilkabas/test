@@ -250,7 +250,7 @@ export async function startDeviceAuthorization(
       const errorCode = microsoftErrorCode(error);
       if (config().NODE_ENV === "development") {
         console.warn("[microsoft] authorization failed", {
-          clientId: microsoftClientId(),
+          clientId: authConfig.clientId,
           resource: isMicrosoftGraphResource(authConfig.resourceAppId) ? MICROSOFT_GRAPH_RESOURCE : "Configured Microsoft resource",
           resourceId: authConfig.resourceAppId,
           authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
@@ -931,14 +931,16 @@ export async function repairMicrosoftCapabilities(connectionId: string) {
   const graphMailAuth = connection.graphMailAuth;
   if (!graphMailAuth) return microsoftCapabilitiesFromScopes([], MICROSOFT_GRAPH_RESOURCE_ID);
   const derived = microsoftCapabilitiesFromScopes(graphMailAuth.grantedScopes, MICROSOFT_GRAPH_RESOURCE_ID);
-  const persisted = microsoftStoredCapabilities(graphMailAuth.capabilities);
-  const complete = Object.keys(derived).every((key) => typeof persisted[key] === "boolean");
-  if (complete) return persisted as ReturnType<typeof microsoftCapabilitiesFromScopes>;
   if (
     connection.authorizationStatus !== AuthorizationStatus.CONNECTED
     || graphMailAuth.authorizationStatus !== AuthorizationStatus.CONNECTED
-    || !derived.canReadMail
   ) {
+    return microsoftCapabilitiesFromScopes([], MICROSOFT_GRAPH_RESOURCE_ID);
+  }
+  const persisted = microsoftStoredCapabilities(graphMailAuth.capabilities);
+  const complete = Object.keys(derived).every((key) => typeof persisted[key] === "boolean");
+  if (complete) return persisted as ReturnType<typeof microsoftCapabilitiesFromScopes>;
+  if (!derived.canReadMail) {
     await db.microsoftGraphMailAuth.update({
       where: { connectionId },
       data: { capabilities: derived },
