@@ -4,8 +4,11 @@ import {
   deviceAuthorizationScopes,
   graphDelegatedScopes,
   isMicrosoftGraphToken,
+  isResourceToken,
   microsoftAuthorizationScopes,
+  microsoftCapabilitiesFromScopes,
   microsoftErrorCode,
+  microsoftMailboxTokenCacheContext,
   microsoftProfileEmail,
 } from "@/lib/microsoft";
 
@@ -15,6 +18,7 @@ describe("Microsoft Graph token targeting", () => {
       "openid",
       "offline_access",
       "User.Read",
+      "Mail.Read",
       "Mail.ReadWrite",
       "https://graph.microsoft.com/Mail.Send",
       "https://outlook.office365.com/Mail.Read",
@@ -22,41 +26,34 @@ describe("Microsoft Graph token targeting", () => {
       "https://graph.microsoft.com/.default",
     ])).toEqual([
       "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
       "https://graph.microsoft.com/Mail.ReadWrite",
       "https://graph.microsoft.com/Mail.Send",
     ]);
   });
 
-  it("uses configured allowlisted scopes for device authorization", () => {
+  it("uses only externally configured scopes for device authorization", () => {
     expect(microsoftAuthorizationScopes("identity", [
-      "openid",
-      "profile",
-      "email",
-      "offline_access",
-      "User.Read",
-      "Mail.ReadWrite",
-      "Mail.Send",
-      "MailboxSettings.ReadWrite",
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
     ])).toEqual([
-      "openid",
-      "profile",
-      "email",
-      "offline_access",
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
-      "https://graph.microsoft.com/MailboxSettings.ReadWrite",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
-    expect(microsoftAuthorizationScopes("mailbox")).toEqual([
-      "offline_access",
+    expect(microsoftAuthorizationScopes("mailbox", [
       "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/Mail.Read",
+    ])).toEqual([
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
     ]);
-    expect(microsoftAuthorizationScopes("mailbox-settings")).toEqual([
-      "offline_access",
-      "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/MailboxSettings.ReadWrite",
+  });
+
+  it("does not inject Microsoft Graph scopes into a configured broker resource request", () => {
+    expect(microsoftAuthorizationScopes("identity", [
+      "c44b4083-3bb0-49c1-b47d-974e53cbdf3c/.default",
+    ])).toEqual([
+      "c44b4083-3bb0-49c1-b47d-974e53cbdf3c/.default",
     ]);
   });
 
@@ -83,10 +80,31 @@ describe("Microsoft Graph token targeting", () => {
     ]);
   });
 
+  it("requests only User.Read and Mail.Read for read-only webmail", () => {
+    expect(microsoftAuthorizationScopes("identity", [
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
+    ])).toEqual([
+      "https://graph.microsoft.com/User.Read",
+      "https://graph.microsoft.com/Mail.Read",
+    ]);
+    expect(microsoftCapabilitiesFromScopes(["User.Read", "Mail.Read"])).toMatchObject({
+      canReadProfile: true,
+      canReadMail: true,
+      canReadMailFolders: true,
+      canModifyMail: false,
+      canSendMail: false,
+      canReadMailboxSettings: false,
+      canModifyMailboxSettings: false,
+    });
+  });
+
   it("accepts only Microsoft Graph token audiences", () => {
     expect(isMicrosoftGraphToken(jwt("00000003-0000-0000-c000-000000000000"))).toBe(true);
     expect(isMicrosoftGraphToken(jwt("https://graph.microsoft.com"))).toBe(true);
     expect(isMicrosoftGraphToken(jwt("https://outlook.office365.com"))).toBe(false);
+    expect(isResourceToken(jwt("api://custom-resource"), "api://custom-resource")).toBe(true);
+    expect(isResourceToken(jwt("api://other-resource"), "api://custom-resource")).toBe(false);
   });
 
   it("uses the sign-in address when Graph mail is unset", () => {
@@ -106,6 +124,47 @@ describe("Microsoft Graph token targeting", () => {
       errorCode: "invalid_grant",
       errorMessage: "AADSTS65002: Consent must be configured via preauthorization",
     })).toBe("AADSTS65002");
+  });
+
+  it("maps bare and qualified granted scopes into safe capabilities", () => {
+    expect(microsoftCapabilitiesFromScopes([
+      "https://graph.microsoft.com/User.Read",
+      "Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
+      "MailboxSettings.Read",
+    ])).toMatchObject({
+      canReadProfile: true,
+      canReadMail: true,
+      canReadMailFolders: true,
+      canModifyMail: true,
+      canSendMail: true,
+      canReadMailboxSettings: true,
+      canModifyMailboxSettings: false,
+    });
+  });
+
+  it("binds new mailbox caches to the connection, identity, client, and resource", () => {
+    expect(microsoftMailboxTokenCacheContext({
+      connectionId: "connection-1",
+      tenantId: "tenant-1",
+      microsoftUserId: "user-1",
+      clientId: "client-1",
+      resourceAppId: "00000003-0000-0000-c000-000000000000",
+      tokenCacheKeyVersion: 2,
+    })).toBe(
+      "msal-graph-mail-v2:connection-1:tenant-1:user-1:client-1:00000003-0000-0000-c000-000000000000",
+    );
+  });
+
+  it("preserves the version-1 mailbox cache context for existing records", () => {
+    expect(microsoftMailboxTokenCacheContext({
+      connectionId: "connection-1",
+      tenantId: "tenant-1",
+      microsoftUserId: "user-1",
+      clientId: "client-1",
+      resourceAppId: "00000003-0000-0000-c000-000000000000",
+      tokenCacheKeyVersion: 1,
+    })).toBe("msal-graph-mail:1:connection-1:tenant-1:user-1:client-1");
   });
 });
 

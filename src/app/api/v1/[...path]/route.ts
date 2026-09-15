@@ -17,8 +17,9 @@ import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
 import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
-import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, MicrosoftReauthenticationRequired, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
+import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftMailboxAuthorizationRequired, MicrosoftReauthenticationRequired, microsoftTokenCacheContext, normalizeMicrosoftScope, repairMicrosoftCapabilities, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
+import { MICROSOFT_GRAPH_RESOURCE, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -117,12 +118,16 @@ async function route(request: NextRequest, path: string[]) {
       purpose: z.enum(["identity", "mailbox", "mailbox-settings"]).default("identity"),
       connectionId: z.string().optional(),
     }).parse(await request.json().catch(() => ({})));
-    if (purpose !== "identity") {
-      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for incremental consent");
-      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
-      if (!connection) throw new ApiError(404, "Microsoft connection not found");
+    if (purpose !== "identity" && !connectionId) {
+      throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
-    const result = await startBrowserAuthorization(pageProjectId, purpose);
+    if (connectionId) {
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
+      if (!connection) throw new ApiError(404, "Microsoft connection not found");
+      if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
+      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
+    }
+    const result = await startBrowserAuthorization(pageProjectId, purpose, { connectionId });
     if (replacementSessionId) {
       await db.microsoftAuthorizationSession.updateMany({
         where: { publicId: replacementSessionId, status: "PENDING" },
@@ -153,12 +158,16 @@ async function route(request: NextRequest, path: string[]) {
       purpose: z.enum(["identity", "mailbox", "mailbox-settings"]).default("identity"),
       connectionId: z.string().optional(),
     }).parse(await request.json().catch(() => ({})));
-    if (purpose !== "identity") {
-      if (!connectionId) throw new ApiError(400, "A Microsoft connection is required for incremental consent");
-      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
-      if (!connection) throw new ApiError(404, "Microsoft connection not found");
+    if (purpose !== "identity" && !connectionId) {
+      throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
-    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose);
+    if (connectionId) {
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
+      if (!connection) throw new ApiError(404, "Microsoft connection not found");
+      if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
+      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
+    }
+    const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose, { connectionId });
     const presentation = await authorizationStatus(publicId, statusToken);
     if (replacementSessionId && presentation?.userCode) {
       await db.microsoftAuthorizationSession.updateMany({ where: { publicId: replacementSessionId, status: "PENDING" }, data: { status: "EXPIRED", errorCode: "REPLACED" } });
@@ -213,14 +222,15 @@ async function route(request: NextRequest, path: string[]) {
     const previous = await authorizationStatus(publicId, oldToken);
     if (!previous) throw new ApiError(404, "Authorization session not found");
     if (!["EXPIRED", "FAILED", "CANCELLED"].includes(previous.status)) throw new ApiError(409, "Authorization can only be restarted after it ends");
+    if (previous.authorizationProfile !== "PRIMARY") throw new ApiError(409, "Mailbox authorization sessions cannot be restarted by this flow");
     const incrementalSettings = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mailboxsettings.readwrite"))
       && !previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
-    const incrementalMailbox = previous.requestedScopes.some((scope) => scope.toLowerCase().endsWith("/mail.readwrite"));
     const pageProjectId = previous.pageProject?.id;
-    if (!pageProjectId && !incrementalSettings && !incrementalMailbox) throw new ApiError(404, "Authorization session cannot be restarted");
+    if (!pageProjectId && !previous.connectionId && !incrementalSettings) throw new ApiError(404, "Authorization session cannot be restarted");
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
       pageProjectId,
-      incrementalSettings ? "mailbox-settings" : incrementalMailbox ? "mailbox" : "identity",
+      incrementalSettings ? "mailbox-settings" : "identity",
+      { connectionId: previous.connectionId ?? undefined },
     );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
     const origin = request.headers.get("origin");
@@ -243,21 +253,59 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "GET /microsoft/accounts") {
     await requirePermission("microsoft:read");
     const accounts = await db.microsoftConnection.findMany({
+      where: { authorizationStatus: { not: "REVOKED" } },
       orderBy: { connectedAt: "desc" },
       select: {
         id: true,
         tenantId: true,
         microsoftUserId: true,
+        clientId: true,
+        resourceAppId: true,
+        resourceScopes: true,
         displayName: true,
         userPrincipalName: true,
         email: true,
         authorizationStatus: true,
         grantedScopes: true,
+        capabilities: true,
+        mailboxAuth: {
+          select: {
+            authorizationStatus: true,
+            grantedScopes: true,
+            lastSuccessfulGraphAt: true,
+          },
+        },
         connectedAt: true,
         lastSuccessfulGraphAt: true,
       },
     });
-    return Response.json({ accounts });
+    const repairedCapabilities = await Promise.all(accounts.map(async (account) => {
+      try {
+        return await repairMicrosoftCapabilities(account.id);
+      } catch {
+        return null;
+      }
+    }));
+    return Response.json({
+      accounts: accounts.map((account, index) => {
+        const capabilities = repairedCapabilities[index]
+          ?? microsoftCapabilitiesFromScopes(
+            account.mailboxAuth?.grantedScopes ?? [],
+            "00000003-0000-0000-c000-000000000000",
+          );
+        const { mailboxAuth, ...safeAccount } = account;
+        return {
+          ...safeAccount,
+          capabilities,
+          mailAuthorizationStatus: mailboxAuth?.authorizationStatus ?? "NOT_CONNECTED",
+          mailAuthorization: null,
+          mailLastSuccessfulGraphAt: mailboxAuth?.lastSuccessfulGraphAt ?? null,
+          mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail
+            ? "AVAILABLE"
+            : "UNAVAILABLE",
+        };
+      }),
+    });
   }
   if (key === "GET /microsoft/users") return organizationUsers(request);
   if (path[0] === "microsoft" && path[1] === "accounts" && path[2]) {
@@ -287,8 +335,12 @@ async function route(request: NextRequest, path: string[]) {
       microsoft: {
         authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
         clientIdConfigured: Boolean(config().MICROSOFT_CLIENT_ID.trim()),
+        resource: isMicrosoftGraphResource(config().MICROSOFT_RESOURCE_APP_ID)
+          ? MICROSOFT_GRAPH_RESOURCE
+          : "Configured Microsoft resource",
+        resourceId: config().MICROSOFT_RESOURCE_APP_ID || null,
         redirectUri: microsoftRedirectUri(),
-        scopes: config().microsoftScopes,
+        scopes: config().MICROSOFT_RESOURCE_SCOPE.split(",").map((scope) => scope.trim()).filter(Boolean),
       },
       version: process.env.npm_package_version ?? "0.1.0",
     });
@@ -374,7 +426,15 @@ async function dashboard() {
   const now = new Date();
   const [connections, activeAccessCodes, htmlProjects, activeDeployments, recentEvents, recentDeployments, recentMailActivity] = await Promise.all([
     db.microsoftConnection.findMany({
-      select: { id: true, authorizationStatus: true, displayName: true, userPrincipalName: true, lastSuccessfulGraphAt: true },
+      where: { authorizationStatus: { not: "REVOKED" } },
+      select: {
+        id: true,
+        authorizationStatus: true,
+        displayName: true,
+        userPrincipalName: true,
+        lastSuccessfulGraphAt: true,
+        mailboxAuth: { select: { authorizationStatus: true } },
+      },
       orderBy: { connectedAt: "desc" },
     }),
     db.accessCode.count({ where: { revokedAt: null, expiresAt: { gt: now } } }),
@@ -386,7 +446,10 @@ async function dashboard() {
   ]);
   const mailboxStats = await Promise.all(
     connections
-      .filter((connection) => connection.authorizationStatus === "CONNECTED")
+      .filter((connection) =>
+        connection.authorizationStatus === "CONNECTED"
+        && connection.mailboxAuth?.authorizationStatus === "CONNECTED",
+      )
       .map(async (connection) => {
         try {
           const inbox = await graphFetch<{ unreadItemCount: number }>(connection.id, "/me/mailFolders/inbox?$select=unreadItemCount");
@@ -402,7 +465,7 @@ async function dashboard() {
   const cloudflare = await cloudflareStatus();
   return Response.json({
     metrics: {
-      connectedAccounts: connections.length,
+      connectedAccounts: connections.filter((connection) => connection.authorizationStatus === "CONNECTED").length,
       healthyConnections: mailboxStats.filter((item) => item.healthy).length,
       reauthenticationRequired: connections.filter((item) => item.authorizationStatus === "REAUTHENTICATION_REQUIRED").length,
       unreadMail: mailboxStats.reduce((sum, item) => sum + item.unread, 0),
@@ -429,12 +492,15 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
   const connectionId = id.parse(rawConnectionId);
   if (request.method === "GET") {
     await requirePermission("microsoft:read");
-    const account = await db.microsoftConnection.findUnique({
-      where: { id: connectionId },
+    const account = await db.microsoftConnection.findFirst({
+      where: { id: connectionId, authorizationStatus: { not: "REVOKED" } },
       select: {
         id: true,
         tenantId: true,
         microsoftUserId: true,
+        clientId: true,
+        resourceAppId: true,
+        resourceScopes: true,
         displayName: true,
         userPrincipalName: true,
         email: true,
@@ -442,6 +508,14 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
         lastSuccessfulGraphAt: true,
         authorizationStatus: true,
         grantedScopes: true,
+        capabilities: true,
+        mailboxAuth: {
+          select: {
+            authorizationStatus: true,
+            grantedScopes: true,
+            lastSuccessfulGraphAt: true,
+          },
+        },
         tenantDisplayName: true,
         adminRoleSummary: true,
         owner: { select: { id: true, email: true, displayName: true } },
@@ -450,25 +524,52 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
       },
     });
     if (!account) throw new ApiError(404, "Microsoft account not found");
+    let capabilities;
+    try {
+      capabilities = await repairMicrosoftCapabilities(connectionId)
+        ?? microsoftCapabilitiesFromScopes(account.mailboxAuth?.grantedScopes ?? []);
+    } catch {
+      capabilities = microsoftCapabilitiesFromScopes(account.mailboxAuth?.grantedScopes ?? []);
+    }
+    const { mailboxAuth, ...safeAccount } = account;
     return Response.json({
       account: {
-        ...account,
+        ...safeAccount,
         tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
-        mailboxAvailability: account.authorizationStatus === "CONNECTED" ? "AVAILABLE" : "UNAVAILABLE",
-        capabilities: capabilitiesFromScopes(account.grantedScopes),
+        mailAuthorizationStatus: mailboxAuth?.authorizationStatus ?? "NOT_CONNECTED",
+        mailAuthorization: null,
+        mailLastSuccessfulGraphAt: mailboxAuth?.lastSuccessfulGraphAt ?? null,
+        mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail ? "AVAILABLE" : "UNAVAILABLE",
+        capabilities,
       },
     });
   }
   if (request.method === "DELETE") {
     const actor = await requirePermission("microsoft:manage");
-    const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId } });
-    if (!connection) throw new ApiError(404, "Microsoft account not found");
-    await db.microsoftConnection.update({
-      where: { id: connectionId },
-      data: {
-        authorizationStatus: "REVOKED",
-        encryptedTokenCache: encrypt("{}", `msal:${connection.tenantId}:${connection.microsoftUserId}`),
-      },
+    const { confirmation } = z.object({ confirmation: z.literal("DELETE") }).parse(
+      await request.json().catch(() => ({})),
+    );
+    if (confirmation !== "DELETE") throw new ApiError(400, "Type DELETE to confirm");
+    await db.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${connectionId}))`;
+      const connection = await transaction.microsoftConnection.findUnique({ where: { id: connectionId } });
+      if (!connection) throw new ApiError(404, "Microsoft account not found");
+      await transaction.microsoftAuthorizationSession.updateMany({
+        where: { connectionId, status: "PENDING" },
+        data: { status: "CANCELLED", errorCode: "ACCOUNT_DISCONNECTED" },
+      });
+      await transaction.microsoftMailboxAuth.deleteMany({ where: { connectionId } });
+      await transaction.microsoftConnection.update({
+        where: { id: connectionId },
+        data: {
+          authorizationStatus: "REVOKED",
+          encryptedTokenCache: encrypt("{}", microsoftTokenCacheContext(connection)),
+          accessTokenExpiresAt: null,
+          grantedScopes: [],
+          resourceScopes: [],
+          capabilities: {},
+        },
+      });
     });
     await audit({ actorId: actor.id, connectionId, action: "microsoft.connection.disconnected", targetType: "MicrosoftConnection", targetId: connectionId, result: "SUCCESS" });
     return new Response(null, { status: 204 });
@@ -479,10 +580,11 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
 async function organizationUsers(request: NextRequest) {
   await requirePermission("microsoft:read");
   const requestedId = request.nextUrl.searchParams.get("connectionId");
-  const connections = await db.microsoftConnection.findMany({ where: { authorizationStatus: "CONNECTED" } });
-  const connection = requestedId ? connections.find((item) => item.id === requestedId) : connections.find((item) => item.grantedScopes.some((scope) => ["user.readbasic.all", "user.read.all"].includes(scope.toLowerCase())));
+  const connections = (await db.microsoftConnection.findMany({ where: { authorizationStatus: "CONNECTED" } }))
+    .filter((connection) => isMicrosoftGraphResource(connection.resourceAppId));
+  const connection = requestedId ? connections.find((item) => item.id === requestedId) : connections.find((item) => item.grantedScopes.some((scope) => ["user.readbasic.all", "user.read.all"].includes(normalizeMicrosoftScope(scope))));
   if (!connection) throw new ApiError(403, "Directory listing requires a connected account with User.ReadBasic.All or User.Read.All");
-  const broad = connection.grantedScopes.some((scope) => scope.toLowerCase() === "user.read.all");
+  const broad = connection.grantedScopes.some((scope) => normalizeMicrosoftScope(scope) === "user.read.all");
   const nextLink = request.nextUrl.searchParams.get("nextLink");
   const search = request.nextUrl.searchParams.get("search")?.replaceAll('"', "").slice(0, 100);
   const params = new URLSearchParams({
@@ -491,7 +593,10 @@ async function organizationUsers(request: NextRequest) {
     ...(search ? { "$filter": `startsWith(displayName,'${search.replaceAll("'", "''")}') or startsWith(userPrincipalName,'${search.replaceAll("'", "''")}')`, "$count": "true" } : {}),
   });
   const result = await graphFetch<GraphCollection<{ id: string; displayName?: string; userPrincipalName?: string; mail?: string; accountEnabled?: boolean }>>(connection.id, nextLink ?? `/users?${params}`);
-  const local = await db.microsoftConnection.findMany({ where: { tenantId: connection.tenantId }, select: { id: true, microsoftUserId: true, authorizationStatus: true } });
+  const local = await db.microsoftConnection.findMany({
+    where: { tenantId: connection.tenantId, authorizationStatus: { not: "REVOKED" } },
+    select: { id: true, microsoftUserId: true, authorizationStatus: true },
+  });
   return Response.json({
     users: result.value.map((user) => {
       const connected = local.find((item) => item.microsoftUserId === user.id);
@@ -596,18 +701,6 @@ async function updateUserRoles(request: NextRequest, rawUserId: string) {
   return Response.json({ roles });
 }
 
-function capabilitiesFromScopes(scopes: string[]) {
-  const normalized = new Set(scopes.map((scope) => scope.toLowerCase()));
-  return {
-    readMail: normalized.has("mail.read") || normalized.has("mail.readwrite"),
-    writeMail: normalized.has("mail.readwrite"),
-    sendMail: normalized.has("mail.send"),
-    mailboxSettings: normalized.has("mailboxsettings.read") || normalized.has("mailboxsettings.readwrite"),
-    directory: normalized.has("user.readbasic.all") || normalized.has("user.read.all"),
-    sharedMail: normalized.has("mail.readwrite.shared") || normalized.has("mail.send.shared"),
-  };
-}
-
 async function microsoftDiagnostics(request: NextRequest, rawConnectionId: string) {
   const connectionId = id.parse(rawConnectionId);
   await requirePermission("microsoft:read");
@@ -628,17 +721,20 @@ async function microsoftDiagnostics(request: NextRequest, rawConnectionId: strin
     });
     return Response.json({ test: "send", status: "PASS" });
   }
-  const connection = await db.microsoftConnection.findUniqueOrThrow({ where: { id: connectionId } });
+  const connection = await db.microsoftConnection.findUniqueOrThrow({
+    where: { id: connectionId },
+    include: { mailboxAuth: true },
+  });
   const checks: Array<{ id: string; label: string; path: string; requiredScope: string }> = [
     { id: "profile", label: "Microsoft /me profile", path: "/me?$select=id,displayName,userPrincipalName", requiredScope: "User.Read" },
-    { id: "inbox", label: "Inbox listing", path: "/me/mailFolders/inbox/messages?$top=1&$select=id,subject", requiredScope: "Mail.ReadWrite" },
+    { id: "inbox", label: "Inbox listing", path: "/me/mailFolders/inbox/messages?$top=1&$select=id,subject", requiredScope: "Mail.Read" },
     { id: "settings", label: "Mailbox settings", path: "/me/mailboxSettings?$select=timeZone,language", requiredScope: "MailboxSettings.ReadWrite" },
     { id: "rules", label: "Inbox rules", path: "/me/mailFolders/inbox/messageRules", requiredScope: "MailboxSettings.ReadWrite" },
   ];
-  const granted = new Set(connection.grantedScopes.map((scope) => scope.toLowerCase()));
+  const granted = new Set((connection.mailboxAuth?.grantedScopes ?? []).map(normalizeMicrosoftScope));
   const results = [];
   for (const check of checks) {
-    if (!granted.has(check.requiredScope.toLowerCase())) {
+    if (!hasGrantedScope(granted, check.requiredScope)) {
       results.push({ id: check.id, label: check.label, status: "REQUIRES_PERMISSION", requiredScope: check.requiredScope });
       continue;
     }
@@ -1380,6 +1476,8 @@ async function mailRoute(request: NextRequest, path: string[]) {
   const query = request.nextUrl.searchParams;
   if (tail[0] === "settings" || tail[0] === "rules") {
     await requireConnectionScope(connectionId, "MailboxSettings.ReadWrite");
+  } else if (request.method === "GET") {
+    await requireAnyConnectionScope(connectionId, ["Mail.Read", "Mail.ReadWrite"]);
   } else {
     await requireConnectionScope(connectionId, "Mail.ReadWrite");
     const sendsMail = tail[0] === "send"
@@ -1389,11 +1487,8 @@ async function mailRoute(request: NextRequest, path: string[]) {
 
   if (request.method === "GET" && tail[0] === "folders") {
     const [data, defaults] = await Promise.all([
-      graphFetch<GraphCollection<Record<string, unknown>>>(
-        connectionId,
-        "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden&includeHiddenFolders=true",
-      ),
-      graphFetch<{ responses: Array<{ id: string; status: number; body?: Record<string, unknown> }> }>(connectionId, "/$batch", {
+      loadMailFolderTree(connectionId),
+      graphFetch<{ responses: Array<{ id: string; status: number; body?: Record<string, unknown> & { error?: { code?: string; message?: string } } }> }>(connectionId, "/$batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1406,8 +1501,17 @@ async function mailRoute(request: NextRequest, path: string[]) {
       }),
     ]);
     const ids = ["inbox", "drafts", "sentitems", "archive", "deleteditems", "junkemail"];
-    const wellKnownFolders = Object.fromEntries(defaults.responses.filter((entry) => entry.status === 200 && entry.body).map((entry) => [ids[Number(entry.id) - 1], entry.body]));
-    return Response.json({ folders: data.value, wellKnownFolders });
+    const failedDefault = defaults.responses.find((entry) => entry.status !== 200 || !entry.body);
+    if (failedDefault) {
+      throw new GraphError(
+        failedDefault.status,
+        failedDefault.body?.error?.code,
+        failedDefault.body?.error?.message ?? "Microsoft Graph could not load a standard mail folder",
+        `/v1.0/me/mailFolders/${ids[Number(failedDefault.id) - 1]}`,
+      );
+    }
+    const wellKnownFolders = Object.fromEntries(defaults.responses.map((entry) => [ids[Number(entry.id) - 1], entry.body]));
+    return Response.json({ folders: data, wellKnownFolders });
   }
   if (request.method === "GET" && tail[0] === "messages" && !tail[1]) {
     const nextLink = query.get("nextLink");
@@ -1644,13 +1748,46 @@ async function mailRoute(request: NextRequest, path: string[]) {
 async function requireConnectionScope(connectionId: string, scope: string) {
   const connection = await db.microsoftConnection.findUnique({
     where: { id: connectionId },
-    select: { grantedScopes: true },
+    select: {
+      authorizationStatus: true,
+      mailboxAuth: { select: { grantedScopes: true, authorizationStatus: true } },
+    },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
-  const granted = new Set(connection.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
-  if (!granted.has(scope.toLowerCase())) {
+  if (connection.authorizationStatus !== "CONNECTED") throw new ApiError(409, "Microsoft connection is not active");
+  if (!connection.mailboxAuth || connection.mailboxAuth.authorizationStatus !== "CONNECTED") {
+    throw new ApiError(403, "Connect mailbox to authorize Microsoft Graph mail access.");
+  }
+  const granted = new Set(connection.mailboxAuth.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
+  if (!hasGrantedScope(granted, scope)) {
     throw new ApiError(403, `${scope} permission is required. Enable this feature to request incremental Microsoft consent.`);
   }
+}
+
+async function requireAnyConnectionScope(connectionId: string, scopes: string[]) {
+  const connection = await db.microsoftConnection.findUnique({
+    where: { id: connectionId },
+    select: {
+      authorizationStatus: true,
+      mailboxAuth: { select: { grantedScopes: true, authorizationStatus: true } },
+    },
+  });
+  if (!connection) throw new ApiError(404, "Microsoft connection not found");
+  if (connection.authorizationStatus !== "CONNECTED") throw new ApiError(409, "Microsoft connection is not active");
+  if (!connection.mailboxAuth || connection.mailboxAuth.authorizationStatus !== "CONNECTED") {
+    throw new ApiError(403, "Connect mailbox to authorize Microsoft Graph mail access.");
+  }
+  const granted = new Set(connection.mailboxAuth.grantedScopes.map(normalizeMicrosoftScope));
+  if (!scopes.some((scope) => hasGrantedScope(granted, scope))) {
+    throw new ApiError(403, `${scopes[0]} permission is required. Grant mail access to continue.`);
+  }
+}
+
+function hasGrantedScope(granted: Set<string>, scope: string) {
+  const normalized = normalizeMicrosoftScope(scope);
+  return granted.has(normalized)
+    || (normalized === "mail.read" && granted.has("mail.readwrite"))
+    || (normalized === "mailboxsettings.read" && granted.has("mailboxsettings.readwrite"));
 }
 
 const ruleSchema = z.object({
@@ -1663,6 +1800,43 @@ const ruleSchema = z.object({
 });
 
 type GraphCollection<T> = { value: T[]; "@odata.nextLink"?: string };
+
+type GraphMailFolder = {
+  id: string;
+  displayName: string;
+  parentFolderId?: string;
+  childFolderCount?: number;
+  totalItemCount?: number;
+  unreadItemCount?: number;
+  isHidden?: boolean;
+  depth?: number;
+};
+
+async function loadMailFolderTree(connectionId: string) {
+  const folders: GraphMailFolder[] = [];
+  const load = async (path: string, depth: number): Promise<void> => {
+    if (depth > 10 || folders.length >= 500) return;
+    let next: string | null = path;
+    while (next && folders.length < 500) {
+      const page: GraphCollection<GraphMailFolder> = await graphFetch<GraphCollection<GraphMailFolder>>(connectionId, next);
+      for (const folder of page.value) {
+        folders.push({ ...folder, depth });
+        if ((folder.childFolderCount ?? 0) > 0 && folders.length < 500) {
+          await load(
+            `/me/mailFolders/${encodeURIComponent(folder.id)}/childFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden`,
+            depth + 1,
+          );
+        }
+      }
+      next = page["@odata.nextLink"] ?? null;
+    }
+  };
+  await load(
+    "/me/mailFolders?$top=100&$select=id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden&includeHiddenFolders=true",
+    0,
+  );
+  return folders;
+}
 
 function messageListPath(folder: string, query: URLSearchParams) {
   const params = new URLSearchParams({
@@ -1783,7 +1957,18 @@ function handle(error: unknown) {
   if (error instanceof z.ZodError) return Response.json({ error: "Invalid request", details: error.issues }, { status: 400 });
   if (error instanceof MicrosoftConfigurationError) return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof GraphError) {
-    return Response.json({ error: error.message, microsoftCode: error.code }, { status: error.status });
+    return Response.json({
+      error: error.message,
+      source: "microsoft_graph",
+      operation: microsoftGraphOperation(error.endpoint),
+      endpoint: error.endpoint,
+      status: error.status,
+      graphCode: error.code,
+      message: error.message,
+    }, { status: error.status });
+  }
+  if (error instanceof MicrosoftMailboxAuthorizationRequired) {
+    return Response.json({ error: error.message, code: "MAILBOX_AUTHORIZATION_REQUIRED" }, { status: 403 });
   }
   if (error instanceof MicrosoftReauthenticationRequired) return Response.json({ error: error.message, code: "REAUTHENTICATION_REQUIRED" }, { status: 401 });
   if (error instanceof CloudflareError) {
@@ -1792,4 +1977,14 @@ function handle(error: unknown) {
   if (error instanceof ExchangeConfigurationError) return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof ExchangeOperationError) return Response.json({ error: "Exchange Online operation failed", details: error.message }, { status: 502 });
   return apiError(error);
+}
+
+function microsoftGraphOperation(endpoint?: string) {
+  if (!endpoint) return "graph_request";
+  if (/\/mailFolders(?:\?|$)/i.test(endpoint)) return "list_mail_folders";
+  if (/\/childFolders(?:\?|$)/i.test(endpoint)) return "list_child_folders";
+  if (/\/messages(?:\?|$)/i.test(endpoint)) return "list_or_access_messages";
+  if (/\/sendMail(?:\?|$)/i.test(endpoint)) return "send_mail";
+  if (/\/me(?:\?|$)/i.test(endpoint)) return "read_profile";
+  return "graph_request";
 }

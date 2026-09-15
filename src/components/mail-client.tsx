@@ -6,9 +6,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, csrfToken } from "@/components/api";
 import { ConfirmDialog, Drawer, EmptyState, Modal, Skeleton, useToast } from "@/components/design-system";
-import { MailboxAccessConsent } from "@/components/mailbox-settings-consent";
 
-type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number };
+type Folder = { id: string; displayName: string; unreadItemCount: number; totalItemCount: number; depth?: number };
 type Message = {
   id: string;
   subject: string;
@@ -26,6 +25,27 @@ type Message = {
 };
 type Attachment = { id: string; name: string; contentType: string; size: number; isInline?: boolean };
 type Filters = { sender: string; recipient: string; subject: string; keyword: string; read: string; hasAttachments: boolean; flagged: boolean; importance: string; fromDate: string; toDate: string };
+type MailCapabilities = {
+  canReadMail: boolean;
+  canModifyMail: boolean;
+  canSendMail: boolean;
+  canReadMailboxSettings: boolean;
+  canModifyMailboxSettings: boolean;
+};
+type MailAccount = {
+  displayName: string | null;
+  email: string | null;
+  userPrincipalName: string | null;
+  capabilities: MailCapabilities;
+  mailAuthorizationStatus: string;
+  mailAuthorization: {
+    status: string;
+    errorCode: string | null;
+    requestedScopes: string[];
+    createdAt: string;
+    expiresAt: string;
+  } | null;
+};
 const emptyFilters: Filters = { sender: "", recipient: "", subject: "", keyword: "", read: "", hasAttachments: false, flagged: false, importance: "", fromDate: "", toDate: "" };
 
 const wellKnown = [
@@ -54,9 +74,14 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all" | "forward" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [preview, setPreview] = useState<{ url: string; attachment: Attachment } | null>(null);
-  const [permissionReady, setPermissionReady] = useState<boolean | null>(null);
+  const [capabilities, setCapabilities] = useState<MailCapabilities | null>(null);
+  const [account, setAccount] = useState<MailAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLoading, setMessageLoading] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem("company-last-mail-connection", connectionId);
+  }, [connectionId]);
 
   const loadFolders = useCallback(async () => {
     try {
@@ -89,16 +114,17 @@ export function MailClient({ connectionId }: { connectionId: string }) {
     }
   }, [connectionId, filters, folder, nextLink, notify, quickSearch]);
 
-  useEffect(() => {
-    void api<{ account: { grantedScopes: string[] } }>(`/microsoft/accounts/${connectionId}`)
+  const loadCapabilities = useCallback(() => {
+    return api<{ account: MailAccount }>(`/microsoft/accounts/${connectionId}`)
       .then(({ account }) => {
-        const granted = account.grantedScopes.map((scope) => scope.toLowerCase().replace("https://graph.microsoft.com/", ""));
-        setPermissionReady(granted.includes("mail.readwrite") && granted.includes("mail.send"));
+        setAccount(account);
+        setCapabilities(account.capabilities);
       })
       .catch((error) => notify({ title: "Account unavailable", message: error instanceof Error ? error.message : undefined, tone: "error" }));
   }, [connectionId, notify]);
-  useEffect(() => { if (permissionReady) void loadFolders(); }, [loadFolders, permissionReady]);
-  useEffect(() => { if (permissionReady) void loadMessages(false); }, [folder, permissionReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadCapabilities(); }, [loadCapabilities]);
+  useEffect(() => { if (capabilities?.canReadMail) void loadFolders(); }, [capabilities?.canReadMail, loadFolders]);
+  useEffect(() => { if (capabilities?.canReadMail) void loadMessages(false); }, [capabilities?.canReadMail, folder]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
 
   async function openMessage(message: Message) {
@@ -110,7 +136,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
       ]);
       setSelected(messageData.message);
       setAttachments(attachmentData.attachments.filter((attachment) => !attachment.isInline));
-      if (!message.isRead) {
+      if (!message.isRead && capabilities?.canModifyMail) {
         void api(`/mail/${connectionId}/messages/${encodeURIComponent(message.id)}`, { method: "PATCH", body: JSON.stringify({ isRead: true }) });
         setMessages((items) => items.map((item) => item.id === message.id ? { ...item, isRead: true } : item));
       }
@@ -181,22 +207,35 @@ export function MailClient({ connectionId }: { connectionId: string }) {
   }
 
   const folderTitle = useMemo(() => wellKnown.find(([id]) => id === folder)?.[1] ?? folders.find((item) => item.id === folder)?.displayName ?? "Mailbox", [folder, folders]);
-  const onPermissionGranted = useCallback(() => {
-    setPermissionReady(true);
-    notify({ title: "Webmail enabled", tone: "success" });
-  }, [notify]);
 
-  if (permissionReady === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
-  if (!permissionReady) return <MailboxAccessConsent connectionId={connectionId} onGranted={onPermissionGranted} />;
+  if (capabilities === null) return <section className="panel panel-body"><Skeleton lines={9} /></section>;
+  if (!capabilities.canReadMail) {
+    const accountLabel = account?.displayName ?? account?.email ?? account?.userPrincipalName ?? "This Microsoft account";
+    const authorization = account?.mailAuthorization;
+    const authorizationState = authorization?.status ?? account?.mailAuthorizationStatus ?? "NOT_CONNECTED";
+    const errorCode = authorization?.errorCode;
+    return <section className="panel panel-body">
+      <EmptyState
+        icon="✉"
+        title={authorizationState === "PENDING" ? "Mailbox authorization waiting" : "Mailbox authorization incomplete"}
+        description={mailAuthorizationDescription(accountLabel, authorizationState, errorCode)}
+      />
+      <div className="panel-body stack" style={{ maxWidth: 680, margin: "0 auto" }}>
+        <p><strong>Status:</strong> {authorizationState}</p>
+        {errorCode && <p><strong>Microsoft error:</strong> <code>{errorCode}</code></p>}
+        <p className="muted">No mailbox authorization state is stored for this Microsoft connection.</p>
+      </div>
+    </section>;
+  }
   return (
     <div className="mail-workspace">
       <aside className={`mail-folders ${foldersOpen ? "is-mobile-open" : ""}`}>
         <div className="mail-brand-row"><Link href="/admin">← Control panel</Link></div>
-        <button className="compose-button" onClick={() => setComposeOpen(true)}>＋ New message</button>
+        {capabilities.canModifyMail && capabilities.canSendMail && <button className="compose-button" onClick={() => setComposeOpen(true)}>＋ New message</button>}
         <nav aria-label="Mailbox folders">{wellKnown.map(([id, label, icon]) => <button className={folder === id ? "active" : ""} key={id} onClick={() => { setFolder(id); setFoldersOpen(false); }}><span>{icon}</span>{label}<small>{wellKnownFolders[id]?.unreadItemCount || ""}</small></button>)}</nav>
-        {folders.length > 0 && <><h3>Custom folders</h3><nav>{folders.map((item) => <button className={folder === item.id ? "active" : ""} key={item.id} onClick={() => { setFolder(item.id); setFoldersOpen(false); }}><span>□</span><span>{item.displayName}</span><small>{item.unreadItemCount || ""}</small></button>)}</nav></>}
+        {folders.length > 0 && <><h3>Custom folders</h3><nav>{folders.map((item) => <button className={folder === item.id ? "active" : ""} style={{ paddingLeft: `${14 + (item.depth ?? 0) * 16}px` }} key={item.id} onClick={() => { setFolder(item.id); setFoldersOpen(false); }}><span>□</span><span>{item.displayName}</span><small>{item.unreadItemCount || ""}</small></button>)}</nav></>}
         <h3>Shared mailboxes</h3><div className="mailbox-disabled">No verified shared access</div>
-        <h3>Manage</h3><nav><Link href={`/mail/${connectionId}/rules`}>⇢ Inbox rules</Link><Link href={`/mail/${connectionId}/settings`}>⚙ Mailbox settings</Link></nav>
+        {capabilities.canModifyMailboxSettings && <><h3>Manage</h3><nav><Link href={`/mail/${connectionId}/rules`}>⇢ Inbox rules</Link><Link href={`/mail/${connectionId}/settings`}>⚙ Mailbox settings</Link></nav></>}
       </aside>
       {foldersOpen && <button className="mail-folder-scrim" aria-label="Close folders" onClick={() => setFoldersOpen(false)} />}
       <section className="message-column">
@@ -218,12 +257,12 @@ export function MailClient({ connectionId }: { connectionId: string }) {
           <>
             <header className="reading-toolbar">
               <button className="icon-button mobile-reading-back" aria-label="Back to message list" onClick={() => setSelected(null)}><ArrowLeft size={17} /></button>
-              <button onClick={() => setReplyMode("reply")}>↩ Reply</button><button className="secondary" onClick={() => setReplyMode("reply-all")}>Reply all</button><button className="secondary" onClick={() => setReplyMode("forward")}>Forward</button>
-              <button className="icon-button" title="Archive" aria-label="Archive" onClick={() => void move("archive")}>▣</button>
+              {capabilities.canSendMail && <><button onClick={() => setReplyMode("reply")}>↩ Reply</button><button className="secondary" onClick={() => setReplyMode("reply-all")}>Reply all</button><button className="secondary" onClick={() => setReplyMode("forward")}>Forward</button></>}
+              {capabilities.canModifyMail && <><button className="icon-button" title="Archive" aria-label="Archive" onClick={() => void move("archive")}>▣</button>
               <select aria-label="Move message" defaultValue="" onChange={(event) => { if (event.target.value) void move(event.target.value); }}><option value="" disabled>Move…</option>{wellKnown.filter(([id]) => id !== folder).map(([id, label]) => <option value={id} key={id}>{label}</option>)}{folders.map((item) => <option value={item.id} key={item.id}>{item.displayName}</option>)}</select>
               <button className="icon-button" title="Mark unread" aria-label="Mark unread" onClick={() => void updateMessage({ isRead: false })}>◉</button>
               <button className="icon-button" title="Flag" aria-label="Flag" onClick={() => void updateMessage({ flag: { flagStatus: selected.flag?.flagStatus === "flagged" ? "notFlagged" : "flagged" } })}>⚑</button>
-              <button className="icon-button" title="Delete" aria-label="Delete" onClick={() => setDeleteOpen(true)}>⌫</button>
+              <button className="icon-button" title="Delete" aria-label="Delete" onClick={() => setDeleteOpen(true)}>⌫</button></>}
               {selected.webLink && <button onClick={() => void openInDesktop()}>Open in Outlook ↗</button>}
               {selected.webLink && <a className="button secondary" target="_blank" rel="noopener noreferrer" href={selected.webLink}>Open in browser</a>}
             </header>
@@ -236,13 +275,21 @@ export function MailClient({ connectionId }: { connectionId: string }) {
           </>
         )}
       </section>
-      <ComposeDrawer connectionId={connectionId} open={composeOpen} onClose={() => setComposeOpen(false)} onSent={() => void loadMessages(false)} />
+      {capabilities.canModifyMail && capabilities.canSendMail && <ComposeDrawer connectionId={connectionId} open={composeOpen} onClose={() => setComposeOpen(false)} onSent={() => void loadMessages(false)} />}
       <Drawer open={filtersOpen} title="Search filters" onClose={() => setFiltersOpen(false)}><FilterForm filters={filters} onApply={(next) => { setFilters(next); setFiltersOpen(false); void loadMessages(false, next); }} /></Drawer>
-      <ReplyModal connectionId={connectionId} message={selected} mode={replyMode} onClose={() => setReplyMode(null)} />
+      {capabilities.canSendMail && <ReplyModal connectionId={connectionId} message={selected} mode={replyMode} onClose={() => setReplyMode(null)} />}
       <AttachmentPreview preview={preview} onClose={() => setPreview(null)} />
-      <ConfirmDialog open={deleteOpen} title="Delete message?" description="The message will be moved according to Microsoft mailbox deletion behavior." confirmLabel="Delete message" destructive onClose={() => setDeleteOpen(false)} onConfirm={() => void deleteMessage()} />
+      {capabilities.canModifyMail && <ConfirmDialog open={deleteOpen} title="Delete message?" description="The message will be moved according to Microsoft mailbox deletion behavior." confirmLabel="Delete message" destructive onClose={() => setDeleteOpen(false)} onConfirm={() => void deleteMessage()} />}
     </div>
   );
+}
+
+function mailAuthorizationDescription(accountLabel: string, status: string, errorCode: string | null | undefined) {
+  if (status === "PENDING") return `${accountLabel} has mailbox authorization state waiting to be completed.`;
+  if (errorCode) {
+    return `Microsoft mailbox authorization failed with error ${errorCode}.`;
+  }
+  return `${accountLabel} is connected for primary sign-in, but no reusable mailbox authorization state is stored.`;
 }
 
 function ComposeDrawer({ connectionId, open, onClose, onSent }: { connectionId: string; open: boolean; onClose: () => void; onSent: () => void }) {

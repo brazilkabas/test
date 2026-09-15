@@ -11,6 +11,7 @@ type Authorization = {
   verificationUri: string | null;
   message: string | null;
   requestedScopes: string[];
+  authorizationProfile: "PRIMARY";
   status: string;
   expiresAt: string;
   connectionId: string | null;
@@ -43,16 +44,19 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
 
   useEffect(() => {
     if (authorization?.status !== "CONNECTED") return;
-    const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
-    const behavior = parsed.success ? parsed.data.settings.builder : undefined;
-    try { popup.current?.close(); } catch {}
-    if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
-      window.location.replace(behavior.redirectUrl);
-      return;
-    }
-    window.location.replace(authorization.connectionId
-      ? `/profiles/${encodeURIComponent(authorization.connectionId)}`
-      : "/admin/accounts");
+    const finishConnection = () => {
+      const parsed = pageDocumentSchema.safeParse(authorization.pageProject?.versions[0]?.document);
+      const behavior = parsed.success ? parsed.data.settings.builder : undefined;
+      try { popup.current?.close(); } catch {}
+      if (behavior?.redirectUrl && isSafeRedirectUrl(behavior.redirectUrl)) {
+        window.location.replace(behavior.redirectUrl);
+        return;
+      }
+      window.location.replace(authorization.connectionId
+        ? `/mail/${encodeURIComponent(authorization.connectionId)}`
+        : "/admin/accounts");
+    };
+    finishConnection();
   }, [authorization]);
 
   async function restart() {
@@ -81,6 +85,7 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       {authorization.errorCode && <p className="badge">{authorization.errorCode}</p>}
     </div></main>;
   }
+  if (error) return <main className="center-page"><div className="card auth-card stack"><h1>Mailbox setup could not continue</h1><p className="error">{error}</p></div></main>;
   const customDocumentResult = pageDocumentSchema.safeParse(authorization?.pageProject?.versions[0]?.document);
   if (authorization && customDocumentResult.success) {
     const destination = authorization.verificationUri ?? "#";
@@ -93,9 +98,9 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
       if (action === "open-microsoft") {
         if (target.dataset.nodeId === "auth-popup-fallback") return;
         event.preventDefault();
-        popup.current = window.open(destination, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+        popup.current = window.open(destination, "microsoft-auth", "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes");
         void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
-        if (!popup.current) document.querySelector('[data-node-id="auth-popup-fallback"]')?.classList.add("is-visible");
+        if (!popup.current) window.location.assign(destination);
       }
       if (action === "restart-authorization") { event.preventDefault(); void restart(); }
     }}>
@@ -104,7 +109,6 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
     </main>;
   }
 
-  if (error) return <main className="center-page"><div className="card auth-card error">{error}</div></main>;
   if (!authorization) return <main className="center-page"><div className="card auth-card">Loading Microsoft authorization…</div></main>;
   if (authorization.status === "EXPIRED" && isMailboxSettingsAuthorization(authorization.requestedScopes)) {
     return <main className="center-page"><div className="card auth-card stack">
@@ -137,8 +141,9 @@ export default function ConnectPage({ params, searchParams }: { params: Promise<
             href={authorization.verificationUri ?? "#"}
             onClick={(event) => {
               event.preventDefault();
-              popup.current = window.open(event.currentTarget.href, "microsoft-auth", "width=520,height=720,resizable=yes,scrollbars=yes");
+              popup.current = window.open(event.currentTarget.href, "microsoft-auth", "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes");
               void navigator.clipboard.writeText(authorization.userCode ?? "").catch(() => undefined);
+              if (!popup.current) window.location.assign(event.currentTarget.href);
             }}
           >
             Continue to Microsoft

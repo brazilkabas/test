@@ -12,9 +12,16 @@ organizations. The authority is fixed to
 Product sign-in uses Microsoft device authorization. WAM, an authentication broker,
 and a Windows helper are neither used nor required.
 
+`MICROSOFT_CLIENT_ID` must be your own Entra Application (client) ID.
+`MICROSOFT_RESOURCE_APP_ID` and `MICROSOFT_RESOURCE_SCOPE` separately identify the
+target API and delegated permission. For Graph-backed webmail, use resource ID
+`00000003-0000-0000-c000-000000000000` with explicit `User.Read,Mail.Read` scopes.
+If Microsoft returns `AADSTS65002`, development logs show the effective client,
+resource, authority, scopes, and exact Microsoft error without logging credentials.
+
 ## Consent or permission errors
 
-Compare `MICROSOFT_SCOPES` with delegated permissions in the app registration. Tenant
+Compare `MICROSOFT_RESOURCE_SCOPE` with delegated permissions in the app registration. Tenant
 policy may require administrator consent. Do not add broad permissions merely to make
 an error disappear.
 

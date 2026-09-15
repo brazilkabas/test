@@ -134,15 +134,21 @@ model MicrosoftConnection {
   id                       String                @id @default(cuid())
   tenantId                 String
   microsoftUserId          String
+  microsoftHomeAccountId   String?
+  clientId                 String                @default("")
+  resourceAppId            String                @default("00000003-0000-0000-c000-000000000000")
+  resourceScopes           String[]              @default([])
   displayName              String?
   userPrincipalName        String?
   email                    String?
   connectedAt              DateTime              @default(now())
+  accessTokenExpiresAt     DateTime?
   lastSuccessfulGraphAt    DateTime?
   authorizationStatus      AuthorizationStatus   @default(CONNECTED)
   encryptedTokenCache      Bytes
   tokenCacheKeyVersion     Int                   @default(1)
   grantedScopes            String[]
+  capabilities             Json                  @default("{}")
   tenantDisplayName        String?
   adminRoleSummary         Json?
   ownerId                  String?
@@ -150,11 +156,13 @@ model MicrosoftConnection {
   updatedAt                DateTime              @updatedAt
   owner                    User?                 @relation("ConnectionOwner", fields: [ownerId], references: [id])
   authorizationSessions    MicrosoftAuthorizationSession[]
+  mailboxAuth              MicrosoftMailboxAuth?
   mailboxes                Mailbox[]
   sharedMailboxPermissions MailboxPermission[]
   auditEvents              AuditEvent[]
 
-  @@unique([tenantId, microsoftUserId])
+  @@unique([tenantId, microsoftUserId, clientId, resourceAppId])
+  @@index([microsoftHomeAccountId])
   @@index([ownerId, authorizationStatus])
 }
 
@@ -164,6 +172,9 @@ model MicrosoftAuthorizationSession {
   statusTokenHash       String?
   encryptedCodeVerifier Bytes?
   requestedScopes       String[]
+  clientId              String              @default("")
+  resourceAppId         String              @default("00000003-0000-0000-c000-000000000000")
+  authorizationProfile  String              @default("PRIMARY")
   status                AuthorizationStatus @default(PENDING)
   userCode              String?
   verificationUri       String?
@@ -180,6 +191,29 @@ model MicrosoftAuthorizationSession {
   pageProject           HtmlProject?          @relation(fields: [pageProjectId], references: [id])
 
   @@index([status, expiresAt])
+}
+
+model MicrosoftMailboxAuth {
+  id                       String                @id @default(cuid())
+  connectionId             String                @unique
+  tenantId                 String
+  microsoftUserId          String
+  microsoftHomeAccountId   String?
+  clientId                 String
+  resourceAppId            String                @default("00000003-0000-0000-c000-000000000000")
+  grantedScopes            String[]
+  capabilities             Json                  @default("{}")
+  authorizationStatus      AuthorizationStatus   @default(CONNECTED)
+  encryptedTokenCache      Bytes
+  tokenCacheKeyVersion     Int                   @default(2)
+  accessTokenExpiresAt     DateTime?
+  lastSuccessfulGraphAt    DateTime?
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+  connection               MicrosoftConnection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, microsoftUserId])
+  @@index([authorizationStatus])
 }
 
 model Mailbox {

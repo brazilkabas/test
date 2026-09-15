@@ -21,17 +21,6 @@ export function MailboxSettingsConsent(props: { connectionId: string; onGranted:
   />;
 }
 
-export function MailboxAccessConsent(props: { connectionId: string; onGranted: () => void }) {
-  return <MicrosoftFeatureConsent
-    {...props}
-    purpose="mailbox"
-    title="Connect webmail"
-    description="Basic Microsoft sign-in is complete. Enable mailbox access only when you want to use webmail."
-    buttonLabel="Enable webmail"
-    adminApprovalDescription="mailbox access"
-  />;
-}
-
 function MicrosoftFeatureConsent({
   connectionId,
   onGranted,
@@ -40,14 +29,16 @@ function MicrosoftFeatureConsent({
   description,
   buttonLabel,
   adminApprovalDescription,
+  accountLabel,
 }: {
   connectionId: string;
   onGranted: () => void;
-  purpose: "mailbox" | "mailbox-settings";
+  purpose: "mailbox-settings";
   title: string;
   description: string;
   buttonLabel: string;
   adminApprovalDescription: string;
+  accountLabel?: string;
 }) {
   const [session, setSession] = useState<{ sessionId: string; statusToken: string } | null>(null);
   const [error, setError] = useState("");
@@ -80,11 +71,11 @@ function MicrosoftFeatureConsent({
       }).catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(poll);
-  }, [adminApprovalDescription, connectionId, onGranted, session]);
+  }, [adminApprovalDescription, connectionId, onGranted, purpose, session]);
 
   async function enable() {
     setError("");
-    popup.current = window.open("", "microsoft-settings-consent", "width=620,height=760,resizable=yes,scrollbars=yes");
+    popup.current = window.open("", "microsoft-settings-consent", "popup=yes,width=620,height=760,resizable=yes,scrollbars=yes");
     if (!popup.current) {
       setError("Allow popups, then try again.");
       return;
@@ -104,6 +95,7 @@ function MicrosoftFeatureConsent({
 
   return <section className="panel panel-body stack">
     <h1>{title}</h1>
+    {accountLabel && <p><strong>{accountLabel}</strong></p>}
     <p className="muted">{description}</p>
     {error && <p className="error">{error}</p>}
     <div><button type="button" disabled={Boolean(session)} onClick={() => void enable()}>{session ? "Waiting for Microsoft…" : buttonLabel}</button></div>

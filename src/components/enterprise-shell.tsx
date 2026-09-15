@@ -40,15 +40,49 @@ export function EnterpriseShell({ user, children }: { user: { email: string; dis
   const [collapsed, setCollapsed] = useState(false);
   const [query, setQuery] = useState("");
   const [accountId, setAccountId] = useState("");
-  const [accounts, setAccounts] = useState<Array<{ id: string; displayName: string | null; userPrincipalName: string | null; authorizationStatus?: string }>>([]);
+  const [accounts, setAccounts] = useState<Array<{
+    id: string;
+    displayName: string | null;
+    userPrincipalName: string | null;
+    authorizationStatus?: string;
+    capabilities?: { canReadMail?: boolean };
+  }>>([]);
 
   useEffect(() => {
     setCollapsed(localStorage.getItem("company-sidebar-collapsed") === "true");
     api<{ accounts: typeof accounts }>("/microsoft/accounts").then((result) => {
-      setAccounts(result.accounts);
-      setAccountId((current) => current || result.accounts[0]?.id || "");
+      const connectedAccounts = result.accounts.filter((account) => account.authorizationStatus === "CONNECTED");
+      setAccounts(connectedAccounts);
+      const routeAccountId = pathname.match(/^\/mail\/([^/]+)/)?.[1];
+      setAccountId((current) =>
+        connectedAccounts.some((account) => account.id === routeAccountId)
+          ? routeAccountId!
+          : connectedAccounts.some((account) => account.id === current)
+            ? current
+            : connectedAccounts[0]?.id || "",
+      );
     }).catch(() => undefined);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const deleted = (event: Event) => {
+      const connectionId = (event as CustomEvent<{ connectionId?: string }>).detail?.connectionId;
+      if (!connectionId) return;
+      setAccounts((current) => {
+        const next = current.filter((account) => account.id !== connectionId);
+        setAccountId((selected) => {
+          if (selected !== connectionId) return selected;
+          const replacement = next[0]?.id ?? "";
+          if (pathname.startsWith(`/mail/${connectionId}`)) {
+            router.push(replacement ? `/mail/${replacement}` : "/mail");
+          }
+          return replacement;
+        });
+        return next;
+      });
+    };
+    window.addEventListener("microsoft-account-deleted", deleted);
+    return () => window.removeEventListener("microsoft-account-deleted", deleted);
+  }, [pathname, router]);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -61,10 +95,9 @@ export function EnterpriseShell({ user, children }: { user: { email: string; dis
   }, []);
 
   const navigation = useMemo(() => {
-    const mailbox = accountId ? `/mail/${accountId}` : "/admin/accounts";
     return [
       ...staticNavigation.slice(0, 2),
-      { href: mailbox, icon: Inbox, label: "Mail" },
+      { href: "/mail", icon: Inbox, label: "Mail" },
       ...staticNavigation.slice(2, 4),
       { href: accountId ? `/mail/${accountId}/rules` : "/admin/accounts", icon: FolderKanban, label: "Rules" },
       ...staticNavigation.slice(4),
@@ -122,7 +155,7 @@ export function EnterpriseShell({ user, children }: { user: { email: string; dis
             <div className={`system-health ${healthyCount > 0 ? "is-healthy" : ""}`}><Activity size={14} /><span>{healthyCount > 0 ? "Systems healthy" : "Setup required"}</span></div>
             <select className="account-switcher" aria-label="Active Microsoft account" value={accountId} onChange={(event) => { setAccountId(event.target.value); if (event.target.value) router.push(`/mail/${event.target.value}`); }}>
               <option value="">Select mailbox</option>
-              {accounts.map((account) => <option value={account.id} key={account.id}>{account.displayName ?? account.userPrincipalName}</option>)}
+              {accounts.map((account) => <option value={account.id} key={account.id}>{account.displayName ?? account.userPrincipalName} — {account.capabilities?.canReadMail ? "Mail ready" : "Mailbox pending"}</option>)}
             </select>
             <ThemeToggle />
             <details className="admin-menu"><summary><span className="avatar">{(user.displayName ?? user.email).slice(0, 1).toUpperCase()}</span><ChevronDown size={14} /></summary><div><strong>{user.displayName ?? "Administrator"}</strong><small>{user.email}</small><Link href="/admin/security"><Settings size={14} /> Settings</Link><button onClick={() => void logout()}><ChevronRight size={14} /> Sign out</button></div></details>

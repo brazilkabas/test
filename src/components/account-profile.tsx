@@ -42,9 +42,9 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
   async function changeTab(next: (typeof tabs)[number]) {
     setTab(next);
     try {
-      if (next === "Folders" && !folders.length) setFolders((await api<{ folders: Array<Record<string, unknown>> }>(`/mail/${connectionId}/folders`)).folders);
-      if (next === "Rules" && !rules.length) setRules((await api<{ rules: Array<Record<string, unknown>> }>(`/mail/${connectionId}/rules`)).rules);
-      if (next === "Mailbox Settings" && !settings) setSettings((await api<{ settings: Record<string, unknown> }>(`/mail/${connectionId}/settings`)).settings);
+      if (next === "Folders" && account?.capabilities.canReadMail && !folders.length) setFolders((await api<{ folders: Array<Record<string, unknown>> }>(`/mail/${connectionId}/folders`)).folders);
+      if (next === "Rules" && account?.capabilities.canModifyMailboxSettings && !rules.length) setRules((await api<{ rules: Array<Record<string, unknown>> }>(`/mail/${connectionId}/rules`)).rules);
+      if (next === "Mailbox Settings" && account?.capabilities.canModifyMailboxSettings && !settings) setSettings((await api<{ settings: Record<string, unknown> }>(`/mail/${connectionId}/settings`)).settings);
     } catch (error) {
       notify({ title: `${next} could not load`, message: error instanceof Error ? error.message : undefined, tone: "error" });
     }
@@ -73,10 +73,18 @@ export function AccountProfile({ connectionId }: { connectionId: string }) {
             <h2>Detected capabilities</h2><div className="row">{Object.entries(account.capabilities).map(([capability, enabled]) => <span className={`status status-${enabled ? "positive" : "neutral"}`} key={capability}><span />{capability.replace(/([A-Z])/g, " $1")}</span>)}</div>
             <h2>Granted Graph scopes</h2><div className="row">{account.grantedScopes.map((scope) => <span className="badge" key={scope}>{scope}</span>)}</div>
           </div>}
-          {tab === "Mailbox" && <EmptyState icon="✉" title="Mailbox is available" description="Open the full folder-aware mail workspace for this employee." action={<Link className="button" href={`/mail/${account.id}`}>Open mailbox</Link>} />}
-          {tab === "Folders" && <SimpleTable rows={folders} columns={["displayName", "totalItemCount", "unreadItemCount"]} />}
-          {tab === "Rules" && <SimpleTable rows={rules} columns={["displayName", "isEnabled", "sequence"]} />}
-          {tab === "Mailbox Settings" && <div className="definition-grid">{settings && Object.entries(settings).filter(([, value]) => typeof value !== "object").map(([key, value]) => <Info key={key} label={key} value={String(value ?? "Not set")} />)}</div>}
+          {tab === "Mailbox" && (account.capabilities.canReadMail
+            ? <EmptyState icon="✉" title="Mailbox is available" description="Open the full folder-aware mail workspace for this employee." action={<Link className="button" href={`/mail/${account.id}`}>Open mailbox</Link>} />
+            : <Unavailable title="Mail access not granted" description="Grant webmail access to open this connected account's mailbox." />)}
+          {tab === "Folders" && (account.capabilities.canReadMail
+            ? <SimpleTable rows={folders} columns={["displayName", "totalItemCount", "unreadItemCount"]} />
+            : <Unavailable title="Mail access not granted" description="Folder listing requires Mail.Read or Mail.ReadWrite." />)}
+          {tab === "Rules" && (account.capabilities.canModifyMailboxSettings
+            ? <SimpleTable rows={rules} columns={["displayName", "isEnabled", "sequence"]} />
+            : <Unavailable title="Inbox rules unavailable" description="Inbox-rule management requires MailboxSettings.ReadWrite." />)}
+          {tab === "Mailbox Settings" && (account.capabilities.canModifyMailboxSettings
+            ? <div className="definition-grid">{settings && Object.entries(settings).filter(([, value]) => typeof value !== "object").map(([key, value]) => <Info key={key} label={key} value={String(value ?? "Not set")} />)}</div>
+            : <Unavailable title="Mailbox settings unavailable" description="Mailbox-settings management requires MailboxSettings.ReadWrite." />)}
           {tab === "Shared Mailboxes" && <Unavailable title="Shared mailbox discovery is not configured" description="Shared access must be probed with Mail.ReadWrite.Shared/Mail.Send.Shared and existing Exchange mailbox rights. Global Admin alone does not grant access." />}
           {tab === "Microsoft Permissions" && <div className="row">{account.grantedScopes.map((scope) => <span className="badge" key={scope}>{scope}</span>)}</div>}
           {["Files", "Calendar", "Contacts"].includes(tab) && <Unavailable title={`${tab} module is disabled`} description={`This tenant connection has not enabled the dedicated ${tab.toLowerCase()} module or its least-privilege Graph permissions.`} />}

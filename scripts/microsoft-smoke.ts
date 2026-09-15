@@ -1,12 +1,16 @@
 import { PublicClientApplication } from "@azure/msal-node";
 
 import { MICROSOFT_ORGANIZATIONS_AUTHORITY } from "../src/lib/microsoft-authority";
+import {
+  MICROSOFT_GRAPH_RESOURCE,
+  MICROSOFT_GRAPH_RESOURCE_ID,
+  configuredResourceScopes,
+  isMicrosoftGraphResource,
+} from "../src/lib/microsoft-resource";
 
 const clientId = process.env.MICROSOFT_CLIENT_ID;
-const scopes = (process.env.MICROSOFT_MAIL_SMOKE_SCOPES ?? "offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite")
-  .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean);
+const resourceAppId = process.env.MICROSOFT_RESOURCE_APP_ID ?? "";
+const resourceScope = process.env.MICROSOFT_RESOURCE_SCOPE ?? "";
 const recipient = process.argv.find((value) => value.startsWith("--recipient="))?.split("=")[1];
 const allowSend = process.argv.includes("--confirm-send");
 
@@ -14,6 +18,23 @@ if (!clientId) {
   console.error("FAIL configuration: MICROSOFT_CLIENT_ID is required");
   process.exit(1);
 }
+if (!resourceAppId) {
+  console.error("FAIL configuration: MICROSOFT_RESOURCE_APP_ID is required");
+  process.exit(1);
+}
+if (!isMicrosoftGraphResource(resourceAppId)) {
+  console.error(`FAIL configuration: this smoke test requires ${MICROSOFT_GRAPH_RESOURCE} (${MICROSOFT_GRAPH_RESOURCE_ID})`);
+  process.exit(1);
+}
+const requestedScopes = configuredResourceScopes(resourceAppId, resourceScope);
+
+console.info("Microsoft Auth Flow: Device Code", {
+  clientId,
+  resource: MICROSOFT_GRAPH_RESOURCE,
+  resourceId: resourceAppId,
+  authority: MICROSOFT_ORGANIZATIONS_AUTHORITY,
+  requestedScopes,
+});
 
 const pca = new PublicClientApplication({
   auth: { clientId, authority: MICROSOFT_ORGANIZATIONS_AUTHORITY },
@@ -42,7 +63,7 @@ async function run() {
   let authenticatedTenantId = "";
   try {
     const result = await pca.acquireTokenByDeviceCode({
-      scopes,
+      scopes: requestedScopes,
       deviceCodeCallback: (response) => {
         pass(1, "Initiate device authorization");
         pass(2, "Display Microsoft-generated code", `${response.userCode} — ${response.verificationUri}`);

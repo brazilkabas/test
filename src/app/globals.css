@@ -47,6 +47,9 @@ button, .button {
 }
 button:hover, .button:hover { background: var(--brand-strong); }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+.destructive-button { min-width: 120px; white-space: nowrap; background: var(--danger); color: white; }
+.destructive-button:hover:not(:disabled) { background: #991b1b; }
+.destructive-button:disabled { background: #fee2e2; color: #7f1d1d; opacity: 1; }
 .secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
 .secondary:hover { background: var(--bg); }
 input, textarea, select {

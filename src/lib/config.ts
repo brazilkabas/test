@@ -1,13 +1,14 @@
 import { z } from "zod";
 
+import { configuredResourceScopes } from "@/lib/microsoft-resource";
+
 const schema = z.object({
   DATABASE_URL: z.string().url(),
   MICROSOFT_CLIENT_ID: z.string().default(""),
+  MICROSOFT_RESOURCE_APP_ID: z.string().default(""),
+  MICROSOFT_RESOURCE_SCOPE: z.string().default(""),
   MICROSOFT_AUTHORITY: z.string().url().default("https://login.microsoftonline.com/organizations"),
   MICROSOFT_REDIRECT_URI: z.string().url().optional(),
-  MICROSOFT_SCOPES: z.string().default(
-    "openid,profile,email,offline_access,User.Read,Mail.ReadWrite,Mail.Send,MailboxSettings.ReadWrite",
-  ),
   ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/, "must be a 32-byte hex key"),
   SESSION_SECRET: z.string().min(32),
   BOOTSTRAP_ADMIN_EMAIL: z.string().email(),
@@ -16,7 +17,14 @@ const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
-export type AppConfig = z.infer<typeof schema> & { microsoftScopes: string[] };
+export type AppConfig = z.infer<typeof schema>;
+export type MicrosoftAuthConfig = {
+  clientId: string;
+  authority: string;
+  resourceAppId: string;
+  resourceScope: string;
+  requestedScopes: string[];
+};
 
 let cached: AppConfig | undefined;
 
@@ -30,12 +38,7 @@ export function config(): AppConfig {
     throw new Error(`Invalid server configuration: ${details}`);
   }
 
-  cached = {
-    ...parsed.data,
-    microsoftScopes: parsed.data.MICROSOFT_SCOPES.split(",")
-      .map((scope) => scope.trim())
-      .filter(Boolean),
-  };
+  cached = parsed.data;
   return cached;
 }
 
@@ -44,7 +47,33 @@ export function microsoftClientId(): string {
   if (!clientId) {
     throw new MicrosoftConfigurationError("MICROSOFT_CLIENT_ID is not configured.");
   }
+  if (clientId.toLowerCase() === config().MICROSOFT_RESOURCE_APP_ID.trim().toLowerCase()) {
+    throw new MicrosoftConfigurationError(
+      "MICROSOFT_CLIENT_ID and MICROSOFT_RESOURCE_APP_ID must identify separate OAuth concepts.",
+    );
+  }
   return clientId;
+}
+
+export function microsoftResourceAppId(): string {
+  const resourceAppId = config().MICROSOFT_RESOURCE_APP_ID.trim();
+  if (!resourceAppId) {
+    throw new MicrosoftConfigurationError("MICROSOFT_RESOURCE_APP_ID is not configured.");
+  }
+  return resourceAppId;
+}
+
+export function microsoftAuthConfig(): MicrosoftAuthConfig {
+  const clientId = microsoftClientId();
+  const resourceAppId = microsoftResourceAppId();
+  const resourceScope = config().MICROSOFT_RESOURCE_SCOPE.trim();
+  return {
+    clientId,
+    authority: config().MICROSOFT_AUTHORITY,
+    resourceAppId,
+    resourceScope,
+    requestedScopes: configuredResourceScopes(resourceAppId, resourceScope),
+  };
 }
 
 export class MicrosoftConfigurationError extends Error {}
@@ -58,6 +87,8 @@ export function publicConfigurationStatus() {
   const keys = [
     "DATABASE_URL",
     "MICROSOFT_CLIENT_ID",
+    "MICROSOFT_RESOURCE_APP_ID",
+    "MICROSOFT_RESOURCE_SCOPE",
     "ENCRYPTION_KEY",
     "SESSION_SECRET",
     "BOOTSTRAP_ADMIN_EMAIL",
@@ -66,10 +97,12 @@ export function publicConfigurationStatus() {
   return {
     configured: Object.fromEntries(keys.map((key) => [key, Boolean(process.env[key])])),
     microsoftClientId: process.env.MICROSOFT_CLIENT_ID?.trim() || null,
+    microsoftResourceAppId: process.env.MICROSOFT_RESOURCE_APP_ID?.trim() || null,
+    microsoftResourceScope: process.env.MICROSOFT_RESOURCE_SCOPE?.trim() || null,
     microsoftAuthority: process.env.MICROSOFT_AUTHORITY
       ?? "https://login.microsoftonline.com/organizations",
     microsoftRedirectUri: process.env.MICROSOFT_REDIRECT_URI
       ?? new URL("/api/v1/microsoft/callback", process.env.APP_BASE_URL ?? "http://localhost:3000").toString(),
-    scopes: (process.env.MICROSOFT_SCOPES ?? "").split(",").filter(Boolean),
+    scopes: process.env.MICROSOFT_RESOURCE_SCOPE?.split(",").map((scope) => scope.trim()).filter(Boolean) ?? [],
   };
 }
