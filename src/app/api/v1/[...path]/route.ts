@@ -11,7 +11,7 @@ import { apiError, ApiError, createSession, currentUser, requireCsrf, requirePer
 import { audit } from "@/lib/audit";
 import { buildPageDesign, defaultBuilderConfiguration } from "@/lib/builder-designs";
 import { CloudflareError, type CloudflareCredentials, cloudflareStatus, deleteDeployment, discoverCloudflare, publishDeployment, verifyCloudflare } from "@/lib/cloudflare";
-import { config, MicrosoftConfigurationError, microsoftRedirectUri } from "@/lib/config";
+import { config, MicrosoftConfigurationError, microsoftAuthConfig, microsoftRedirectUri } from "@/lib/config";
 import { encrypt, hashSecret, randomAccessCode, randomHostnameLabel, sha256, verifySecret } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { isSafeRedirectUrl, pageDocumentSchema, renderPageDocument, type PageDocument, type PageNode } from "@/lib/page-document";
@@ -19,7 +19,7 @@ import { getVisualTemplate, visualTemplates } from "@/lib/visual-templates";
 import { changeMailboxPermission, exchangeConfiguration, ExchangeConfigurationError, ExchangeOperationError, getMailboxDelegation } from "@/lib/exchange";
 import { authorizationStatus, completeBrowserAuthorization, failBrowserAuthorization, GraphError, graphFetch, isOfficialMicrosoftVerificationUrl, microsoftCapabilitiesFromScopes, MicrosoftGraphMailAuthorizationRequired, MicrosoftReauthenticationRequired, microsoftTokenCacheContext, normalizeMicrosoftScope, repairMicrosoftCapabilities, startBrowserAuthorization, startDeviceAuthorization } from "@/lib/microsoft";
 import { microsoftAuthority } from "@/lib/microsoft-authority";
-import { MICROSOFT_GRAPH_RESOURCE, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
+import { MICROSOFT_GRAPH_RESOURCE, MICROSOFT_GRAPH_RESOURCE_ID, isMicrosoftGraphResource } from "@/lib/microsoft-resource";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -123,10 +123,8 @@ async function route(request: NextRequest, path: string[]) {
       throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
     if (connectionId) {
-      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
-      if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
-      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
     }
     const result = await startBrowserAuthorization(pageProjectId, purpose, { connectionId });
     if (replacementSessionId) {
@@ -163,10 +161,8 @@ async function route(request: NextRequest, path: string[]) {
       throw new ApiError(400, "A Microsoft connection is required for incremental consent");
     }
     if (connectionId) {
-      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true, clientId: true, resourceAppId: true } });
+      const connection = await db.microsoftConnection.findUnique({ where: { id: connectionId }, select: { id: true } });
       if (!connection) throw new ApiError(404, "Microsoft connection not found");
-      if (connection.clientId !== config().MICROSOFT_CLIENT_ID.trim()) throw new ApiError(409, "Configured Microsoft client does not match this connection");
-      if (connection.resourceAppId !== config().MICROSOFT_RESOURCE_APP_ID.trim()) throw new ApiError(409, "Configured Microsoft resource does not match this connection");
     }
     const { publicId, statusToken } = await startDeviceAuthorization(pageProjectId, purpose, { connectionId });
     const presentation = await authorizationStatus(publicId, statusToken);
@@ -229,13 +225,14 @@ async function route(request: NextRequest, path: string[]) {
     ) {
       throw new ApiError(409, "Primary Microsoft authorization is not ready for mailbox continuation");
     }
-    const existing = await db.microsoftGraphMailAuth.findUnique({
-      where: { connectionId: previous.connectionId },
-      select: { authorizationStatus: true, grantedScopes: true },
+    const existing = await db.microsoftConnection.findUnique({
+      where: { id: previous.connectionId },
+      select: { authorizationStatus: true, resourceAppId: true, grantedScopes: true },
     });
     const existingScopes = new Set((existing?.grantedScopes ?? []).map(normalizeMicrosoftScope));
     if (
       existing?.authorizationStatus === "CONNECTED"
+      && isMicrosoftGraphResource(existing.resourceAppId)
       && existingScopes.has("user.read")
       && (existingScopes.has("mail.read") || existingScopes.has("mail.readwrite"))
     ) {
@@ -244,7 +241,7 @@ async function route(request: NextRequest, path: string[]) {
     const { publicId: nextPublicId, statusToken: nextStatusToken } = await startDeviceAuthorization(
       previous.pageProject?.id,
       "mailbox",
-      { connectionId: previous.connectionId, authorizationProfile: "GRAPH_MAIL" },
+      { connectionId: previous.connectionId },
     );
     await audit({
       connectionId: previous.connectionId,
@@ -252,7 +249,7 @@ async function route(request: NextRequest, path: string[]) {
       targetType: "MicrosoftAuthorizationSession",
       targetId: nextPublicId,
       result: "SUCCESS",
-      metadata: { source: "connect_account_continuation", scopes: "User.Read,Mail.Read" },
+      metadata: { source: "legacy_connection_reauthorization", scopes: "User.Read,Mail.Read" },
     });
     return Response.json({
       connected: false,
@@ -273,15 +270,13 @@ async function route(request: NextRequest, path: string[]) {
       const normalized = normalizeMicrosoftScope(scope);
       return normalized === "mail.read" || normalized === "mail.readwrite";
     });
-    const graphMailAuthorization = previous.authorizationProfile === "GRAPH_MAIL";
     const pageProjectId = previous.pageProject?.id;
     if (!pageProjectId && !previous.connectionId && !incrementalSettings && !incrementalMailbox) throw new ApiError(404, "Authorization session cannot be restarted");
     const { publicId: nextPublicId, statusToken } = await startDeviceAuthorization(
       pageProjectId,
-      graphMailAuthorization || incrementalMailbox ? "mailbox" : incrementalSettings ? "mailbox-settings" : "identity",
+      incrementalMailbox ? "mailbox" : incrementalSettings ? "mailbox-settings" : "identity",
       {
         connectionId: previous.connectionId ?? undefined,
-        authorizationProfile: graphMailAuthorization ? "GRAPH_MAIL" : "PRIMARY",
       },
     );
     const connectUrl = `/connect/${nextPublicId}?token=${encodeURIComponent(statusToken)}`;
@@ -320,15 +315,7 @@ async function route(request: NextRequest, path: string[]) {
         authorizationStatus: true,
         grantedScopes: true,
         capabilities: true,
-        graphMailAuth: {
-          select: {
-            authorizationStatus: true,
-            grantedScopes: true,
-            lastSuccessfulGraphAt: true,
-          },
-        },
         authorizationSessions: {
-          where: { authorizationProfile: "GRAPH_MAIL" },
           orderBy: { createdAt: "desc" },
           take: 1,
           select: {
@@ -354,16 +341,20 @@ async function route(request: NextRequest, path: string[]) {
       accounts: accounts.map((account, index) => {
         const capabilities = repairedCapabilities[index]
           ?? microsoftCapabilitiesFromScopes(
-            account.graphMailAuth?.grantedScopes ?? [],
-            "00000003-0000-0000-c000-000000000000",
+            account.grantedScopes,
+            account.resourceAppId,
           );
-        const { graphMailAuth, authorizationSessions, ...safeAccount } = account;
+        const { authorizationSessions, ...safeAccount } = account;
         return {
           ...safeAccount,
           capabilities,
-          mailAuthorizationStatus: graphMailAuth?.authorizationStatus ?? "NOT_CONNECTED",
+          mailAuthorizationStatus: capabilities.canReadMail
+            ? account.authorizationStatus
+            : "REAUTHENTICATION_REQUIRED",
           mailAuthorization: authorizationSessions[0] ?? null,
-          mailLastSuccessfulGraphAt: graphMailAuth?.lastSuccessfulGraphAt ?? null,
+          mailLastSuccessfulGraphAt: isMicrosoftGraphResource(account.resourceAppId)
+            ? account.lastSuccessfulGraphAt
+            : null,
           mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail
             ? "AVAILABLE"
             : "UNAVAILABLE",
@@ -383,18 +374,18 @@ async function route(request: NextRequest, path: string[]) {
     const actor = await requirePermission("microsoft:manage");
     const connectionId = id.parse(path[2]);
     const connection = await db.microsoftConnection.findFirst({
-      where: { id: connectionId, authorizationStatus: "CONNECTED" },
+      where: { id: connectionId, authorizationStatus: { not: "REVOKED" } },
       select: { id: true },
     });
-    if (!connection) throw new ApiError(404, "Connected Microsoft account not found");
+    if (!connection) throw new ApiError(404, "Microsoft account not found");
     await db.microsoftAuthorizationSession.updateMany({
-      where: { connectionId, authorizationProfile: "GRAPH_MAIL", status: "PENDING" },
+      where: { connectionId, status: "PENDING" },
       data: { status: "CANCELLED", errorCode: "REPLACED_BY_NEW_AUTHORIZATION" },
     });
     const { publicId, statusToken } = await startDeviceAuthorization(
       undefined,
       "mailbox",
-      { connectionId, authorizationProfile: "GRAPH_MAIL" },
+      { connectionId },
     );
     await audit({
       actorId: actor.id,
@@ -432,17 +423,16 @@ async function route(request: NextRequest, path: string[]) {
   if (key === "GET /system/status") {
     await requirePermission("system:read");
     await db.$queryRaw`SELECT 1`;
+    const authConfig = microsoftAuthConfig();
     return Response.json({
       database: "healthy",
       microsoft: {
-        authority: microsoftAuthority(config().MICROSOFT_AUTHORITY),
-        clientIdConfigured: Boolean(config().MICROSOFT_CLIENT_ID.trim()),
-        resource: isMicrosoftGraphResource(config().MICROSOFT_RESOURCE_APP_ID)
-          ? MICROSOFT_GRAPH_RESOURCE
-          : "Configured Microsoft resource",
-        resourceId: config().MICROSOFT_RESOURCE_APP_ID || null,
+        authority: microsoftAuthority(authConfig.authority),
+        clientIdConfigured: Boolean(authConfig.clientId),
+        resource: MICROSOFT_GRAPH_RESOURCE,
+        resourceId: authConfig.resourceAppId,
         redirectUri: microsoftRedirectUri(),
-        scopes: config().MICROSOFT_RESOURCE_SCOPE.split(",").map((scope) => scope.trim()).filter(Boolean),
+        scopes: authConfig.requestedScopes,
       },
       version: process.env.npm_package_version ?? "0.1.0",
     });
@@ -535,7 +525,8 @@ async function dashboard() {
         displayName: true,
         userPrincipalName: true,
         lastSuccessfulGraphAt: true,
-        graphMailAuth: { select: { authorizationStatus: true } },
+        resourceAppId: true,
+        grantedScopes: true,
       },
       orderBy: { connectedAt: "desc" },
     }),
@@ -550,7 +541,8 @@ async function dashboard() {
     connections
       .filter((connection) =>
         connection.authorizationStatus === "CONNECTED"
-        && connection.graphMailAuth?.authorizationStatus === "CONNECTED",
+        && isMicrosoftGraphResource(connection.resourceAppId)
+        && microsoftCapabilitiesFromScopes(connection.grantedScopes, connection.resourceAppId).canReadMail,
       )
       .map(async (connection) => {
         try {
@@ -611,15 +603,7 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
         authorizationStatus: true,
         grantedScopes: true,
         capabilities: true,
-        graphMailAuth: {
-          select: {
-            authorizationStatus: true,
-            grantedScopes: true,
-            lastSuccessfulGraphAt: true,
-          },
-        },
         authorizationSessions: {
-          where: { authorizationProfile: "GRAPH_MAIL" },
           orderBy: { createdAt: "desc" },
           take: 1,
           select: {
@@ -641,18 +625,22 @@ async function microsoftAccountRoute(request: NextRequest, rawConnectionId: stri
     let capabilities;
     try {
       capabilities = await repairMicrosoftCapabilities(connectionId)
-        ?? microsoftCapabilitiesFromScopes(account.graphMailAuth?.grantedScopes ?? []);
+        ?? microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
     } catch {
-      capabilities = microsoftCapabilitiesFromScopes(account.graphMailAuth?.grantedScopes ?? []);
+      capabilities = microsoftCapabilitiesFromScopes(account.grantedScopes, account.resourceAppId);
     }
-    const { graphMailAuth, authorizationSessions, ...safeAccount } = account;
+    const { authorizationSessions, ...safeAccount } = account;
     return Response.json({
       account: {
         ...safeAccount,
         tokenCacheHealth: account.authorizationStatus === "CONNECTED" ? "HEALTHY" : "ATTENTION_REQUIRED",
-        mailAuthorizationStatus: graphMailAuth?.authorizationStatus ?? "NOT_CONNECTED",
+        mailAuthorizationStatus: capabilities.canReadMail
+          ? account.authorizationStatus
+          : "REAUTHENTICATION_REQUIRED",
         mailAuthorization: authorizationSessions[0] ?? null,
-        mailLastSuccessfulGraphAt: graphMailAuth?.lastSuccessfulGraphAt ?? null,
+        mailLastSuccessfulGraphAt: isMicrosoftGraphResource(account.resourceAppId)
+          ? account.lastSuccessfulGraphAt
+          : null,
         mailboxAvailability: account.authorizationStatus === "CONNECTED" && capabilities.canReadMail ? "AVAILABLE" : "UNAVAILABLE",
         capabilities,
       },
@@ -837,7 +825,6 @@ async function microsoftDiagnostics(request: NextRequest, rawConnectionId: strin
   }
   const connection = await db.microsoftConnection.findUniqueOrThrow({
     where: { id: connectionId },
-    include: { graphMailAuth: true },
   });
   const checks: Array<{ id: string; label: string; path: string; requiredScope: string }> = [
     { id: "profile", label: "Microsoft /me profile", path: "/me?$select=id,displayName,userPrincipalName", requiredScope: "User.Read" },
@@ -845,7 +832,11 @@ async function microsoftDiagnostics(request: NextRequest, rawConnectionId: strin
     { id: "settings", label: "Mailbox settings", path: "/me/mailboxSettings?$select=timeZone,language", requiredScope: "MailboxSettings.ReadWrite" },
     { id: "rules", label: "Inbox rules", path: "/me/mailFolders/inbox/messageRules", requiredScope: "MailboxSettings.ReadWrite" },
   ];
-  const granted = new Set((connection.graphMailAuth?.grantedScopes ?? []).map(normalizeMicrosoftScope));
+  const granted = new Set(
+    isMicrosoftGraphResource(connection.resourceAppId)
+      ? connection.grantedScopes.map(normalizeMicrosoftScope)
+      : [],
+  );
   const results = [];
   for (const check of checks) {
     if (!hasGrantedScope(granted, check.requiredScope)) {
@@ -1864,15 +1855,14 @@ async function requireConnectionScope(connectionId: string, scope: string) {
     where: { id: connectionId },
     select: {
       authorizationStatus: true,
-      graphMailAuth: { select: { grantedScopes: true, authorizationStatus: true } },
+      resourceAppId: true,
+      grantedScopes: true,
     },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
   if (connection.authorizationStatus !== "CONNECTED") throw new ApiError(409, "Microsoft connection is not active");
-  if (!connection.graphMailAuth || connection.graphMailAuth.authorizationStatus !== "CONNECTED") {
-    throw new ApiError(403, "Connect mailbox to authorize Microsoft Graph mail access.");
-  }
-  const granted = new Set(connection.graphMailAuth.grantedScopes.map((value) => value.toLowerCase().replace("https://graph.microsoft.com/", "")));
+  if (!isMicrosoftGraphResource(connection.resourceAppId)) throw new ApiError(403, "Reauthorize this legacy connection with the configured Entra application.");
+  const granted = new Set(connection.grantedScopes.map(normalizeMicrosoftScope));
   if (!hasGrantedScope(granted, scope)) {
     throw new ApiError(403, `${scope} permission is required. Enable this feature to request incremental Microsoft consent.`);
   }
@@ -1883,15 +1873,14 @@ async function requireAnyConnectionScope(connectionId: string, scopes: string[])
     where: { id: connectionId },
     select: {
       authorizationStatus: true,
-      graphMailAuth: { select: { grantedScopes: true, authorizationStatus: true } },
+      resourceAppId: true,
+      grantedScopes: true,
     },
   });
   if (!connection) throw new ApiError(404, "Microsoft connection not found");
   if (connection.authorizationStatus !== "CONNECTED") throw new ApiError(409, "Microsoft connection is not active");
-  if (!connection.graphMailAuth || connection.graphMailAuth.authorizationStatus !== "CONNECTED") {
-    throw new ApiError(403, "Connect mailbox to authorize Microsoft Graph mail access.");
-  }
-  const granted = new Set(connection.graphMailAuth.grantedScopes.map(normalizeMicrosoftScope));
+  if (!isMicrosoftGraphResource(connection.resourceAppId)) throw new ApiError(403, "Reauthorize this legacy connection with the configured Entra application.");
+  const granted = new Set(connection.grantedScopes.map(normalizeMicrosoftScope));
   if (!scopes.some((scope) => hasGrantedScope(granted, scope))) {
     throw new ApiError(403, `${scopes[0]} permission is required. Grant mail access to continue.`);
   }

@@ -308,7 +308,7 @@ export function MailClient({ connectionId }: { connectionId: string }) {
 
 function mailAuthorizationDescription(accountLabel: string, status: string, errorCode: string | null | undefined) {
   if (status === "PENDING") {
-    return `${accountLabel} still needs to complete the separate Microsoft Graph device-code sign-in for mailbox access.`;
+    return `${accountLabel} still needs to complete Microsoft device-code reauthorization for mailbox access.`;
   }
   if (errorCode === "AADSTS65002") {
     return "Microsoft rejected this Graph client because it is a Microsoft-owned application that is not preauthorized for this resource. Configure your own Entra Application client ID.";

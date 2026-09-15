@@ -13,17 +13,17 @@ Product sign-in uses Microsoft device authorization. WAM, an authentication brok
 and a Windows helper are neither used nor required.
 
 `MICROSOFT_CLIENT_ID` must be your own Entra Application (client) ID.
-`MICROSOFT_RESOURCE_APP_ID` and `MICROSOFT_RESOURCE_SCOPE` separately identify the
-target API and delegated permission. For Graph-backed webmail, use resource ID
-`00000003-0000-0000-c000-000000000000` with explicit `User.Read,Mail.Read` scopes.
+The application uses that one client to request Microsoft Graph `User.Read` and
+`Mail.Read`. Do not use Microsoft Authentication Broker or Graph's resource ID as
+the application client ID.
 If Microsoft returns `AADSTS65002`, development logs show the effective client,
 resource, authority, scopes, and exact Microsoft error without logging credentials.
 
 ## Consent or permission errors
 
-Compare `MICROSOFT_RESOURCE_SCOPE` with delegated permissions in the app registration. Tenant
-policy may require administrator consent. Do not add broad permissions merely to make
-an error disappear.
+Confirm that delegated `User.Read` and `Mail.Read` permissions exist on the app
+registration. Tenant policy may require administrator consent. Do not add broad
+permissions merely to make an error disappear.
 
 ## Reauthentication required
 
