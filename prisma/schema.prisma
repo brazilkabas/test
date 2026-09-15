@@ -59,6 +59,21 @@ enum CloudflareAuthType {
   GLOBAL_API_KEY
 }
 
+enum AiCodeJobStatus {
+  INSPECTING_REPOSITORY
+  GENERATING_CHANGES
+  AWAITING_APPROVAL
+  APPLYING_PATCH
+  RUNNING_TESTS
+  PUSHING
+  READY
+  MERGED
+  FAILED
+  REJECTED
+  STALE
+  LOCAL_SYNC_BLOCKED
+}
+
 model User {
   id                   String                @id @default(cuid())
   email                String                @unique
@@ -73,6 +88,7 @@ model User {
   projects             HtmlProject[]
   brandAssets          BrandAsset[]
   auditEvents          AuditEvent[]           @relation("AuditActor")
+  aiCodeJobs           AiCodeJob[]
 }
 
 model InternalRole {
@@ -420,4 +436,69 @@ model CloudflareConfiguration {
   lastTestStatus       String?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
+}
+
+model AiCodeSettings {
+  id                             String   @id @default("default")
+  providerBaseUrl                String   @default("https://api.openai.com/v1")
+  modelName                      String   @default("gpt-4.1")
+  encryptedApiKey                Bytes?
+  apiKeyLastFour                 String?
+  githubOwner                    String?
+  githubRepository               String?
+  baseBranch                     String   @default("main")
+  githubAppId                    String?
+  githubInstallationId           String?
+  encryptedGithubAppPrivateKey   Bytes?
+  encryptedGithubToken           Bytes?
+  localAgentId                   String?
+  localAgentCallbackUrl          String?
+  encryptedLocalAgentToken       Bytes?
+  localAgentTokenLastFour        String?
+  createPullRequestAutomatically Boolean  @default(true)
+  deployAfterMerge               Boolean  @default(false)
+  lastProviderTestAt             DateTime?
+  lastProviderTestStatus         String?
+  lastGithubTestAt               DateTime?
+  lastGithubTestStatus           String?
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
+}
+
+model AiCodeJob {
+  id                 String          @id @default(cuid())
+  instruction        String
+  mode               String          @default("plan")
+  status             AiCodeJobStatus @default(INSPECTING_REPOSITORY)
+  explanation        String?
+  selectedFiles      String[]
+  unifiedDiff        String?
+  warnings           String[]
+  tests              String[]
+  githubBaseSha      String?
+  githubBranch       String?
+  githubCommitSha    String?
+  previousCommitSha  String?
+  pullRequestUrl     String?
+  pullRequestNumber  Int?
+  localSyncStatus    Json?
+  error              String?
+  deployAfterTests   Boolean         @default(false)
+  createdById        String
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  createdBy          User            @relation(fields: [createdById], references: [id])
+  revisions          AiCodeRevision[]
+
+  @@index([status, createdAt])
+  @@index([createdById, createdAt])
+}
+
+model AiCodeRevision {
+  id        String    @id @default(cuid())
+  jobId     String
+  commitSha String
+  diff      String
+  createdAt DateTime  @default(now())
+  job       AiCodeJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 }

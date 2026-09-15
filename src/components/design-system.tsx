@@ -126,11 +126,11 @@ export function EmptyState({ icon = "◇", title, description, action }: { icon?
 
 export function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
-  const tone = normalized.includes("connected") || normalized.includes("healthy") || normalized.includes("active") || normalized.includes("success")
+  const tone = normalized.includes("connected") || normalized.includes("healthy") || normalized.includes("active") || normalized.includes("success") || normalized === "ready" || normalized === "merged" || normalized.includes("synced")
     ? "positive"
-    : normalized.includes("fail") || normalized.includes("revoked") || normalized.includes("denied")
+    : normalized.includes("fail") || normalized.includes("revoked") || normalized.includes("denied") || normalized.includes("rejected")
       ? "negative"
-      : normalized.includes("required") || normalized.includes("pending")
+      : normalized.includes("required") || normalized.includes("pending") || normalized.includes("awaiting") || normalized.includes("stale") || normalized.includes("blocked")
         ? "warning"
         : "neutral";
   return <span className={`status status-${tone}`}><span aria-hidden />{status.replaceAll("_", " ")}</span>;
